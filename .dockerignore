@@ -1,0 +1,21 @@
+.venv/
+tests/
+shoreline/
+__pycache__/
+.idea/
+.claude/
+.env
+
+# There is deliberately no `*.png` rule here any more, and it must not come
+# back. It existed to keep the ~100MB of test screenshots out of the build
+# context, but `tests/` and `shoreline/` already do that wholesale -- and it
+# carried `!template_18x18.png` / `!template_20x20.png` exceptions for the two
+# renders the image used to COPY. Those files are deleted, so with the rule in
+# place `COPY Overlays/` and `COPY Assets/` would have matched *nothing* and
+# built an image with no board renders and no ruin sprite.
+#
+# That failure is now loud rather than silent -- polymerge has no legacy
+# template to fall back on, so the bot refuses at startup instead of merging
+# 18 and 20 against different fog art. It is still a failure worth not
+# shipping. Everything the image needs is named explicitly by COPY, so this
+# file only has to keep the context small.

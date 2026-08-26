@@ -1,0 +1,38 @@
+# Regenerable program output. CLAUDE.md states outright that tests/<set>/merged.png
+# and tests/<set>/debug/ are safe to delete at any time. Together they are ~995 MB
+# against the corpus's 73 MB of actual screenshots, so ignoring them is the
+# difference between a ~100 MB repo and a 1.1 GB one.
+#
+# The *input* screenshots under tests/ are deliberately NOT ignored. They are the
+# regression corpus: tools/baseline.py runs all 24 sets, and the ground-truth
+# tables in CLAUDE.md key to those exact files. Note they carry player handles in
+# the HUD -- badland_test3/cym.png reads "Waiting for yodagem..." across its top
+# band -- which is why this repo is private. Redacting them is not the
+# alternative: those pixels are documented program behaviour (see the --top-crop
+# residual note in CLAUDE.md's deferred section) and editing them would silently
+# invalidate the baselines.
+debug/
+merged.png
+
+# tools/baseline.py's stored run, captured on demand with -o. Regenerable, and a
+# stale one sitting in the tree invites comparing against the wrong baseline.
+before.json
+
+# 194 MB, and rebuilds from requirements.txt, which is pinned.
+.venv/
+__pycache__/
+*.pyc
+
+# The Discord token. polybot reads DISCORD_TOKEN from the environment and
+# compose.yaml resolves ${DISCORD_TOKEN:?} from a .env beside it. Never commit it.
+.env
+
+# Editor and tool state, per-user rather than per-project. PyCharm keeps this
+# project's per-test-set run configurations in .idea/workspace.xml, which
+# JetBrains' own .idea/.gitignore already treats as local state.
+.idea/
+.claude/settings.local.json
+
+# Superseded, kept locally as a reference. Nothing imports it and the Dockerfile
+# does not copy it.
+polymerge_old.py

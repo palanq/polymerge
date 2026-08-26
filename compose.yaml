@@ -1,0 +1,35 @@
+services:
+  polybot:
+    build: .
+    # Outbound websocket only -- no ports published, nothing to reverse-proxy.
+    restart: unless-stopped
+    environment:
+      # From .env beside this file, or the host environment. The ":?" makes a
+      # missing token fail at `up` with a clear message rather than starting a
+      # container that exits on polybot's own SystemExit.
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN in .env}
+      # The two the bot reacts *with*. These are state, not decoration: the
+      # DONE reaction is how a later !merge knows which shots it already used.
+      # POLYMERGE_MARK_EMOJI: "🗺️"
+      # POLYMERGE_DONE_EMOJI: "✅"
+      # Flavour, carried in the message text. Defaults are the ArcticWolves
+      # app emoji baked into polybot.py; override to re-skin, or set one to ""
+      # to drop that decoration. Changing the *canonical* emoji is an edit to
+      # polybot.py, not to this file -- see the constants near the top of it.
+      # POLYMERGE_HAPPY_EMOJI: "<:wolfyay:1541488102114328586>"
+      # POLYMERGE_SAD_EMOJI: "<:wolfconfused:1541488101241782354>"
+      # POLYMERGE_WAIT_EMOJI: "<:wolfwait:1541528693430681660>"
+      # POLYMERGE_CREDIT_EMOJI: "<:arcticwolves:1541488099010281492>"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # A merge pegs a core for ~20s and merges are already serialized one at a
+    # time, so this caps the bot's impact on a shared host without slowing a
+    # merge much. Raise if merges feel sluggish; OpenCV will use what it's given.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G

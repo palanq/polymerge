@@ -1,0 +1,7 @@
+# Pinned to the versions in .venv/ as of 2026-08-12, verified working against
+# the whole tests/ corpus. opencv-python-*headless* rather than opencv-python:
+# the bot never opens a window, and the plain wheel drags in libGL/libglib,
+# which a slim container image does not have.
+discord.py==2.7.1
+numpy==2.5.1
+opencv-python-headless==5.0.0
