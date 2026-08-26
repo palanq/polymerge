@@ -572,9 +572,11 @@ per-file rects, key them on something unambiguous.
   `SIFT_ZOOM_MIN_INLIERS` and nowhere near a genuine terrain match. Judge it on
   its fog lock (86/142) and its zero conflicts, and note its ruin at (10,7)
   lands on a tile the *other* shot independently explored — which two anchors
-  6 tiles apart could not do. **`fogless` reports 16.6 and is unreliable for a
+  6 tiles apart could not do. **`fogless` reports 0.524 and is unreliable for a
   different reason from all of those** — not a fog mismatch but a measurement of
-  the wrong thing. `--cross-check` returns before the merge path, so it reports
+  the wrong thing. (It read 16.6 before SIFT was confined to the board, which is
+  the figure this entry used to carry; the board-region table below records the
+  drop.) `--cross-check` returns before the merge path, so it reports
   the *refined* anchors, and on a board with no fog the merge discards those in
   favour of each shot's own unrefined edge anchor (see the zero-lock block in
   `main`). Those agree to **0.023 tiles**. Same shape as `star_change` below:
@@ -1762,7 +1764,7 @@ two same-zoom shots disagreeing with each other, not the size of a single
 shot's correction.
 
 **Sizes measured in template pixels must be scaled** (`REFERENCE_TILE_PX`,
-`tile_px_scale`, `scaled_px`). The sprite detectors work in template space
+`tile_px_scale`). The sprite detectors work in template space
 precisely so their thresholds can be constants — after warping, a segment is the
 same height whatever the shot's zoom. That argument is sound but assumed one
 more thing: that every template renders a tile at the same number of pixels. It
@@ -1782,15 +1784,18 @@ this section used to list — `SEG_H_MIN`/`SEG_H_MAX`, `SEG_ASPECT`,
 `BAR_SPAN_MAX`, `BAR_PITCH_TOL`, `BAR_VERTEX_DY` — went with the bottom-up bar
 detector and no longer exist.
 
-**Round the scaled value when the bound is compared against an integer** —
-`scaled_px` exists for this and it is not cosmetic. At a ~0.1% scale a `<= 10`
-px bound becomes `10.01 <= 10` and drops a real bar segment. Measured back when
-the city-bar detector was built on px constants: raw multiplication cost 5 of
-the then-16 sets a city bar each while changing nothing else — invisible without
-`tools/baseline.py`. **`scaled_px` currently has no call sites**, because every
-scaled bound left in the file indexes a slice rather than being compared against
-an integer count, so it takes the float directly. It is kept for the next such
-bound rather than because anything uses it.
+**Round the scaled value when the bound is compared against an integer**, and it
+is not cosmetic. At a ~0.1% scale a `<= 10` px bound becomes `10.01 <= 10` and
+drops a real bar segment. Measured back when the city-bar detector was built on
+px constants: raw multiplication cost 5 of the then-16 sets a city bar each while
+changing nothing else — invisible without `tools/baseline.py`.
+
+There is **no rounding helper in the file today**. `PLATE_BAND`/`PLATE_HALF_W`
+are the only scaled bounds left and they only index slices, so they take the raw
+float; the `int(round(...))` helper that existed for this went when the bar
+rewrite removed its last caller. Bring it back rather than open-coding the
+rounding if you add a bound that is compared against a count — the note above
+`REFERENCE_TILE_PX` in polymerge.py carries the same warning.
 
 The same hazard once bit an **inline literal rather than a named constant**: the
 old bar-completeness test in `main` (`span_of`) compared a detected bbox against
@@ -2333,8 +2338,8 @@ detector needed in order to *find* candidates: connected-component labelling, a
 segment height window, an aspect window, a solidity test, run grouping and an
 even-pitch test are all gone, along with `SEG_*`, `BAR_SPAN_MAX` and
 `BAR_PITCH_TOL`. Everything left is in **tile widths**, so none of it passes
-through `REFERENCE_TILE_PX` or `scaled_px` — the geometry is a property of the
-board, not of the render.
+through `REFERENCE_TILE_PX` at all — the geometry is a property of the board,
+not of the render.
 
 Three pieces of evidence, and they are independent:
 

@@ -1844,6 +1844,18 @@ def tile_fog_fraction(fogpix, wmask, poly, W, H, min_px=60):
 # itself from |u_col| directly -- both are the same idea taken further, and are
 # the better pattern for anything added here.
 #
+# **If you add a scaled bound that is compared against an integer, round it.**
+# PLATE_* get away with the raw float because they only index slices. A bound
+# tested against an integer pixel count -- a component's height, a span -- is
+# moved across the very integer it was chosen to include by a raw multiply: at a
+# ~0.1% scale `<= 10` becomes `10.01 <= 10`, dropping a real bar segment. That is
+# measured, not hypothetical: back when the city-bar detector was built on px
+# constants, raw multiplication cost 5 of the then-16 sets a city bar each while
+# changing nothing else, and nothing but tools/baseline.py could have caught it.
+# There was an int(round(...)) helper here for exactly this; it went when the bar
+# rewrite removed its last caller. Bring it back rather than open-coding the
+# rounding in three places.
+#
 # Deliberately *not* scaled: the small px floors in _region_ncc (40),
 # sample_tile (50) and tile_fog_fraction (60). Those are "too few pixels to say
 # anything" guards, not measurements, and --min-valid-frac already gates the
@@ -1855,33 +1867,15 @@ REFERENCE_TILE_PX = 89.8    # the scale the px constants above were measured at.
                             # It is a *reference*, not a file, and must not be
                             # re-based onto Overlays/: doing so means
                             # re-deriving PLATE_* in the same commit, straight
-                            # into the rounding trap scaled_px documents below.
-                            # The whole point of tile_px_scale is that this
-                            # stays fixed while the loaded template varies.
+                            # into the rounding trap noted above. The whole
+                            # point of tile_px_scale is that this stays fixed
+                            # while the loaded template varies.
 
 
 def tile_px_scale(u_col):
     """How much larger this template's tile is than the scale the px constants
     above were measured at. 0.87-0.90 across the Overlays/ renders."""
     return float(np.linalg.norm(u_col)) / REFERENCE_TILE_PX
-
-
-def scaled_px(value, s):
-    """A px constant carried to this template's scale, as a whole number.
-
-    Currently unused: every scaled bound left in the file (PLATE_*) indexes a
-    slice rather than being compared against an integer count, so it takes the
-    float directly. Kept because the trap it exists for is a live hazard for the
-    next such bound.
-
-    Rounding is not cosmetic. A bound compared against an integer pixel count (a
-    component's height, a bar's span) is moved across the integer it was chosen
-    to include by a raw multiply: at a ~0.1% scale, `<= 10` becomes
-    `10.01 <= 10` and drops a real bar segment. Measured back when the city-bar
-    detector was built on px constants -- raw multiplication cost 5 of the then
-    16 sets a city bar each while changing nothing else, which nothing but
-    tools/baseline.py would have caught."""
-    return int(round(value * s))
 
 
 # ------------------------------------------------------ Elyrion ruin vision ---
@@ -2467,8 +2461,8 @@ def plate_edge_run(gray, vx, vy, s):
 # See CLAUDE.md for the measurements behind each constant, the city-bar ground
 # truth these were scored against, and the several approaches that failed.
 #
-# Everything here is in **tile widths**, not template px, so none of it needs
-# REFERENCE_TILE_PX or scaled_px: the geometry is a property of the board.
+# Everything here is in **tile widths**, not template px, so none of it passes
+# through REFERENCE_TILE_PX at all: the geometry is a property of the board.
 BAR_TOP_BAND = (-0.090, 0.020)  # rows the bar's top edge can occupy, from the
 BAR_BOT_BAND = (0.070, 0.170)   # vertex; measured -0.06..-0.01 and +0.09..+0.15
 BAR_HALVES = (0.482, 0.720)     # the only two legal half-widths: a short bar
@@ -4112,7 +4106,6 @@ def main():
             for n in names:
                 bars_of[n] = detect_population_bars(warped[n], wmask[n],
                                                     origin, u_col, u_row, N)
-            tile_scale = tile_px_scale(u_col)
 
             # The two lengths a real bar is allowed to be. span_of below asks
             # the same question for the claim ranking; this asks it earlier,
