@@ -758,43 +758,27 @@ def fog_period_scale(gray, valid, hsv, dir_a, tile_px,
     (known exactly -- the camera never rotates) therefore peaks at the tile
     step, and zoom = template step / measured step. No template involved.
 
-    This replaced matching small fog patches against the template
-    (fog_candidates/fog_scale), whose failure mode was fatal and silent: fog is
-    periodic, so a patch at a *wrong* scale can still correlate strongly
-    against a different repeat of the pattern, and any zoom outside the swept
-    range guaranteed a wrong answer rather than no answer --
-    test_ss_elyruins/hood.png is zoomed to 1.65x the template, its true period
-    sat outside the old 0.50-1.10 sweep entirely, and it anchored ~2% off with
-    every silhouette signal reading healthy. The period cannot alias that way:
-    a shifted repeat *is* the quantity being measured, and multiples of the
-    fundamental are separated by a factor of 2, not a few percent. Where a
-    multiple does land in range (a zoomed-in shot's 2x harmonic), taking the
-    smallest strong peak keeps the fundamental.
+    **Do not measure zoom by matching fog patches against the template
+    instead.** Fog is periodic, so a patch at a *wrong* scale correlates
+    strongly against a different repeat of the pattern, and a zoom outside the
+    swept range then yields a confident wrong answer rather than no answer. A
+    period cannot alias that way: a shifted repeat *is* the quantity being
+    measured, and multiples of the fundamental sit a factor of 2 apart rather
+    than a few percent. Where a multiple does land in range (a zoomed-in shot's
+    2x harmonic), taking the smallest strong peak keeps the fundamental.
 
-    That last defence only holds while the fundamental is itself inside the
-    sweep, which is what sets `lo`. It was 0.45 and that was too tight by a
-    hair: tests/missized_test/z2.png is a whole 18x18 board photographed at
-    s_it=2.23, so its true period is 40.4px against the sweep's 40.5px floor.
-    The fundamental fell out of range, the first peak found was the 2x harmonic
-    at ~80px, and the board measured 8.60 tiles instead of 17.9 -- refusing the
-    merge outright, both as a size disagreement with the other shots and, at an
-    explicit --map-size 18, as a "this looks like a 13x13 board". Note the
-    prominence test below needs a few samples of runway *before* the peak, so
-    `lo` has to clear the lowest real period by more than one coarse step, not
-    merely reach it. 0.30 admits shots to s_it=3.33, half again beyond the most
-    zoomed-out shot in the corpus.
-
-    `hi` is the same idea at the other end, and it was 2.30 (s_it down to
-    0.435) until tests/basin_treaties/q.png: a shot zoomed in enough that its
-    own board edges have no opposite pair (only a-max and b-min are in frame,
-    the other two edges clipped), so it depends on this fallback entirely, and
-    its period measures 202px against the old sweep's 185px ceiling -- ncc
-    0.72, a clean peak, just outside the window. 3.75 admits s_it down to
-    0.267, the same "half again" margin past this new extreme (0.398) that
-    `lo` keeps past its own. Widening `hi` cannot make an existing shot pick a
-    worse (larger) peak, since peaks are scanned smallest-first and a shot
-    that already found one below the old ceiling still finds the same one
-    first; it only newly admits shots whose true period sat beyond it.
+    That last defence holds only while the fundamental is itself inside the
+    sweep, which is what `lo` and `hi` are for. Both are set from the zoom
+    extremes in tests/, with roughly half again in hand past each:
+    missized_test/z2.png is a whole 18x18 board at s_it=2.23, period 40.4px, and
+    basin_treaties/q.png is the most zoomed-in shot at s_it=0.398, period 202px
+    and no opposite edge pair, so it depends on this fallback entirely.
+    Narrowing either drops such a shot onto a harmonic or off the sweep
+    altogether. Note the prominence test below needs a few samples of runway
+    *before* a peak, so `lo` must clear the lowest real period by more than one
+    coarse step rather than merely reach it. Widening `hi` cannot pull an
+    existing shot onto a worse (larger) peak, since peaks are scanned
+    smallest-first.
 
     Coarse sweep at quarter resolution, then a fine full-resolution pass with
     sub-pixel (parabolic) refinement around the winner: ~0.2% accuracy on the
@@ -877,12 +861,13 @@ def _tile_sample_grid(origin, u_col, u_row, n, inset, div, max_px=320):
     accuracy.
 
     It is divided by `div` so that a coarse pyramid level actually costs less
-    per candidate, which is the whole point of having a pyramid. It used to be
-    a flat constant, and that made the pyramid pointless: a tile holds only
-    ~276 px at div=4, so the cap never bound there, every level gathered about
-    the same ~300 samples per tile, and because the coarse levels evaluate
-    *more* candidates (343 vs 175) they cost more in total than the
-    full-resolution level rather than less. Dividing by `div` cuts the phase
+    per candidate, which is the whole point of having a pyramid. **Do not make
+    it a flat constant**: a tile holds only ~276 px at div=4, so a flat cap
+    never binds there, every level gathers about the same ~300 samples per tile,
+    and since the coarse levels evaluate *more* candidates (343 vs 175) they
+    cost more in total than the full-resolution level rather than less -- a
+    pyramid that shrinks the images but not the work. Dividing by `div` cuts
+    the phase
     by a third.
 
     The 160 floor is empirical and worth keeping. Thinning the coarse levels
@@ -1892,20 +1877,14 @@ def tile_px_scale(u_col):
 # sprite, so this detector does not have to infer what a marker looks like. It
 # predicts what one would look like here and asks how well that matches.
 #
-# This replaced a detector built on HSV statistics fitted to the corpus
-# (RUIN_MIN_SAT/RUIN_MIN_MEAN_VAL/RUIN_MAX_MEAN_SAT plus a three-margin "vivid"
-# band). Those are gone, and the reason they had to go is worth keeping,
-# because it is a trap any future colour threshold here will fall into as well:
-# mean saturation was computed over pixels *already* above a saturation floor,
-# so it measured how crisply the marker had been captured rather than what the
-# marker is. A zoomed-out capture resolves each small flame as mostly
-# antialiased fringe sitting just over the floor; a zoomed-in one resolves the
-# saturated middle. Every Elyrion shot in the corpus when those numbers were
-# taken was of the first kind, so "genuine markers measure mean S 104-117" got
-# written down as a property of the sprite. It is a property of the photograph.
-# The sprite proves it directly: composited over fog at rising opacity it
-# produces mean S 110.7 -> 141.2 -> 161.4 at mean V pinned to 246.7-252.1,
-# which is the corpus's entire observed 104-159 spread out of one sprite.
+# **Do not score a marker by its HSV statistics.** A mean saturation taken over
+# pixels already above a saturation floor measures how crisply the marker was
+# photographed, not what the marker is: a zoomed-out capture resolves each small
+# flame as mostly antialiased fringe sitting just over the floor, a zoomed-in
+# one resolves the saturated middle. The sprite shows this directly -- composited
+# over fog at rising opacity it spans mean S 110.7 -> 161.4 at mean V pinned near
+# 250, which is wider than the spread any real corpus of captures exhibits. Any
+# threshold fitted to that number is fitted to the photographs.
 #
 # The model is exact, because alpha compositing is:
 #
@@ -1926,7 +1905,7 @@ def tile_px_scale(u_col):
 # a larger absolute error than a fit to noise. corr = <D,K>/(|D||K|) asks the
 # question that actually discriminates -- of whatever departure from fog is
 # here, how much of it is flame-shaped -- and f drops out of it entirely, which
-# is exactly the capture-independence the old thresholds lacked.
+# is what makes the score independent of how the marker was captured.
 #
 # Three game facts do the rest of the work, and none of them is a threshold:
 # the flame is always drawn at the same size relative to the tile (confirmed
@@ -2017,11 +1996,11 @@ RUIN_PEAK_SEP_FRAC = 0.18     # minimum spacing between two reported flames, as
 RUIN_MARK_BGR = (170, 30, 110)  # deep violet outline on a fogged ruin tile.
                                 # Chosen for *contrast against fog*, which is
                                 # the whole job: fog is near-white (V 230-255),
-                                # so the amber this used to be (0,215,255) had a
-                                # perceived brightness of 202 against fog's 240
-                                # -- a 38-level difference, which is why it read
-                                # faintly. Violet sits at 70, a 170-level
-                                # difference, 4.5x the contrast.
+                                # and violet's perceived brightness of 70 gives
+                                # a 170-level difference against fog's 240. An
+                                # amber or other bright marker reads faintly --
+                                # (0,215,255) sits at 202, only 38 levels off
+                                # fog, a quarter of the contrast.
                                 # It still has to be unmistakably not the
                                 # spawn-zone layer, which is also a diamond
                                 # outline (see CLAUDE.md). That layer is a
@@ -2051,10 +2030,9 @@ def load_ruin_sprite():
 
     None is not an error to swallow: it means ruin detection cannot run at all,
     and main reports NO-RUIN-SPRITE rather than quietly detecting nothing. There
-    is deliberately no fallback detector to degrade into -- a second, unmeasured
-    detector that only runs when something has already gone wrong is exactly the
-    silent-degradation shape the legacy templates provided, and it is why they
-    were deleted.
+    is deliberately no fallback detector to degrade into: a second, unmeasured
+    detector that runs only once something has already gone wrong degrades
+    silently, which is worse than not running at all.
     """
     path = ruin_sprite_path()
     if path in _ruin_sprite_cache:
@@ -2307,22 +2285,12 @@ def detect_ruin_vision(warped_bgr, wmask, fog_area, template, gain, origin,
     as fog -- a marker is drawn on fog, and that restriction is a game fact
     rather than a filter that could be traded away.
 
-    Note what is *not* here any more, because each was load-bearing for the old
-    detector and is simply not needed once the sprite is doing the work:
-
-    * No morphological close, and so no component labelling. The old detector
-      closed the candidate mask to glue a cluster's flames into one blob, which
-      also bridged a marker on the fog frontier into the explored terrain beside
-      it and swallowed it whole -- u_forest (2,1) became 779 px of a 676x435
-      blob whose centroid landed four tiles away, and no gate rejected it
-      because it was never asked about. A score map has no components, so there
-      is nothing to bridge. That tile is still detected.
-    * No island test. It existed to throw out terrain bleeding across a tile
-      border, which a sprite match rejects on shape instead. Keeping it would
-      only risk the frontier markers it used to endanger.
-    * No area bounds, no hue-spread test, no saturation or value bands. The
-      corpus measurement is unambiguous: with the match alone there are zero
-      false peaks on four sets that cannot contain a ruin.
+    Deliberately no morphological close, no component labelling, no island
+    test, no area bounds and no hue or saturation bands. Scoring a map rather
+    than labelling blobs is what avoids them: a close would bridge a marker on
+    the fog frontier into the explored terrain beside it and swallow it whole,
+    and shape already rejects the terrain bleed an island test was for. Measured
+    on the match alone, sets that cannot contain a ruin yield zero false peaks.
     """
     if sprite is None:
         return []
@@ -2401,14 +2369,13 @@ def detect_ruin_vision(warped_bgr, wmask, fog_area, template, gain, origin,
 #
 # Without this the merge discards it: winner selection ranks by sharpness, so a
 # non-owner's shot can win the tiles the bar sits on and the population simply
-# vanishes. Confirmed by the project owner that this happens in practice.
+# vanishes.
 #
 # Detection runs in *template* space because the city UI scales with board
-# zoom -- verified on the since-removed archers_test3, whose two shots were the
-# game's zoom extremes: SIFT put them 2.857x apart and their bar heights
-# differed by 2.70x. So after warping, a piece of city UI is a fixed size no
-# matter the zoom or the device, which is what lets PLATE_* below be constants
-# at all (carried to the loaded template's scale by tile_px_scale).
+# zoom: measured across the game's two zoom extremes, 2.857x apart, bar heights
+# differ by 2.70x. So after warping, a piece of city UI is a fixed size whatever
+# the zoom or the device, which is what lets PLATE_* below be constants at all
+# (carried to the loaded template's scale by tile_px_scale).
 PLATE_BAND = (8.0, 56.0)              # above the south vertex; template px at
 PLATE_HALF_W = 95.0                   # REFERENCE_TILE_PX, scaled at use
 PLATE_EDGE_MIN = 12.0                 # gray levels across a row -- a step, not
@@ -2453,10 +2420,11 @@ def plate_edge_run(gray, vx, vy, s):
 # tile's south vertex, and the merge already knows every south vertex exactly --
 # so there is nothing to look for. Go to the vertex, examine the fixed region a
 # bar would have to occupy, and ask whether it is one. That turns detection into
-# a hypothesis test with three outcomes per tile (no bar, short bar, capped bar)
-# and removes every threshold the old bottom-up detector needed in order to
-# *find* candidates: connected components, a segment height window, an aspect
-# window, a solidity test, run grouping and an even-pitch test are all gone.
+# a hypothesis test with three outcomes per tile: no bar, short bar, capped bar.
+# Nothing has to *find* a candidate, so there are no component labels, no
+# segment window, no aspect or solidity test and no run grouping -- searching
+# for a bar bottom-up needs all of them and gets the object backwards, since the
+# game draws a bar and then subdivides it.
 #
 # See CLAUDE.md for the measurements behind each constant, the city-bar ground
 # truth these were scored against, and the several approaches that failed.
@@ -2926,17 +2894,14 @@ def load_template(path, dark_thresh, erode_px):
     across every file in Overlays/ -- so the remaining BGR *is* the black-sky
     image the rest of the pipeline already expects.
 
-    The silhouette then comes from the same brightness test the screenshots get,
-    deliberately. Deriving it from alpha instead was tried and is a trap: it
-    cuts the antialiased fringe that --dark-thresh keeps, so the template's
-    board ends up defined slightly differently from every screenshot's, and the
-    edge fit compares two things that are not the same measurement. It moved
-    the old template_20x20's tile step by 0.045% (89.78 -> 89.74), which sounds
-    negligible and is not -- archers_test2 went from 0.028 to 0.097 cross-check
-    tiles and cym1.png's fog lock from 222 to 193 on that alone. (That
-    sensitivity is joint_register's, not this function's; see the open problem
-    in CLAUDE.md.) The lattice skew that motivated the alpha idea is real but
-    belongs to detect_corners, and is fixed there instead."""
+    The silhouette then comes from the same brightness test the screenshots
+    get, deliberately. **Do not derive it from the alpha channel**, obvious as
+    that looks on a render that ships one: alpha cuts the antialiased fringe
+    --dark-thresh keeps, so the template's board is defined differently from
+    every screenshot's and the edge fit stops comparing like with like. It moves
+    the tile step by only ~0.045%, which is enough to cost a set most of its fog
+    lock and triple its cross-check disagreement. A lattice skew is a real
+    reason to want this and belongs to detect_corners, which handles it."""
     if not path:
         return None, None, None      # a board size with no render of its own
     im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
@@ -3059,11 +3024,11 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     tags = ["a-min", "a-max", "b-min", "b-max"]
     implied = {}
     # Why each abstaining shot abstained. The summary below is built from these
-    # rather than asserting one hardcoded cause: only "no-span" matches the text
-    # this used to print unconditionally, so on a fogless board it contradicted
-    # the per-shot lines directly above it -- and polybot shows the channel only
-    # the summary (it reads stderr, and these prints go to stdout), so the wrong
-    # cause was the *only* thing a player ever saw.
+    # rather than asserting one hardcoded cause, because the causes want
+    # opposite advice -- zoom out, versus state the size because no amount of
+    # zooming will help -- and polybot shows the channel only the summary (it
+    # reads stderr, and these prints go to stdout). A hardcoded cause is
+    # therefore the *only* thing a player would see, right or wrong.
     why = {}
     with PHASES("detect map size"):
         for n in names:
@@ -3505,9 +3470,9 @@ def main():
                 # m's anchor composed with the hop onto m is a complete
                 # image-n -> template transform. Its scale is what zoom_hint
                 # has always been; its *translation* is what anchor_to_template
-                # can now fall back on for a direction with no board edge in
-                # frame, and used to be discarded here. Passing both keeps the
-                # two consistent -- see pan_hint in anchor_to_template.
+                # falls back on for a direction with no board edge in frame.
+                # Pass both, so the borrowed offset is measured at the same zoom
+                # it is used at -- see pan_hint in anchor_to_template.
                 borrowed = (to_h(M_of[m]) @ to_h(M_nm))[:2]
                 try:
                     M, src_of[n], implied, prior_of[n] = anchor_to_template(
@@ -3555,13 +3520,12 @@ def main():
 
     # Every image is anchored to the template independently -- zoom from its own
     # fog artwork, pan from its own board edges (anchor_to_template) -- and never
-    # against each other. This replaced an older design that registered shots to
-    # one another via SIFT first and only anchored the resulting group; that
-    # meant one bad pairwise match could throw off every shot chained through it,
-    # and its only anchor precision check (a 4-corner fit residual) couldn't
-    # actually fail (see cross_check's docstring). Per-image anchoring instead
-    # gives each shot its own independent failure mode, which --cross-check can
-    # verify shot-by-shot against SIFT's relative geometry.
+    # against each other. Registering the shots to one another first and
+    # anchoring the group is the tempting alternative and is worse: one bad
+    # pairwise match throws off every shot chained through it, and a group fit
+    # has no precision check that can fail (see cross_check's docstring).
+    # Per-image anchoring gives each shot its own independent failure mode,
+    # which --cross-check verifies shot-by-shot against SIFT's geometry.
     (to_template_of, zoom_source_of, implied_n_of, scale_of,
      prior_of) = anchor_all()
     to_template_of = {n: to_h(M) for n, M in to_template_of.items()}
@@ -4379,10 +4343,9 @@ def main():
         # A fogged tile carrying a ruin gets two things: the Elyrion player's
         # own view of that tile, and a violet outline around it.
         #
-        # Copying the tile is a deliberate reversal of what this used to do, and
-        # the old reasoning is worth keeping because it still constrains *how*
-        # much gets copied. The flames are that player's private UI rather than
-        # map content, nothing else can corroborate them, and the cluster is
+        # How much gets copied is constrained, and deliberately. The flames are
+        # that player's private UI rather than map content, nothing else can
+        # corroborate them, and the cluster is
         # drawn at an offset from the tile it refers to and spills across the
         # border. So the copy is clipped to the ruin tile's own rhombus: the
         # player sees the real cluster instead of taking the outline's word for

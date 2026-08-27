@@ -193,12 +193,10 @@ _speed = collections.deque(maxlen=10)   # observed / predicted, one per merge
 def template_for(map_size):
     """The blank render for a board size, matching polymerge's template_path_for.
 
-    Overlays/<name>-blank.png is the only source there is. The old
-    template_NxN.png fallback is gone along with the files -- it covered only 18
-    and 20, so it could never serve the sizes this bot advertises, and it failed
-    by quietly producing a merge against different fog art rather than by
-    saying anything. The callers' .exists() checks report a missing render
-    instead.
+    Overlays/<name>-blank.png is the only source there is, and deliberately:
+    a fallback render would engage silently and merge against different fog art
+    rather than say anything. The callers' .exists() checks report a missing
+    render instead.
 
     An unsupported size falls through to a name that cannot exist, so the
     preflight check refuses it rather than raising here."""
@@ -395,11 +393,9 @@ def shrink_for_upload(png_path, limit):
 
     The composite is a PNG a little under the template's own size (2880x1800 at
     20x20), and a densely-explored board makes a big one: the largest in the
-    test corpus is 4.6 MB. That used to sit close to the limit -- 5.7 MB against
-    8 MB, before the Overlays/ renders replaced the larger old templates -- and
-    blowing it is a maddening way to fail, since the merge has already succeeded
-    and taken ~20s and the player gets nothing. Re-encoding as JPEG rather than
-    refusing turns that into a non-event.
+    test corpus is 4.6 MB. Blowing the limit is a maddening way to fail, since
+    the merge has already succeeded and taken ~20s and the player gets nothing.
+    Re-encoding as JPEG rather than refusing turns that into a non-event.
 
     Against the current 20 MB limit nothing in the corpus comes close, so this
     should now never run. It is kept rather than deleted because every input to
@@ -755,11 +751,12 @@ def help_text():
     but the help does not name is a feature nobody can find, and a layer named
     here but not accepted is an error message the player did not earn.
 
-    `!merge` on its own used to print this, which cost the common case (shots
-    attached, wanting a merge) an extra round trip once the board size became
-    measurable. The two replies that a lost player actually reaches -- an
-    unrecognised size, and no screenshots found -- both name `!merge help`
-    instead, so it is still one message away from anywhere someone gets stuck.
+    `!merge` on its own does *not* print this -- it attempts a merge, since
+    that is what someone who has already attached their shots wants, and the
+    size is measurable without them saying it. The two replies a lost player
+    actually reaches -- an unrecognised size, and no screenshots found -- both
+    name `!merge help`, so it stays one message away from anywhere someone
+    gets stuck.
 
     Symbols the composite can contain are explained here *and*, where they are
     conditional, at the point of use -- the success caption names the ruin
@@ -934,12 +931,11 @@ async def merge(ctx, size: str = None, *extras):
         return (f"Merging {len(shots)} screenshot{plural}{at}{note} -- "
                 f"{human_wait(merge_estimate(len(shots)))}. {WAIT_EMOJI}")
 
-    # Only claim to be merging when we are. This message used to lead with
-    # "Merging ..." even while the job sat behind another guild's merge, and
-    # never changed afterwards -- so a queued player watched a static message
-    # claiming work was happening, which reads from the channel as the bot
-    # having hung. Waiting on a job in a guild you cannot see is precisely when
-    # you need telling.
+    # Only claim to be merging when we are. Leading with "Merging ..." while
+    # the job still sits behind another guild's merge leaves a queued player
+    # watching a static message that claims work is happening, which reads from
+    # the channel as the bot having hung. Waiting on a job in a guild you
+    # cannot see is precisely when you need telling.
     ahead_counts = list(_waiting)
     ahead = len(ahead_counts) + (1 if MERGE_LOCK.locked() else 0)
     notice = None
@@ -1080,14 +1076,13 @@ async def merge(ctx, size: str = None, *extras):
             # Warning because the merge did succeed; it is just incomplete,
             # and that is the one outcome a player cannot see for themselves.
             #
-            # Deliberately says what happened rather than why. This used to
-            # read "does not look like a Polytopia screenshot", which is a
-            # claim about the image and is wrong for the commonest cause: a
-            # perfectly ordinary screenshot showing only one side of the
-            # board. polymerge drops a shot for several reasons and the
-            # DROPPED line does not say which, so the only honest wording is
-            # the one that covers all of them. The hint is the actionable
-            # half -- see the edge rule in polymerge's anchor_to_template.
+            # Deliberately says what happened rather than why. Do not sharpen
+            # this into a claim about the image ("does not look like a
+            # Polytopia screenshot"): the commonest cause is a perfectly
+            # ordinary screenshot showing only one side of the board. polymerge
+            # drops a shot for several reasons and the DROPPED line does not say
+            # which, so the only honest wording covers all of them. The hint is
+            # the actionable half -- see the edge rule in anchor_to_template.
             nums = sorted(position_of[d] for d in dropped if d in position_of)
             if len(nums) == 1:
                 which, was = f"Image {nums[0]}", "was"
