@@ -1,0 +1,73 @@
+# Builds the bot image and publishes it to GitHub Container Registry, so the
+# league's compose host can run the bot without cloning this repo. That split is
+# the point: tests/ carries player handles in the screenshot HUDs and stays
+# private, while the thing that actually runs is pullable.
+#
+# The image holds only what the Dockerfile COPYs -- polybot.py, polymerge.py,
+# requirements.txt, Overlays/ and Assets/. No tests/, no CLAUDE.md, no .env.
+name: Build and publish bot image
+
+on:
+  push:
+    branches: [main]
+    # Most commits here are documentation, and none of it reaches the image --
+    # CLAUDE.md alone is ~230 KB and changes constantly. Rebuild only when
+    # something the Dockerfile actually copies has changed. Actions minutes are
+    # metered on private repos, so this is not just tidiness.
+    paths:
+      - polybot.py
+      - polymerge.py
+      - requirements.txt
+      - Dockerfile
+      - .dockerignore
+      - Overlays/**
+      - Assets/**
+      - .github/workflows/docker.yml
+  # Rebuild by hand from the Actions tab without having to push a commit.
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read      # check the repo out
+      packages: write     # push to ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # GITHUB_TOKEN is minted per run by Actions -- there is no secret to
+      # configure and nothing to rotate.
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `latest` is what the league's compose file follows. The short-sha tag
+      # exists so a deploy can be pinned to an exact commit and rolled back.
+      - name: Work out tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # pip installing opencv and numpy is the slow layer; cache it between
+          # runs so a source-only change rebuilds in seconds.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
