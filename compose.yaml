@@ -17,7 +17,12 @@ services:
       # From .env beside this file, or the host environment. The ":?" makes a
       # missing token fail at `up` with a clear message rather than starting a
       # container that exits on polybot's own SystemExit.
-      DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN in .env}
+      #
+      # The two names differ on purpose. The container-side name is fixed --
+      # polybot.py reads DISCORD_TOKEN and nothing else -- while the host-side
+      # one is prefixed, because a compose host that ends up running a second
+      # Discord bot would otherwise have both of them reading one `.env` key.
+      DISCORD_TOKEN: ${POLYBOT_DISCORD_TOKEN:?set POLYBOT_DISCORD_TOKEN in .env}
       # The two the bot reacts *with*. These are state, not decoration: the
       # DONE reaction is how a later !merge knows which shots it already used.
       # POLYMERGE_MARK_EMOJI: "🗺️"
