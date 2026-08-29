@@ -18,7 +18,7 @@ distribution goes through an image.
 ```bash
 mkdir polybot && cd polybot
 # copy compose.yaml from this repo next to a .env holding:
-#   DISCORD_TOKEN=...
+#   POLYBOT_DISCORD_TOKEN=...
 docker compose up -d
 ```
 
@@ -85,7 +85,7 @@ All optional except the token. Set them in `.env` beside `compose.yaml`.
 
 | variable | default | |
 |---|---|---|
-| `DISCORD_TOKEN` | *required* | fails at `up` with a clear message if unset |
+| `POLYBOT_DISCORD_TOKEN` | *required* | the bot token, read from `.env`. Fails at `up` with a clear message if unset. Compose maps it to `DISCORD_TOKEN` inside the container, which is the name polybot reads |
 | `POLYMERGE_MARK_EMOJI` | 🗺️ | react with this to opt a shot into the next merge |
 | `POLYMERGE_DONE_EMOJI` | ✅ | the bot marks merged shots with it. **State, not decoration** -- it is how a later merge knows what it already used |
 | `POLYMERGE_HAPPY_EMOJI` | wolf | flavour only |

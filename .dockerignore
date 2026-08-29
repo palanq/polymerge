@@ -1,6 +1,12 @@
 .venv/
 tests/
 shoreline/
+# Source art for the Discord app emoji, uploaded to the bot application by hand
+# rather than read at runtime -- polybot references them by the ID Discord hands
+# back (<:wolfyay:...>), never by path, so the image has no use for the ~3.8MB of
+# PNGs and the .xcf beside them. They stay in the repo because that upload is a
+# manual step and the originals have to live somewhere.
+Emojis/
 __pycache__/
 .idea/
 .claude/
