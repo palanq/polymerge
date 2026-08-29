@@ -1,6 +1,16 @@
 services:
   polybot:
-    build: .
+    # The published image, not a local build. The league's compose host has this
+    # file and a .env, never the repo -- tests/ carries player handles in the
+    # screenshot HUDs and stays private, which is the whole reason distribution
+    # goes through an image at all. `build: .` asked that host to build from a
+    # source tree it does not have, so `docker compose pull` could not do the
+    # job the workflow already says this file follows it for. Build locally with
+    # `docker build -t polybot .` instead; that path never needed this key.
+    #
+    # `latest` follows main. Swap in a `:sha-<short>` tag to pin a deploy or
+    # roll one back -- the workflow publishes both on every build.
+    image: ghcr.io/palanq/polymerge:latest
     # Outbound websocket only -- no ports published, nothing to reverse-proxy.
     restart: unless-stopped
     environment:
