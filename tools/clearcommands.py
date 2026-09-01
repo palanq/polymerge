@@ -28,10 +28,27 @@ tidy the beta bot. Clearing does not touch prefix commands, which are not
 registered with Discord at all -- `!merge` keeps working throughout.
 """
 
-import argparse, asyncio, os, sys
+import argparse, asyncio, os
 
 import discord
-from discord import app_commands
+
+
+async def fetch(http, app_id, guild_id):
+    if guild_id is None:
+        return await http.get_global_commands(app_id)
+    return await http.get_guild_commands(app_id, guild_id)
+
+
+async def wipe(http, app_id, guild_id):
+    """Overwrite a scope's command set with the empty list.
+
+    These are the same PUT endpoints CommandTree.sync uses, which is what makes
+    a sync a bulk *replace* rather than an addition -- and why a global set
+    heals itself on the next sync while a guild set, which nothing else writes,
+    does not."""
+    if guild_id is None:
+        return await http.bulk_upsert_global_commands(app_id, [])
+    return await http.bulk_upsert_guild_commands(app_id, guild_id, [])
 
 
 async def run(args):
@@ -39,26 +56,28 @@ async def run(args):
     if not token:
         raise SystemExit("set DISCORD_TOKEN in the environment")
 
-    # No intents needed: this only touches the application command endpoints,
-    # never the gateway's message stream.
+    # Driven through the HTTP layer rather than a CommandTree, deliberately.
+    # A tree needs Client.application_id, which is a read-only property fed by
+    # the gateway -- so a login-only script cannot set it and sync() raises
+    # MissingApplicationID. Listing and clearing are pure REST anyway; there is
+    # no local tree to sync, only a remote set to read and overwrite.
+    #
+    # No intents: this never touches the gateway's message stream.
     client = discord.Client(intents=discord.Intents.none())
-    tree = app_commands.CommandTree(client)
-    where = discord.Object(id=args.guild or args.clear_guild) \
-        if (args.guild or args.clear_guild) else None
+    guild_id = args.guild or args.clear_guild
 
     async with client:
         await client.login(token)
-        # login() alone does not populate application_id on every path, and the
-        # command endpoints need it.
         app = await client.application_info()
-        client.application_id = app.id
-        tree.client.application_id = app.id
+        http, app_id = client.http, app.id
+        print(f"application: {app.name} ({app_id})\n")
 
         if args.clear_global or args.clear_guild:
-            scope = f"guild {where.id}" if args.clear_guild else "globally"
-            before = await tree.fetch_commands(guild=where)
-            print(f"{scope}: {len(before)} registered "
-                  f"({', '.join('/' + c.name for c in before) or 'none'})")
+            target = None if args.clear_global else args.clear_guild
+            scope = "globally" if target is None else f"guild {target}"
+            before = await fetch(http, app_id, target)
+            names = ", ".join("/" + c["name"] for c in before)
+            print(f"{scope}: {len(before)} registered ({names or 'none'})")
             if not before:
                 print("nothing to clear")
                 return
@@ -68,18 +87,21 @@ async def run(args):
                 print(f"\nThis removes all {len(before)} from {scope}. "
                       f"Re-run with --yes to do it.")
                 return
-            tree.clear_commands(guild=where)
-            await tree.sync(guild=where)
+            await wipe(http, app_id, target)
             print(f"cleared; {scope} now has 0 registered")
-            if args.clear_guild:
+            if target is None:
+                print("Restart the bot to re-register from the tree.")
+            else:
                 print("Global commands are untouched and still apply here.")
         else:
-            for scope, g in (("global", None),
-                             *([(f"guild {where.id}", where)] if where else [])):
-                cmds = await tree.fetch_commands(guild=g)
+            scopes = [("global", None)]
+            if guild_id:
+                scopes.append((f"guild {guild_id}", guild_id))
+            for scope, g in scopes:
+                cmds = await fetch(http, app_id, g)
                 print(f"{scope}: {len(cmds)} registered")
                 for c in cmds:
-                    print(f"    /{c.name}  --  {c.description}")
+                    print(f"    /{c['name']}  --  {c.get('description', '')}")
 
 
 def main():
