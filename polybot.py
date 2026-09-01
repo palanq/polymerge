@@ -727,6 +727,24 @@ intents.message_content = True
 COMMAND_PREFIX = os.environ.get("POLYMERGE_PREFIX") or "!"
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
+# The help command's name, kept in one place because it is interpolated into
+# channel copy and into /merge's own description.
+#
+# It is deliberately *not* `merge-help`, which was the first name and was a
+# trap: `merge` is a strict prefix of it, so typing `/merge` matched both
+# commands and Enter took whichever Discord had highlighted -- which is ranked
+# by a rule Discord does not document and evidently personalizes per user. That
+# converges on the right answer for someone who merges often and is wrong for
+# someone who has never run either, i.e. exactly the person least able to tell
+# the picker mis-fired.
+#
+# Whether *this* name escapes the collision depends on whether the picker
+# matches a substring of the command name or only a prefix: "merge" is inside
+# "polymerge-help" but does not start it. That is worth testing in a real guild
+# rather than assuming -- if it still collides, the fix is a name with no
+# "merge" in it at all (`polyhelp`), and nothing but this constant changes.
+HELP_COMMAND = "polymerge-help"
+
 # Guild id to sync slash commands to instantly, for development. Global sync is
 # what production wants -- one instance serving several guilds -- but it is not
 # instant, which makes iterating on a command signature slow. Unset in
@@ -1158,8 +1176,12 @@ async def merge(ctx, size: str = None, *extras):
 
 @bot.tree.command(
     name="merge",
-    description="Merge screenshots reacted "
-                + MARK_EMOJI + " in this channel into one map",
+    # Names the help command, because the picker shows this line while someone
+    # is typing `/merge` -- which is where a player who needs the instructions
+    # actually is. That is most of the discoverability the help command gives
+    # up by not being called `merge-something`, bought back for nothing.
+    description="Merge screenshots reacted " + MARK_EMOJI
+                + f" into one map -- /{HELP_COMMAND} explains",
 )
 @app_commands.choices(size=[
     app_commands.Choice(name=f"{n}x{n} ({MAP_SIZE_NAMES[n]})", value=n)
@@ -1200,7 +1222,7 @@ async def merge_slash(interaction: discord.Interaction,
     await do_merge(caller, size.value if size else None, layers)
 
 
-@bot.tree.command(name="merge-help",
+@bot.tree.command(name=HELP_COMMAND,
                   description="How to use the merge bot")
 async def merge_help_slash(interaction: discord.Interaction):
     """The half of help_text that the option descriptions cannot carry.
@@ -1268,7 +1290,7 @@ async def do_merge(caller, map_size, overlays):
         # who ran a merge with nothing marked is exactly who was looking for it.
         #
         # Both routes to the help are named, because which one is reachable
-        # depends on how they got here: /merge-help needs the guild to have
+        # depends on how they got here: the slash help needs the guild to have
         # authorized slash commands at all, and `!merge help` always works.
         # Attaching is named only when it is possible -- /merge takes no
         # attachments, so telling a slash user to attach them sends them to a
@@ -1277,7 +1299,8 @@ async def do_merge(caller, map_size, overlays):
                   else "React")
         msg = (f"No usable screenshots found. {SAD_EMOJI} {attach} "
                f"{MARK_EMOJI} on screenshots posted above, then merge again. "
-               f"`/merge-help` or `{COMMAND_PREFIX}merge help` explains how.")
+               f"`/{HELP_COMMAND}` or `{COMMAND_PREFIX}merge help` explains "
+               f"how.")
         if barren:
             message, it = ("message", "it") if barren == 1 else ("messages", "them")
             msg += f" ({barren} marked {message} had no image on {it}.)"

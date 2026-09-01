@@ -868,7 +868,30 @@ usable screenshots found" — both name it, which is the moment it is wanted.
 `help_text` interpolates the configured emoji, prefix, sizes and limits rather
 than hardcoding them.
 
-**`/merge-help` exists because the option descriptions carry only half the
+**The help command's name is `HELP_COMMAND`, and the first name it had was a
+trap worth recording.** It was `merge-help`, and `merge` is a strict prefix of
+that — so typing `/merge` matched *both* commands and Enter took whichever
+Discord had highlighted, which on the beta bot was the help. The ranking rule is
+undocumented and evidently personalized, so it converges on the right answer for
+a player who merges often and is wrong for one who has never run either — i.e.
+exactly the person least able to tell the picker mis-fired, and the person a
+shared community bot sees most of. Do not rely on the ordering settling; make
+the collision impossible, which is the same call as using channel messages over
+interaction followups for the token.
+
+**Whether `polymerge-help` actually escapes it is unverified**, and depends on
+something not established here: whether Discord's picker matches a *substring*
+of a command name or only a *prefix*. "merge" is inside "polymerge-help" but
+does not start it. If it still collides, the fix is a name with no "merge" in it
+at all (`polyhelp`) and nothing but the constant changes. Test it in a guild
+rather than reasoning about it.
+
+Either way `/merge`'s **own description names the help command**, and that is
+where most of the discoverability lives: the picker shows that line while
+someone is typing `/merge`, which is exactly where a player who needs the
+instructions already is. It costs nothing and survives any rename.
+
+**`/polymerge-help` exists because the option descriptions carry only half the
 help.** Discord renders the command and per-option descriptions inline as you
 type, so under `/merge` the board size and the four layers document themselves —
 that part of `help_text` is redundant there. Everything else in it has nowhere
