@@ -695,6 +695,75 @@ behaviour (message wording, what gets posted vs logged) as
 production-sensitive, not scaffolding. `badland_test` came from a real user's
 failure report; expect more sets to arrive that way.
 
+### Where it actually runs (confirmed with the project owner)
+
+None of this is visible from the code, and several decisions below only make
+sense against it:
+
+- **A game gets its own channel, not a thread.** Threads are the occasional
+  case — players sometimes want to merge in one — but the normal unit of a game
+  is a dedicated channel. So the 🗺️-reaction workflow usually runs over a whole
+  game channel's history, which is well inside `HISTORY_LIMIT`.
+- **Those channels are created and destroyed by a *different* bot**, not by
+  polybot and not by hand. Old game channels are normally **archived rather than
+  destroyed**, so they persist and stay scannable.
+- **One team server per team, and the game channels live in a specific category
+  in each.** polybot is therefore in several guilds at once — which is the
+  concrete justification for `MAX_UPLOAD_BYTES` being one fixed number rather
+  than a per-guild lookup, since a per-guild figure would have the bot quote a
+  different limit in each server.
+- **The category carries the permissions** (bots and team members only), and the
+  game channels take theirs from it.
+
+That last point is the one with teeth, because Discord does not do inheritance
+here — it does **permission syncing**. A child channel with the same overwrites
+as its category is "synced" and tracks further category changes; *any* edit to
+the child de-syncs it permanently, and it stops tracking. Two consequences:
+
+- **The category is a single point of control over every game channel in a team
+  server**, and a new channel the other bot creates is synced to it from birth.
+  So a permission the category grants or withholds is not a one-off — it is
+  replicated into every game of that season automatically.
+- **A category-level fix does not necessarily reach every existing channel.** A
+  game channel someone once edited by hand — to add one player, say — is
+  de-synced and will not pick the fix up. Expect a fix applied at the category
+  to leave a tail of older channels behind, and check rather than assume.
+
+**`on_guild_channel_update` watches categories, not only text channels**, and
+given the above that is the half that matters. It used to early-return on `not
+isinstance(after, discord.TextChannel)` — and a category is a `CategoryChannel`,
+verified not a subclass — so the single edit that can change the bot's
+permissions across every game channel in a server was dropped before
+`perm_report` ever ran. The handler was watching the channels that merely follow
+orders and not the place the orders are given. A category line also names the
+*cause* rather than N copies of the effect.
+
+Do not remove it on the theory that the children cover it: whether Discord
+additionally dispatches per-child `CHANNEL_UPDATE` for synced children on a
+category edit is **not established here**. The category line is correct either
+way; the child lines may not exist.
+
+A category takes no `#` in the log — that prefix means a text channel, and
+printing one sends whoever reads it hunting for a channel by that name — and the
+line carries "(affects synced channels in it)", which is the operationally
+important half.
+
+**Both permission handlers report on `WATCHED_PERMS`, not on what the bot needs
+where it stands.** The two questions are different: `required_perms` answers
+"what does the bot need *here*" (and swaps in the thread bit inside a thread),
+while `WATCHED_PERMS` is the union — everything needed in the channel plus
+`send_messages_in_threads` — because a text channel governs merges in itself
+*and* merges in threads under it. Without the union a category that simply never
+granted the thread bit reads as fully healthy right up until a player tries to
+merge in a thread.
+
+`on_guild_channel_create` uses it for the same reason and is the better of the
+two places to catch it: game channels are created by the other bot, so that
+handler is **already a per-game permission audit running on its own**. A
+category missing the thread bit is then reported once per channel at creation,
+which is where an operator can act on it, rather than being discovered by a
+player whose merge could not be posted.
+
 Screenshots reach a merge one of two ways: attached to the command itself —
 `!merge 20` with the shots attached to that same message — or, when players
 just post their shots as separate messages into a thread over time
@@ -718,6 +787,32 @@ in one channel seconds apart both see the shots unmarked and produce the same
 composite twice. That is degenerate rather than a defect: a channel is one game,
 so a second simultaneous merge has nothing to add, and it costs a duplicate
 image rather than a wrong map. Don't "fix" it by moving the mark.
+
+**And "at the end of a merge" now means after the composite was actually
+delivered — the same argument, one step further.** The paragraph above rules out
+marking at scan time because a merge that then fails would leave its shots
+marked consumed; the residual case is marking at the end but after a *failed
+post*, which has the identical consequence and was live until recently.
+
+The two steps need **different permissions**, which is what makes it reachable
+rather than theoretical: posting needs `SEND_MESSAGES`
+(`SEND_MESSAGES_IN_THREADS` in a thread) while reacting needs `ADD_REACTIONS`,
+and a thread inherits the latter normally. So "posted nothing, reacted fine" is
+an ordinary state. `Caller.send` swallows a `Forbidden`, logs it and returns
+`None` — which from the caller's side is indistinguishable from success — and the
+✅ loop ran unconditionally on the result. The player got no composite, every shot
+was ticked as already merged, and re-running answered *"No usable screenshots
+found"*, with no remedy but to hunt up the channel un-reacting by hand.
+
+The fix is to gate the loop on `Caller.send`'s return value, and the console says
+so when it fires. Note the two front ends differ in how bad the silent case is:
+on `/merge` the player at least gets `Caller.send`'s ephemeral fallback naming
+the missing permission, while `!merge` leaves them with nothing at all — which is
+an argument for the gate, not against it, since the marks are destroyed either
+way. It stays best-effort *within* the delivered case: a missing `ADD_REACTIONS`
+must still not fail a merge that did reach the channel. The general lesson is
+worth keeping: **a helper that swallows an error must not return the same thing
+on success and failure if any caller acts on what happened.**
 
 **There are two front ends, `!merge` and `/merge`, and they differ only in how
 the options arrive.** `!merge [size] [layers...]` parses free text; `/merge`
@@ -1037,13 +1132,36 @@ measured at any zoom, whereas a board no shot spans just needs zooming out — a
 **Oversized composites are re-encoded, not refused** (`shrink_for_upload`).
 The composite is a little under the template's own size (2880x1800 at 20x20)
 and a densely-explored board makes a big one — the largest in the corpus is
-**4.6 MB** against Discord's free-tier limit, which is **20 MB** as of August
-2026 (it was 8 when this was written, then 10). The composite was also 5.7 MB
-before the `Overlays/` renders replaced the larger old templates, so the margin
-has widened from both ends and the fallback should now never fire. It is kept
-because none of that is under this program's control: the limit has moved
-twice, and it will narrow again if 30x30 is ever enabled, since that renders at
-4500x3000, ~2.6x the pixels of 20x20. `MAX_UPLOAD_BYTES` is deliberately one fixed number rather than the guild's
+**4.6 MB** against Discord's default per-file limit, which is **10 MiB**
+(`MAX_UPLOAD_BYTES` is set to 10e6, deliberately just under it). The composite
+was also 5.7 MB before the `Overlays/` renders replaced the larger old
+templates, so the fallback should still rarely fire — but the margin is 2.2x,
+not the 4x this file used to claim.
+
+**That claim was wrong in the one direction that matters, and it is worth
+knowing why.** This section read "**20 MB** as of August 2026 (it was 8 when
+this was written, then 10)", i.e. a limit assumed to ratchet upward, so the
+constant was set to 20 MB — nearly twice what Discord actually accepts. Checked
+against the official API documentation, the default went **25 MiB → 10 MiB on
+16 January 2025** and has not moved since; there is no 20 MB anywhere in the
+change log. Nothing in the corpus reaches either number, which is exactly why
+it sat unnoticed: the guard was inert at 4.6 MB and would have stayed inert
+right up until the first composite between 10 MiB and 20 MB, which
+`shrink_for_upload` would then have waved through to a failed upload after the
+merge had already cost ~20s. **Do not re-raise this on the assumption that
+limits only grow.**
+
+Two related facts from the same source, both now recorded in the code. Since
+April 2025 the limit is checked **per attachment** rather than per message,
+which for this bot is the same thing — it uploads exactly one file. And the
+25 MiB in `MAX_ATTACHMENT_BYTES` is a different quantity that happens to be a
+documented one: the maximum *request* size for sending a message, hence a
+ceiling no attachment a player posted can have exceeded.
+
+It is kept because none of this is under this program's control: the limit has
+moved in both directions, a merge can be posted somewhere with a lower one, and
+it will bind if 30x30 is ever enabled, since that renders at 4500x3000, ~2.6x
+the pixels of 20x20 — enough on its own to put a dense board over the ceiling. `MAX_UPLOAD_BYTES` is deliberately one fixed number rather than the guild's
 real limit. A boosted server's is higher and discord.py would supply it as
 `Guild.filesize_limit`, but one bot serves several servers and this figure is
 channel-facing copy — per-guild it would quote a different limit in each one.
@@ -1083,8 +1201,46 @@ distinguishes the cases, which is the whole point of the logging there:
   letting it escape; without that, a missing `send_messages` raised inside
   `on_command_error` — the error handler failing while reporting an error.
 
+**In a thread the permission that lets the bot post is not `send_messages`**
+(`THREAD_PERM_SWAP`, `required_perms`). Threads inherit the parent channel's
+permissions with exactly one exception, and this is it: per Discord's docs,
+`SEND_MESSAGES` "has no effect in threads" and `SEND_MESSAGES_IN_THREADS` is
+the bit that governs. discord.py's `Thread.permissions_for` returns the
+*parent's* `send_messages` untouched, so reading it in a thread answers a
+question about a different channel.
+
+That went unnoticed because it never breaks a merge — it breaks the **console
+line that explains why a merge did not happen**, which this section exists to
+make trustworthy, and it was wrong in both directions. With `SEND_MESSAGES`
+allowed on the parent and `SEND_MESSAGES_IN_THREADS` denied, `say()` caught the
+`Forbidden` and then printed *"all required permissions present"*. With the
+parent's `SEND_MESSAGES` denied but thread posting allowed, it reported a
+missing permission the bot neither needed nor lacked. Note the first case was
+not wholly silent: discord.py zeroes `attach_files` when
+`send_messages_in_threads` is unset, so it surfaced as a missing `attach_files`
+— which sends whoever is reading the log to the wrong permission entirely.
+
+**Threads are the occasional path, not the normal one** — a game gets its own
+channel (see the deployment note above), so most merges never touch a thread and
+the ordinary `send_messages` check is the one that applies. But the thread case
+is worse than its frequency suggests, for a reason that comes straight from the
+deployment: the bit that governs it is set on the **category**, so if that
+category grants Send Messages without Send Messages in Threads, *every* game
+channel in that team server carries the gap, and every player who tries to merge
+in a thread hits it. It is rare per merge and systematic per server.
+
 `attach_files` is worth calling out: without it every merge succeeds and then
 fails at the upload, after ~20s of work.
+
+**The message-content intent gates `attachments`, not just `content`**, and the
+two failures look different. Without it `message.content` arrives empty so
+`!merge` never parses and the command silently never fires — but
+`message.attachments` arrives empty on other people's messages too, so
+`collect_marked_shots` walks a thread full of marked screenshots and reports
+finding none. That second one is the misleading half: the bot is plainly alive
+and answering while insisting the shots are not there. Note also that once the
+app is verified the intent must be *applied* for, not merely ticked in the
+developer portal.
 
 **Merges are serialized, and a player waiting behind one is told roughly how
 long.** A merge is charged `MERGE_FIXED_S + MERGE_PER_SHOT_S * n`, and the ack

@@ -109,12 +109,37 @@ OVERLAY_ALIASES = {"shading": "shade", "shaded": "shade", "checker": "shade",
                    "zones": "spawns", "arrows": "push", "pushes": "push",
                    "pushdirections": "push"}
 # cv2.imread's formats, restricted to what phones and tablets actually produce.
-# The test sets alone cover all three (jpg/png/webp), deliberately.
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+# The test sets alone cover three of them (jpg/png/webp), deliberately.
+#
+# `.jfif` is here because Discord lists it in the extension group it treats as
+# `image`, alongside a warning that some mobile clients rely on particular
+# extensions for a format they would otherwise name differently (Discord API
+# reference, File Type Filtering). It is ordinary JPEG -- verified that
+# cv2.imread reads it -- so a shot that arrives under that name would merge
+# fine and was being dropped on its spelling alone, with the player told only
+# that no usable screenshots were found.
+#
+# Discord's group also holds `.gif` and `.avif`, and neither is added. A
+# screenshot is never a GIF, and cv2 in this pin cannot encode AVIF at all, so
+# accepting it would trade a clear "unsupported" for an obscure decode failure
+# mid-merge. Discord's own note says not to hardcode that group, which is the
+# reason this list is derived from what cv2 can read rather than copied from
+# the docs.
+IMAGE_EXTS = {".jpg", ".jpeg", ".jfif", ".png", ".webp"}
 
 MAX_SHOTS = 8               # a merge should be no more than 6 shots (2 per player in 3v3)
+# The largest *inbound* message the API accepts, so no attachment a player
+# could have posted can exceed it: "the maximum request size when sending a
+# message is 25 MiB" (Discord API reference, Create Message). A ceiling on what
+# the bot is willing to download, not a limit it has to predict -- the
+# attachment is already on Discord's side by the time this is checked.
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-# Discord's free-tier attachment limit: 20 MB as of August 2026, up from 8.
+# Discord's default per-file upload limit: 10 MiB, and it went *down* rather
+# than up -- 25 MiB until 16 January 2025, 10 MiB since (Discord API reference,
+# "Uploading Files", and the change-log entry of 16 December 2024). Higher for a
+# user with Nitro or in a server with a Boost Tier, never lower. Since April
+# 2025 the limit is checked per *attachment* rather than per message, which for
+# this bot is the same thing: it uploads exactly one file.
 #
 # Deliberately one fixed number and not the guild's real limit, which is higher
 # on a boosted server and which discord.py would hand over as
@@ -123,13 +148,24 @@ MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 # different limit in each one. Being conservative on a boosted server costs a
 # re-encode nobody notices.
 #
-# MB, not MiB, on two counts. The player-facing message below divides by 1e6,
-# so MiB would report this back as "21 MB"; and erring low costs at most that
-# same needless re-encode, where erring high costs a failed upload after the
-# merge has already run. The FAQ's caveat about the limit now being checked
-# before compression rather than after does not apply to a bot, which uploads
-# exactly the bytes it has.
-MAX_UPLOAD_BYTES = 20 * 1000 * 1000
+# `attachment_size_limit` is a real alternative now and is still not taken. It
+# arrives on the interaction payload and is the honest per-invocation figure --
+# the max of the invoker's Nitro limit and the guild's Boost Tier -- so unlike
+# Guild.filesize_limit it is not an approximation of anything. But it reaches
+# only /merge: a prefix command has no interaction, so !merge would still be
+# guessing. Keying on it would make the limit depend on *how the player typed
+# the command*, and two invocations of the same merge in the same channel could
+# then disagree about how big a composite is allowed. A limit that varies by
+# server is confusing; one that varies by keystroke is indefensible. It is worth
+# revisiting only if !merge is ever retired.
+#
+# MB, not MiB, and erring low is the whole point: 10e6 sits 485,760 bytes under
+# the real 10 MiB cap, so a composite this accepts cannot be one Discord
+# refuses. Erring low costs at most a needless re-encode; erring high costs a
+# failed upload after the merge has already run, which is the worst way to
+# fail. The player-facing message divides by 1e6, so this also reports itself
+# back honestly as "10 MB".
+MAX_UPLOAD_BYTES = 10 * 1000 * 1000
 MERGE_TIMEOUT_S = 300       # a 4-shot merge is ~15-20s; this is a hang guard
 # Longest wait a merge will be allowed to join, in seconds. Merges serialize
 # behind one semaphore across every guild and nothing caps the queue, so
@@ -501,11 +537,14 @@ def shrink_for_upload(png_path, limit):
     the merge has already succeeded and taken ~20s and the player gets nothing.
     Re-encoding as JPEG rather than refusing turns that into a non-event.
 
-    Against the current 20 MB limit nothing in the corpus comes close, so this
-    should now never run. It is kept rather than deleted because every input to
-    that comfort sits outside this program: the limit has moved twice, a merge
+    Against the 10 MB limit the corpus still clears comfortably, at 4.6 MB
+    against 10, so this should rarely run -- but that margin is 2.2x where it
+    was once assumed to be 4x, and the reason is worth keeping: the limit came
+    *down*, 25 MiB to 10 MiB in January 2025, not up. Every input to the comfort
+    sits outside this program: the limit has moved in both directions, a merge
     can be posted somewhere with a lower one, and 30x30 renders at 4500x3000,
-    about 2.6x the pixels of 20x20.
+    about 2.6x the pixels of 20x20 -- which on its own would put a dense board
+    through the ceiling.
 
     Quality is chosen for fidelity first: on the largest composite in the
     corpus, quality 95 gives 1.40 MB (a 4x reduction) at a mean absolute error
@@ -711,13 +750,23 @@ async def run_polymerge(workdir, image_paths, map_size, out_path, overlays=None)
 
 intents = discord.Intents.default()
 # Privileged: also has to be ticked under Bot -> Privileged Gateway Intents in
-# the Discord developer portal. Without it message.content arrives empty and
-# the command silently never fires.
+# the Discord developer portal, and once the app is verified it has to be
+# *applied* for rather than merely ticked.
+#
+# It gates more than the command. MESSAGE_CONTENT covers every user-authored
+# field on a message object -- content, embeds, components, poll, and
+# `attachments` (Discord API docs, Gateway > Message Content Intent) -- so
+# without it both halves of this bot go dark, and they go dark differently.
+# message.content arrives empty, so `!merge` never parses and the command
+# silently never fires; and message.attachments arrives empty on everyone
+# else's messages, so collect_marked_shots walks a thread full of marked
+# screenshots and reports finding none. The second is the one that misleads,
+# because the bot is plainly alive and answering while insisting the shots
+# are not there.
 #
 # Slash commands do *not* relieve this. An interaction carries its own options,
 # but collect_marked_shots reads message.attachments off arbitrary history
-# messages, and this intent gates attachments exactly as it gates content -- so
-# the 🗺️ scan needs it however the merge was invoked.
+# messages, so the 🗺️ scan needs the intent however the merge was invoked.
 intents.message_content = True
 
 # Overridable so a second instance can run in a guild that already has one
@@ -847,15 +896,67 @@ REQUIRED_PERMS = {
     "read_message_history": "find reacted screenshots",
     "add_reactions": "mark shots as merged",
 }
+# In a thread, SEND_MESSAGES is not the bit that lets the bot post. Threads
+# inherit their parent channel's permissions with exactly one exception, and
+# this is it: "the SEND_MESSAGES permission has no effect in threads; users
+# must have SEND_MESSAGES_IN_THREADS to talk in a thread" (Discord API docs,
+# Threads > Permissions). discord.py's Thread.permissions_for returns the
+# *parent's* value for send_messages untouched, so reading it here answers a
+# question about the wrong channel.
+#
+# That matters most where this report is actually read. A thread is the
+# workflow: the MARK_EMOJI path exists precisely so shots can accumulate in a
+# game thread. Both directions were wrong. With SEND_MESSAGES allowed on the
+# parent and SEND_MESSAGES_IN_THREADS denied, Caller.send's Forbidden handler printed
+# "all required permissions present" -- the console line that is supposed to
+# turn an investigation into a lookup, asserting nothing is wrong. With the
+# parent's SEND_MESSAGES denied but threads allowed, it reported a missing
+# permission the bot did not need and was not in fact missing.
+#
+# discord.py does zero out attach_files when send_messages_in_threads is unset,
+# so the first case was not wholly silent -- but it surfaced as "MISSING
+# attach_files (cannot upload the merged image)", which sends whoever is
+# reading it to the wrong permission entirely.
+THREAD_PERM_SWAP = {"send_messages": "send_messages_in_threads"}
 
 
-def perm_report(channel, me):
-    """Which required permissions are missing here, as a console-ready string."""
+def required_perms(channel):
+    """REQUIRED_PERMS as it applies to this channel: threads gate posting on a
+    different permission bit from text channels. See THREAD_PERM_SWAP."""
+    if not isinstance(channel, discord.Thread):
+        return REQUIRED_PERMS
+    return {THREAD_PERM_SWAP.get(k, k): v for k, v in REQUIRED_PERMS.items()}
+
+
+# What to watch on a *container* -- a text channel or a category -- as opposed
+# to what is needed at the point of use. It is the union of both cases, because
+# a text channel governs two things at once: merges run in the channel itself
+# (send_messages) and merges run in threads under it (send_messages_in_threads).
+# required_perms answers "what does the bot need where it is standing"; this
+# answers "what could change here that would break someone".
+#
+# The thread bit is worth surfacing on a channel that has no thread in it yet.
+# Games get their own channel rather than a thread, so this is usually the
+# permission nobody thought to grant rather than one somebody revoked -- and it
+# stays invisible until a player tries to merge in a thread and the bot cannot
+# answer. Naming it costs one console line per channel.
+WATCHED_PERMS = {**REQUIRED_PERMS,
+                 "send_messages_in_threads": "reply in threads here"}
+
+
+def perm_report(channel, me, needed=None):
+    """Which required permissions are missing here, as a console-ready string.
+
+    `needed` overrides the set to check. It defaults to what the bot needs to
+    operate *in* this channel; pass WATCHED_PERMS to ask the broader question a
+    change-detector wants."""
     p = channel.permissions_for(me)
-    missing = [k for k in REQUIRED_PERMS if not getattr(p, k, False)]
+    if needed is None:
+        needed = required_perms(channel)
+    missing = [k for k in needed if not getattr(p, k, False)]
     if not missing:
         return "all required permissions present"
-    return "MISSING " + ", ".join(f"{k} (cannot {REQUIRED_PERMS[k]})"
+    return "MISSING " + ", ".join(f"{k} (cannot {needed[k]})"
                                   for k in missing)
 
 
@@ -1016,14 +1117,44 @@ async def on_guild_channel_update(before, after):
     lookup.
 
     Only logged when the permissions the bot actually needs changed, so
-    ordinary topic and name edits stay silent."""
-    if not isinstance(after, discord.TextChannel):
+    ordinary topic and name edits stay silent.
+
+    **Categories are watched too, and in this deployment they are the important
+    half.** Game channels are created inside a per-team category that carries
+    the permissions, and Discord syncs rather than inherits: a child channel
+    whose overwrites match its category tracks that category, until someone
+    edits the child and de-syncs it for good. So the category is a single
+    control point over every game channel in a server, and it is where a
+    permission edit actually happens -- while a CategoryChannel is not a
+    TextChannel, so restricting this to text channels dropped exactly that event
+    before anything was checked. Watching only the children left the handler
+    watching the places that merely follow orders.
+
+    Do not assume the children's own events cover this: whether Discord also
+    dispatches CHANNEL_UPDATE per synced child on a category edit is not
+    established here, and a category line is worth having regardless because it
+    names the cause rather than N copies of the effect.
+
+    WATCHED_PERMS rather than the channel's own requirements, so a revoked
+    send_messages_in_threads is reported on the channel or category where it was
+    revoked instead of staying silent until a player tries to merge in a
+    thread."""
+    if not isinstance(after, (discord.TextChannel, discord.CategoryChannel)):
         return
     me = after.guild.me
-    was, now = perm_report(before, me), perm_report(after, me)
+    was = perm_report(before, me, WATCHED_PERMS)
+    now = perm_report(after, me, WATCHED_PERMS)
     if was != now:
-        print(f"permissions changed in #{after.name} "
-              f"({after.guild.name!r}): {now}", file=sys.stderr)
+        # A category takes no '#' -- that prefix is a text channel, and printing
+        # one here would send whoever reads the log looking for a channel by
+        # that name. The trailing note is the operationally important half: a
+        # category edit is not one channel's problem.
+        if isinstance(after, discord.CategoryChannel):
+            where, note = f"category {after.name!r}", " (affects synced channels in it)"
+        else:
+            where, note = f"#{after.name}", ""
+        print(f"permissions changed in {where} "
+              f"({after.guild.name!r}){note}: {now}", file=sys.stderr)
 
 
 @bot.event
@@ -1040,13 +1171,21 @@ async def on_guild_channel_delete(channel):
 async def on_guild_channel_create(channel):
     """New channels are picked up live -- discord.py updates its cache from the
     gateway, so no restart is needed. What *is* worth surfacing is whether the
-    bot can actually use the new channel, since a category's permission
-    overwrites are inherited silently and "the bot ignores me in #new-channel"
-    is otherwise indistinguishable from the bot being down."""
+    bot can actually use the new channel, since a new channel is synced to its
+    category's permissions silently and "the bot ignores me in #new-channel" is
+    otherwise indistinguishable from the bot being down.
+
+    This fires for channels another program creates, which is how game channels
+    arrive here -- a separate bot makes one per game inside the team's category.
+    So this line is already a per-game permission audit running on its own, and
+    it is the natural place to surface the thread bit as well: WATCHED_PERMS
+    reports a category that never granted send_messages_in_threads once per
+    channel, at creation, rather than leaving it to be discovered by a player
+    whose merge silently could not be posted."""
     me = channel.guild.me
     if isinstance(channel, discord.TextChannel):
         print(f"new channel #{channel.name} in {channel.guild.name!r}: "
-              f"{perm_report(channel, me)}")
+              f"{perm_report(channel, me, WATCHED_PERMS)}")
 
 
 @bot.event
@@ -1117,7 +1256,14 @@ def help_text():
     count only when there are ruins. A symbol is best explained next to the
     picture containing it."""
     sizes = ", ".join(str(n) for n in MAP_SIZES)
-    fmts = ", ".join(sorted(e.lstrip(".") for e in IMAGE_EXTS if e != ".jpeg"))
+    # Both alternate spellings of JPEG are accepted and neither is listed:
+    # ".jpeg" and ".jfif" name the same format as ".jpg", and a player reading
+    # this needs to know their screenshot works, not which of three extensions
+    # their phone chose. Naming them would make the accepted list read as a
+    # longer, more finicky one than it is.
+    JPEG_ALIASES = {".jpeg", ".jfif"}
+    fmts = ", ".join(sorted(e.lstrip(".") for e in IMAGE_EXTS
+                            if e not in JPEG_ALIASES))
     # The board size is an optional trailing word exactly like the layers are,
     # and the parser takes it in any position, so it heads the same list rather
     # than being described apart from them. Both halves are built from the
@@ -1644,17 +1790,36 @@ async def do_merge(caller, map_size, overlays):
         # out_path.name, not a hardcoded "merged.png": the upload-size
         # fallback above may have swapped in a JPEG, and labelling that .png
         # would hand clients a file whose extension lies about its contents.
-        await caller.send(reply=False, content=caption,
-                          file=discord.File(out_path, filename=out_path.name))
+        posted = await caller.send(reply=False, content=caption,
+                                   file=discord.File(out_path, filename=out_path.name))
 
-        # Mark history-sourced shots consumed so the next !merge in this
-        # thread doesn't pick them up again. Best-effort: a missing "Add
-        # Reactions" permission shouldn't fail a merge that already succeeded.
-        for m in source_messages:
-            try:
-                await m.add_reaction(DONE_EMOJI)
-            except discord.HTTPException:
-                pass
+        # Mark history-sourced shots consumed so the next !merge here doesn't
+        # pick them up again -- but only once the composite has actually landed.
+        #
+        # Caller.send swallows a Forbidden and returns None, which from the caller's
+        # side is indistinguishable from success, so this used to run either
+        # way. The two operations need *different* permissions, so "posted
+        # nothing, reacted fine" is reachable rather than hypothetical: posting
+        # needs SEND_MESSAGES (SEND_MESSAGES_IN_THREADS in a thread) while
+        # reacting needs ADD_REACTIONS, and a thread inherits the latter
+        # normally. The result was the worst available: the player got no
+        # composite, every one of their shots was ticked as already merged, and
+        # re-running !merge answered "No usable screenshots found" -- with
+        # nothing to do about it but hunt up the channel un-reacting by hand.
+        #
+        # Still best-effort *within* the delivered case: a missing
+        # ADD_REACTIONS must not fail a merge that did reach the channel.
+        if posted is None:
+            if source_messages:
+                print(f"#{ctx.channel}: composite was not delivered, so "
+                      f"{len(source_messages)} source message(s) are left "
+                      f"unmarked and can be merged again", file=sys.stderr)
+        else:
+            for m in source_messages:
+                try:
+                    await m.add_reaction(DONE_EMOJI)
+                except discord.HTTPException:
+                    pass
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

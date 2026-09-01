@@ -31,8 +31,26 @@ __pycache__/
 # project's per-test-set run configurations in .idea/workspace.xml, which
 # JetBrains' own .idea/.gitignore already treats as local state.
 .idea/
-.claude/settings.local.json
+# vim leaves these beside the file being edited. Harmless except that one landed
+# in `git add -A`'s list once, and a committed swap file is pure noise.
+*.swp
+
+# .claude/ wholesale, not just settings.local.json as this rule used to say.
+# Claude Code keeps git worktrees under .claude/worktrees/, and each is a full
+# second checkout carrying its own .git file. Because that .git is present git
+# does not recurse into it: `git add -A` stages the directory as a single
+# *gitlink* -- a submodule-shaped pointer to a commit that exists only in a
+# local worktree, with no .gitmodules entry behind it. A repo in that state
+# confuses status, clone and CI, and is fiddly to unpick afterwards.
+.claude/
 
 # Superseded, kept locally as a reference. Nothing imports it and the Dockerfile
 # does not copy it.
 polymerge_old.py
+
+# Emoji artwork retired from the bot's flavour set, kept locally in case it is
+# revisited. Safe to keep out of the repo: nothing reads Emojis/ at runtime --
+# polybot names emoji by Discord snowflake (`<:wolfwait:1541528693430681660>`),
+# so these PNGs are upload sources for the developer portal rather than assets --
+# and the Dockerfile does not copy the directory either.
+Emojis/unused/
