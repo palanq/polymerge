@@ -708,6 +708,129 @@ considered and rejected in favor of one-message-in/one-composite-out; marking
 via reactions keeps that property (no session to leave open, no window to
 manage) while still letting a thread fill up naturally.
 
+**There are two front ends, `!merge` and `/merge`, and they differ only in how
+the options arrive.** `!merge [size] [layers...]` parses free text; `/merge`
+takes the same two as typed options that Discord validates and describes at the
+point of typing. Both call `do_merge`, which is what keeps them on **one**
+queue: `MERGE_LOCK`, `_waiting`, `_running_*` and `merge_speed` are module state
+reached only through that function, so a `/merge` queues behind a `!merge` and
+`wait_estimate` covers both. Do not give either front end its own path to the
+semaphore.
+
+**`/merge` deliberately takes no attachments — it is the reaction workflow
+only.** A slash command has no variadic attachment option, so parity with
+`!merge`'s drag-and-drop would mean `MAX_SHOTS` separate `shot1..shot8` slots
+cluttering the picker and one file dialog each. `!merge` keeps that job, where
+dropping four files onto one message already works well. The reaction path is
+the one most players use, so this costs the common case nothing — and it is the
+path slash commands suit best, since everything a player supplies there is an
+option rather than a file. `Caller.can_attach` is what player-facing copy keys
+on, so the "no screenshots found" reply does not tell a `/merge` user to attach
+files to a command that cannot carry them.
+
+**Three things slash commands do *not* change, all of which look like they
+should.**
+- **Guild operators still grant the same five `REQUIRED_PERMS`, in the same
+  channels.** The composite is an ordinary channel message either way. What
+  changes is only the *diagnosis*: an interaction is delivered to the
+  application directly, so `/merge` arrives whatever the channel overwrites say
+  and the bot can answer ephemerally naming the permission it lacks. That is the
+  one improvement on the failure this file records as unfixable — someone edits
+  an overwrite, the bot loses `view_channel`, and `!merge` produces no event at
+  all. *Considered and rejected:* posting the composite through an interaction
+  followup would bypass `send_messages`/`attach_files`, since interaction
+  responses are exempt from channel permission checks. It saves two of five
+  permissions and buys them with the token expiry below.
+- **`message_content` is still required.** `collect_marked_shots` reads
+  `message.attachments` off arbitrary history messages, and that privileged
+  intent gates attachments exactly as it gates content. Shedding it is the usual
+  headline reason to migrate to slash commands and it does not apply here.
+- **Nothing was deleted.** `parse_overlays`, the alias table, the legacy
+  `no`-prefix words and both unrecognised-input replies still serve `!merge`.
+  Discord validating the typed options means the slash path cannot *reach*
+  those replies; it does not make them dead.
+
+**The interaction token is why `/merge` uses ordinary channel messages rather
+than followups, and this is the load-bearing design decision in that path.** An
+interaction imposes two deadlines a channel message does not: **3 seconds** to
+respond at all, and **15 minutes** for the token thereafter, after which
+`edit_original_response` and `followup.send` both 404. Both bite this bot
+specifically:
+- The 3-second one because `collect_marked_shots` walks `HISTORY_LIMIT` = 500
+  messages at 100 per API call — five sequential round trips — before anything
+  is sent. Measured expectation is 0.3–0.75s from a well-connected host and
+  1–2s from a loaded one, so the risk is low rather than acute. **Do not cut
+  `HISTORY_LIMIT` to shrink it**: `defer(ephemeral=True)` is the first statement
+  in `merge_slash`, so the deadline is already satisfied before the scan starts,
+  and 500 is how far back into a chatty game thread the bot can still find
+  someone's 🗺️.
+- The 15-minute one because wall clock is *queue wait + downloads + merge*
+  against one semaphore shared by every guild, with `MERGE_TIMEOUT_S` at 300s
+  and the queue uncapped — three hung merges is the whole window. On expiry the
+  composite is already on disk and is then deleted by the `finally:
+  shutil.rmtree`, so the player gets a dead spinner after up to five minutes of
+  CPU. That is `shrink_for_upload`'s failure arriving by another route.
+
+So the token is used **once**, to defer, and never again; every visible message
+is `channel.send`/`message.edit`. That makes expiry structurally impossible
+rather than merely handled, collapses `Caller.send` to one implementation for
+both front ends, and is what lets the queue notice below be edited for as long
+as the queue takes. The ephemeral placeholder the deferral leaves is cleared
+with `clear_placeholder` once the public ack is up — a step `!merge` has no
+analogue for, since it posts its ack directly.
+
+**The queue notice updates live, and this changed `_waiting`'s contract.** It
+used to hold bare shot counts, justified by "only the sum is ever read, so
+entries with equal counts are interchangeable and `.remove()` by value is
+exact". A waiting merge now has to find its own *position*, which a bare int
+cannot supply — two 3-shot merges are the same int and different places in the
+queue — so it holds `_Queued` records and removes by identity. Two details:
+`refresh_queue_notices` is driven by the queue changing (fired after
+`MERGE_LOCK.release()`) rather than by a timer, since those are the only moments
+the numbers move; and it skips the edit when the rendered text is unchanged,
+which keeps it clear of Discord's per-channel edit rate limit for free, because
+`human_wait` already rounds to 5-second buckets under a minute and whole minutes
+above. A notice whose text comes back `None` has reached the front and is left
+alone deliberately — its own `MERGE_LOCK.acquire()` writes `starting_text()`
+over it a moment later, and editing it to "your turn" first would put two
+messages where the player needs one.
+
+**`MAX_QUEUE_WAIT_S` refuses a merge that would wait more than ~10 minutes.**
+The queue is unbounded and serialized across every guild, so without it a player
+can be committed to a wait far longer than the merge is worth, having been shown
+the number only after they were already in it. It benefits `!merge` equally —
+the problem is pre-existing and `!merge` merely hides it by never expiring. Read
+it as a bound on the absurd, not a scheduling policy: the estimate behind it is
+rough by construction (board content matters nearly as much as shot count) and
+should not be tuned as though it were not.
+
+**Command sync is the bot's only deploy-time state, and `Dockerfile`/
+`.dockerignore` is the cautionary precedent.** `setup_hook` syncs the tree —
+globally in production, or to `POLYMERGE_DEV_GUILD` when that is set, which is
+instant and is what a beta instance should use. The signature then lives on
+Discord's side, so a container running old code can leave a command shape
+published that it no longer implements: the same class of failure as the image
+that shipped without `Overlays/`, a deployment quietly disagreeing with its
+source. `on_ready` therefore prints what actually synced rather than assuming.
+A failed sync is logged and non-fatal, since `!merge` does not need the tree.
+
+**Whether a guild can see `/merge` at all is not observable from inside the
+bot.** Slash commands appear only in guilds that authorized the
+`applications.commands` scope, and a bot invited with `bot` alone sees no
+commands however cleanly they synced — indistinguishable from a sync failure.
+The fix is re-authorizing that guild through an OAuth2 URL carrying the extra
+scope, which **does not kick the bot or reset its roles and overwrites**. This
+also makes the rollout safe rather than risky: the code deploy and the
+user-visible change are decoupled, so `/merge` can ship to production invisible
+everywhere and be enabled per guild afterwards, with no flag day.
+
+**`COMMAND_PREFIX` is env-overridable (`POLYMERGE_PREFIX`) so a second instance
+can run in a guild that already has one.** A beta bot otherwise answers the same
+`!merge` as production; give it a different prefix, and different
+`POLYMERGE_MARK_EMOJI`/`POLYMERGE_DONE_EMOJI` so the two do not race on the same
+🗺️ reactions. `/merge` does not collide — Discord disambiguates slash commands
+by application in the picker.
+
 **The board size is a command argument but no longer a required one.** `!merge
 20` still works and is still obeyed outright; a bare `!merge` measures the size
 instead (`detect_map_size`, above), which is a measurement rather than a guess
@@ -742,8 +865,20 @@ common case (shots attached, wanting a merge) an extra round trip once the
 size became measurable. `!merge help` (or `!merge ?`) still prints it, and the
 two replies a lost player actually reaches — an unrecognised size, and "no
 usable screenshots found" — both name it, which is the moment it is wanted.
-`help_text` interpolates the configured emoji, sizes and limits rather than
-hardcoding them.
+`help_text` interpolates the configured emoji, prefix, sizes and limits rather
+than hardcoding them.
+
+**`/merge-help` exists because the option descriptions carry only half the
+help.** Discord renders the command and per-option descriptions inline as you
+type, so under `/merge` the board size and the four layers document themselves —
+that part of `help_text` is redundant there. Everything else in it has nowhere
+to appear: the 🗺️/✅ workflow, `MAX_SHOTS`, the accepted formats, the
+two-adjoining-edges rule, the 15% crop, the purple ruin outlines, the
+winner-selection summary and the credits. Hence a command of its own, replying
+ephemerally — someone reading the instructions does not need to post them into a
+game thread. The "no screenshots found" reply names **both** routes to the help,
+because which one is reachable depends on whether that guild authorized slash
+commands at all.
 
 **A board with no fog merges on the plain command, as long as the size is
 stated.** `!merge 16` works on a replay; nothing in polybot special-cases it.

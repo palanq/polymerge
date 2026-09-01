@@ -6,12 +6,33 @@ Screenshots can reach a merge two ways:
 
 or, when players just post their shots individually into a thread as they
 take them (likely interleaved with unrelated chatter/images), react to each
-one with MARK_EMOJI to opt it in, then run `!merge 20` with no attachments.
-The bot scans the channel/thread history for MARK_EMOJI'd images and, after a
-successful merge, reacts DONE_EMOJI on each source message so a later merge
-in the same thread doesn't pick them up again. The reactions *are* the state
--- the bot itself remembers nothing between commands, matching the
+one with MARK_EMOJI to opt it in, then run `!merge 20` (or `/merge`) with no
+attachments. The bot scans the channel/thread history for MARK_EMOJI'd images
+and, after a successful merge, reacts DONE_EMOJI on each source message so a
+later merge in the same thread doesn't pick them up again. The reactions *are*
+the state -- the bot itself remembers nothing between commands, matching the
 same-message path below.
+
+There are two front ends, and they differ only in how the options arrive:
+`!merge [size] [layers...]` parses free text, while `/merge` takes the same
+two as typed options that Discord validates and describes at the point of
+typing. Both call do_merge, so there is one queue, one estimate and one set of
+channel copy however a merge was asked for.
+
+`/merge` deliberately takes **no attachments**. A slash command has no
+variadic attachment option, so offering that path would mean MAX_SHOTS
+separate slots in the picker and one file dialog each; `!merge` keeps the job,
+where dropping four files onto one message already works well. Since the
+reaction workflow is the one most players use, this costs the common case
+nothing.
+
+Two things slash commands do not change, recorded because both look like they
+should. Guild operators still grant the same REQUIRED_PERMS in the same
+channels -- the composite is an ordinary channel message either way; what
+changes is that a missing permission becomes *sayable*, since an interaction
+reaches the bot whatever the channel overwrites say. And the message_content
+privileged intent is still required, because the MARK_EMOJI scan reads
+attachments off other people's messages.
 
 The bot downloads the resolved images to a scratch directory, shells out to
 polymerge.py, and posts merged.png back.
@@ -47,8 +68,10 @@ explicitly marked ever qualify.
 """
 
 import asyncio, collections, os, pathlib, re, shutil, statistics, sys, tempfile, time
+import typing
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -108,6 +131,17 @@ MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 # exactly the bytes it has.
 MAX_UPLOAD_BYTES = 20 * 1000 * 1000
 MERGE_TIMEOUT_S = 300       # a 4-shot merge is ~15-20s; this is a hang guard
+# Longest wait a merge will be allowed to join, in seconds. Merges serialize
+# behind one semaphore across every guild and nothing caps the queue, so
+# without this a player can be committed to a wait far longer than the merge
+# is worth, having been shown a number only after they were already in it.
+#
+# 10 minutes is about sixteen 4-shot merges, or two hung ones running to
+# MERGE_TIMEOUT_S. It is a bound on the absurd rather than a scheduling
+# policy -- the estimate behind it is rough by construction (board content
+# matters nearly as much as shot count) and should not be tuned as if it were
+# not.
+MAX_QUEUE_WAIT_S = 600
 MAX_MSG_CHARS = 1900        # Discord's limit is 2000; leave room for framing
 
 # React on a screenshot to opt it into the next merge. Overridable by whoever
@@ -155,13 +189,35 @@ MERGE_LOCK = asyncio.Semaphore(1)
 # these is read across an await from its own write, so plain module state is
 # sufficient and needs no lock of its own.
 #
-# _waiting holds the *shot counts* of the merges waiting, not just how many
-# there are, so each can be charged its own size. Only the sum is ever read, so
-# entries with equal counts are interchangeable and .remove() by value is exact
-# -- it does not, and need not, identify a particular merge.
-_waiting = []               # shot counts, waiting for the slot, not yet started
+# _waiting holds one _Queued per merge waiting, carrying the *shot count* rather
+# than just a placeholder, so each can be charged its own size.
+#
+# It used to hold bare shot counts, on the reasoning that only the sum is ever
+# read and so entries with equal counts are interchangeable. That stopped being
+# true when the queue notice started updating live: a waiting merge now has to
+# find its own position in this list, which a bare int cannot supply -- two
+# 3-shot merges are the same int and different places in the queue. Identity is
+# the whole point of the record, so remove by identity, never by value.
+_waiting = []               # _Queued, in queue order, not yet started
 _running_shots = None       # shot count of the in-flight merge, None when idle
 _running_since = None       # time.monotonic() when the in-flight merge began
+
+
+class _Queued:
+    """One merge waiting for the slot, and the notice telling its player so.
+
+    `notice` is the channel message to keep up to date as merges ahead of this
+    one finish, or None when nobody was told to wait (the queue was empty, so
+    the merge went straight to an ack). `shown` is the text last written to it,
+    so an unchanged render costs no API call -- see refresh_queue_notices."""
+
+    __slots__ = ("shots", "notice", "shown")
+
+    def __init__(self, shots):
+        self.shots = shots
+        self.notice = None
+        self.shown = None
+
 
 # Slot seconds for a merge of n screenshots: t = MERGE_FIXED_S + MERGE_PER_SHOT_S * n.
 # The intercept is real but small -- template load, process start and output
@@ -298,6 +354,54 @@ def wait_estimate(ahead):
         seconds += max(0.0, merge_estimate(_running_shots)
                        - (time.monotonic() - _running_since))
     return seconds
+
+
+def queue_notice_text(rec):
+    """What to tell the player waiting at `rec`, or None once it is their turn.
+
+    The position is read live out of _waiting, so this is re-rendered rather
+    than stored: the whole point is that "queued behind 3" becomes "behind 1"
+    without the player having to ask."""
+    try:
+        ahead_recs = _waiting[:_waiting.index(rec)]
+    except ValueError:
+        return None                     # already left the queue
+    ahead = len(ahead_recs) + (1 if MERGE_LOCK.locked() else 0)
+    if not ahead:
+        return None
+    seconds = wait_estimate(r.shots for r in ahead_recs)
+    return (f"Queued behind {ahead} merge{'' if ahead == 1 else 's'} -- "
+            f"starting in {human_wait(seconds)}. {WAIT_EMOJI}")
+
+
+async def refresh_queue_notices():
+    """Re-render every waiting merge's notice, after the queue has moved.
+
+    Driven by the queue changing rather than by a timer: the only moments the
+    numbers move are a merge finishing or joining, so there is nothing for a
+    poll to catch in between.
+
+    Best-effort throughout, the same posture as the DONE_EMOJI reactions -- a
+    notice that cannot be edited (deleted message, permission withdrawn
+    mid-merge) must never sink the merge that is about to run.
+
+    Editing only on a *changed* render is what keeps this clear of Discord's
+    per-channel edit rate limit without needing a throttle of its own:
+    human_wait rounds to 5-second buckets under a minute and to whole minutes
+    above, so a queue that has not visibly moved costs no API calls at all."""
+    for rec in list(_waiting):
+        text = queue_notice_text(rec)
+        # None means this merge has reached the front, and its own acquire
+        # writes starting_text() over the notice a moment later -- so leaving
+        # it alone here is right, not an omission. Editing it to "your turn"
+        # first would put two messages where the player needs one.
+        if rec.notice is None or text is None or text == rec.shown:
+            continue
+        try:
+            await rec.notice.edit(content=text)
+            rec.shown = text
+        except discord.HTTPException:
+            pass
 
 
 def human_wait(seconds):
@@ -609,8 +713,54 @@ intents = discord.Intents.default()
 # Privileged: also has to be ticked under Bot -> Privileged Gateway Intents in
 # the Discord developer portal. Without it message.content arrives empty and
 # the command silently never fires.
+#
+# Slash commands do *not* relieve this. An interaction carries its own options,
+# but collect_marked_shots reads message.attachments off arbitrary history
+# messages, and this intent gates attachments exactly as it gates content -- so
+# the 🗺️ scan needs it however the merge was invoked.
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Overridable so a second instance can run in a guild that already has one
+# without both answering the same message. The beta bot takes a different
+# prefix (and different MARK/DONE emoji); its /merge does not collide, since
+# Discord disambiguates slash commands by application in the picker.
+COMMAND_PREFIX = os.environ.get("POLYMERGE_PREFIX") or "!"
+bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
+
+# Guild id to sync slash commands to instantly, for development. Global sync is
+# what production wants -- one instance serving several guilds -- but it is not
+# instant, which makes iterating on a command signature slow. Unset in
+# production.
+DEV_GUILD_ID = os.environ.get("POLYMERGE_DEV_GUILD")
+
+
+@bot.event
+async def setup_hook():
+    """Register the slash commands with Discord.
+
+    In setup_hook rather than on_ready because on_ready can fire more than once
+    (any gateway RESUME after a disconnect), and syncing is a rate-limited write
+    rather than something to repeat per reconnect.
+
+    This is the one piece of *deploy-time state* the bot has: the command
+    signature lives on Discord's side once synced, so a container running old
+    code can leave a command shape published that it no longer implements. That
+    is the same failure the Dockerfile's missing Overlays/ produced -- a
+    deployment quietly disagreeing with the source -- which is why on_ready
+    prints what actually synced rather than assuming it worked."""
+    try:
+        if DEV_GUILD_ID:
+            where = discord.Object(id=int(DEV_GUILD_ID))
+            bot.tree.copy_global_to(guild=where)
+            synced = await bot.tree.sync(guild=where)
+            print(f"synced {len(synced)} slash commands to guild {DEV_GUILD_ID}")
+        else:
+            synced = await bot.tree.sync()
+            print(f"synced {len(synced)} slash commands globally")
+    except discord.HTTPException as e:
+        # Not fatal: !merge does not need the tree, so a failed sync should cost
+        # the slash commands and nothing else.
+        print(f"slash command sync FAILED: {e!r}", file=sys.stderr)
 
 
 @bot.event
@@ -626,6 +776,14 @@ async def on_ready():
         print(f"  guild {g.name!r}: can post in {visible or '(nothing!)'}")
     if not bot.guilds:
         print("  in no guilds -- the invite URL was never completed")
+    # Not printed per guild, because it cannot be: whether a guild authorized
+    # the `applications.commands` scope is not exposed to the bot, so "/merge
+    # is missing from the picker here" is indistinguishable from a failed sync
+    # from inside. A guild invited with the `bot` scope alone sees no slash
+    # commands however cleanly they synced, and the fix is re-authorizing that
+    # guild -- which adds the scope without kicking the bot or resetting its
+    # permissions. `{COMMAND_PREFIX}merge` works either way.
+    print(f"  prefix commands: {COMMAND_PREFIX}merge (always available)")
 
 
 # Everything the bot actually needs in a channel, and what breaks without it.
@@ -652,25 +810,117 @@ def perm_report(channel, me):
                                   for k in missing)
 
 
-async def say(ctx, content=None, *, reply=True, **kw):
-    """ctx.reply/ctx.send that survives having no permission to post.
+class Caller:
+    """Whoever asked for a merge, over either entry point.
 
-    Every channel-facing message goes through this. Without it a missing
-    send_messages turns into an unhandled Forbidden -- and when that happens
-    inside on_command_error, the error handler itself raises, so the operator
-    sees a confusing traceback instead of the actual problem. Only Forbidden
-    is swallowed, and only after logging the diagnosis to the console, which
-    is the one channel still available to us; anything else propagates to
-    on_command_error as normal."""
-    try:
-        send = ctx.reply if reply else ctx.send
-        return await send(content, **kw) if content is not None else await send(**kw)
-    except discord.Forbidden:
-        where = getattr(ctx.channel, "name", ctx.channel)
-        me = ctx.guild.me if ctx.guild else None
-        detail = perm_report(ctx.channel, me) if me else "DM"
-        print(f"cannot post in #{where}: {detail}", file=sys.stderr)
-        return None
+    do_merge is shared by `!merge` and `/merge`, and the two hand it different
+    objects -- a commands.Context carrying the invoking message, or an
+    Interaction carrying none. This is the whole of the difference between
+    them: five attributes and a send.
+
+    On the interaction side every visible message is an ordinary channel
+    message, not an interaction followup, and that is deliberate. An
+    interaction token expires 15 minutes after the initial response, while a
+    merge's wall clock is queue wait + downloads + merge against one semaphore
+    shared by every guild -- so a busy queue can outlive the token and the
+    composite would be posted nowhere, after the work was already done. Using
+    the token once (to defer, inside the 3-second deadline) and never again
+    makes that impossible rather than merely handled, and it is also what lets
+    the queue notice below be edited for as long as the queue takes."""
+
+    __slots__ = ("channel", "guild", "author", "attachments",
+                 "_ctx", "_interaction")
+
+    def __init__(self, channel, guild, author, attachments,
+                 ctx=None, interaction=None):
+        self.channel = channel
+        self.guild = guild
+        self.author = author
+        self.attachments = attachments
+        self._ctx = ctx
+        self._interaction = interaction
+
+    @classmethod
+    def from_ctx(cls, ctx):
+        return cls(ctx.channel, ctx.guild, ctx.author, ctx.message.attachments,
+                   ctx=ctx)
+
+    @classmethod
+    def from_interaction(cls, interaction):
+        # No attachments, ever: /merge is reactions-only. A slash command has
+        # no variadic attachment option, so parity with !merge's drag-and-drop
+        # would mean MAX_SHOTS separate option slots and one file picker each.
+        return cls(interaction.channel, interaction.guild, interaction.user,
+                   [], interaction=interaction)
+
+    @property
+    def can_attach(self):
+        """Whether this entry point can carry screenshots on the command itself.
+
+        True for a prefix command, false for a slash one. Player-facing copy
+        keys on this rather than assuming: telling a /merge user to attach
+        their shots to the command sends them somewhere they cannot go."""
+        return self._ctx is not None
+
+    def typing(self):
+        return self.channel.typing()
+
+    async def send(self, content=None, *, reply=True, **kw):
+        """Post to the channel, surviving having no permission to.
+
+        Every channel-facing message goes through this. Without it a missing
+        send_messages turns into an unhandled Forbidden -- and when that
+        happens inside on_command_error, the error handler itself raises, so
+        the operator sees a confusing traceback instead of the actual problem.
+        Only Forbidden is swallowed, and only after logging the diagnosis to
+        the console; anything else propagates to the error handlers as normal.
+
+        `reply` is honoured for a prefix command and ignored for a slash one,
+        which has no invoking message to reply to."""
+        try:
+            send = (self._ctx.reply if reply and self._ctx is not None
+                    else self.channel.send)
+            return await send(content, **kw) if content is not None else await send(**kw)
+        except discord.Forbidden:
+            where = getattr(self.channel, "name", self.channel)
+            me = self.guild.me if self.guild else None
+            detail = perm_report(self.channel, me) if me else "DM"
+            print(f"cannot post in #{where}: {detail}", file=sys.stderr)
+            # A slash command still has one channel left when the public one is
+            # shut: the interaction's own ephemeral response, which is exempt
+            # from the channel's permission overwrites. This is the one thing
+            # !merge can never do -- without view_channel it never even
+            # receives the command -- so it is worth the extra call to tell the
+            # player exactly which permission is missing rather than to say
+            # nothing at all.
+            await self.tell_privately(
+                f"I can't post in this channel. {SAD_EMOJI} {detail}.")
+            return None
+
+    async def tell_privately(self, content):
+        """Say something only the invoker sees, or nothing on the prefix path.
+
+        Best-effort: this runs on paths that are already failing, and an
+        expired or already-consumed interaction must not raise on top of the
+        problem it is reporting."""
+        if self._interaction is None:
+            return
+        try:
+            await self._interaction.edit_original_response(content=content)
+        except discord.HTTPException:
+            pass
+
+    async def clear_placeholder(self):
+        """Drop the ephemeral "thinking" placeholder left by the deferral.
+
+        Only the slash path has one -- `!merge` posts its ack directly and has
+        nothing to clear. Best-effort for the same reason as above."""
+        if self._interaction is None:
+            return
+        try:
+            await self._interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
 
 
 @bot.event
@@ -727,8 +977,33 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
     print(f"command error in #{ctx.channel}: {error!r}", file=sys.stderr)
-    await say(ctx, f"Command failed: `{type(error).__name__}`. {SAD_EMOJI} "
-                   f"See bot console.")
+    await Caller.from_ctx(ctx).send(
+        f"Command failed: `{type(error).__name__}`. {SAD_EMOJI} "
+        f"See bot console.")
+
+
+async def on_tree_error(interaction, error):
+    """The same for slash commands, which have their own error path.
+
+    app_commands swallows errors exactly as the prefix commands do, and for the
+    same reason it is worth handling: an unreported failure is indistinguishable
+    from the bot ignoring you. The reply goes out ephemerally rather than into
+    the channel -- a traceback's worth of noise helps nobody but the person who
+    ran it, and unlike the prefix path there is somewhere private to put it."""
+    where = getattr(interaction.channel, "name", interaction.channel)
+    print(f"app command error in #{where}: {error!r}", file=sys.stderr)
+    text = (f"Command failed: `{type(error).__name__}`. {SAD_EMOJI} "
+            f"See bot console.")
+    try:
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=text)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
+    except discord.HTTPException:
+        pass
+
+
+bot.tree.on_error = on_tree_error
 
 
 def help_text():
@@ -773,10 +1048,13 @@ def help_text():
             f"otherwise measured from the screenshots.\n"
             + "".join(f"- `{n}` shows {OVERLAY_HELP[n]}.\n" for n in OVERLAY_NAMES))
     return (
-        f"Usage: `!merge`. Either attach screenshots to the same message, or "
-        f"react {MARK_EMOJI} on screenshots posted above. "
-        f"Optional words, added after the command in any order, e.g. "
-        f"`!merge grid 20`:\n"
+        f"Usage: `/merge`, or `{COMMAND_PREFIX}merge`. React {MARK_EMOJI} on "
+        f"screenshots posted above, then run either one. `{COMMAND_PREFIX}merge` "
+        f"also takes screenshots attached to its own message, which `/merge` "
+        f"cannot.\n"
+        f"`/merge` offers the options below as fields. With "
+        f"`{COMMAND_PREFIX}merge` they are words after the command, in any "
+        f"order, e.g. `{COMMAND_PREFIX}merge grid 20`:\n"
         + opts +
         f"\n"
         f"Other information:\n"
@@ -798,22 +1076,36 @@ def help_text():
     )
 
 
+def log_invocation(caller, what):
+    """One line per merge asked for, before anything that needs a permission.
+
+    So the console can tell "the bot never received it" (nothing printed --
+    almost always a missing view_channel) apart from "received it but cannot
+    answer" (this line, then a MISSING report). Without it the two look
+    identical from the channel.
+
+    Slash commands narrow the first case rather than removing it: an
+    interaction is delivered to the application directly, so /merge arrives
+    whatever the channel overwrites say. A silent console still means a missing
+    view_channel, but now only for the prefix command."""
+    me = caller.guild.me if caller.guild else None
+    print(f"{what} from {caller.author} in #{caller.channel}: "
+          + (perm_report(caller.channel, me) if me else "DM"))
+
+
 @bot.command(name="merge")
 async def merge(ctx, size: str = None, *extras):
     """!merge [size] [layers...] in any order, either with screenshots attached
     to that same message, or with no attachments to merge every screenshot in
-    this channel/thread that's been reacted MARK_EMOJI and not yet merged."""
-    global _running_shots, _running_since
-    # Logged before anything that needs a permission, so the console can tell
-    # "the bot never received it" (nothing printed -- almost always a missing
-    # view_channel) apart from "received it but cannot answer" (this line, then
-    # a MISSING report). Without this the two look identical from the channel.
-    me = ctx.guild.me if ctx.guild else None
-    print(f"!merge {size} {' '.join(extras)} from {ctx.author} "
-          f"in #{ctx.channel}: "
-          + (perm_report(ctx.channel, me) if me else "DM"))
+    this channel/thread that's been reacted MARK_EMOJI and not yet merged.
+
+    This is the free-text front end. /merge below does the same job with typed
+    options, and both hand off to do_merge -- so there is one queue, one
+    estimate and one set of channel copy, whichever way a merge was asked for."""
+    caller = Caller.from_ctx(ctx)
+    log_invocation(caller, f"{COMMAND_PREFIX}merge {size} {' '.join(extras)}")
     if size is not None and size.lower() in ("help", "?"):
-        await say(ctx, help_text())
+        await caller.send(help_text())
         return
 
     # The size is optional, so are the layers, and neither has to come first.
@@ -825,16 +1117,21 @@ async def merge(ctx, size: str = None, *extras):
     # `words`, so it falls through to parse_overlays and is reported as
     # unrecognised: `!merge 20 16` is ambiguous, and picking one silently is
     # the one failure this program cannot afford.
+    #
+    # None of this parsing is dead now that /merge exists, and it is not
+    # duplicated there: Discord validates typed options itself, so the slash
+    # path cannot reach either of the replies below.
     words = ([] if size is None else [size]) + list(extras)
     at = next((i for i, w in enumerate(words) if w.isdigit()), None)
     size = words.pop(at) if at is not None else None
     overlays, bad_layers = parse_overlays(words)
     if bad_layers:
-        await say(ctx,
+        await caller.send(
             f"Don't know what to do with {', '.join(f'`{w}`' for w in bad_layers)}. "
             f"{SAD_EMOJI} You can add "
             + ", ".join(f"`{n}`" for n in OVERLAY_NAMES)
-            + ", in any order. `!merge help` says what each one draws."
+            + f", in any order. `{COMMAND_PREFIX}merge help` says what each "
+            f"one draws."
         )
         return
 
@@ -847,26 +1144,98 @@ async def merge(ctx, size: str = None, *extras):
     if size is not None:
         if not size.isdigit() or int(size) not in MAP_SIZES:
             listed = [f"`{n}`" for n in MAP_SIZES]
-            await say(ctx,
+            await caller.send(
                 f"`{size}` is not a supported board size. {SAD_EMOJI} Use "
                 + ", ".join(listed[:-1]) + f" or {listed[-1]}"
-                + f", or just `!merge` to work it out from the screenshots. "
-                f"`!merge help` explains the rest."
+                + f", or just `{COMMAND_PREFIX}merge` to work it out from the "
+                f"screenshots. `{COMMAND_PREFIX}merge help` explains the rest."
             )
             return
         map_size = int(size)
 
+    await do_merge(caller, map_size, overlays)
+
+
+@bot.tree.command(
+    name="merge",
+    description="Merge screenshots reacted "
+                + MARK_EMOJI + " in this channel into one map",
+)
+@app_commands.choices(size=[
+    app_commands.Choice(name=f"{n}x{n} ({MAP_SIZE_NAMES[n]})", value=n)
+    for n in MAP_SIZES
+])
+@app_commands.describe(
+    size="Board size. Leave blank to measure it from the screenshots.",
+    **{n: OVERLAY_HELP[n].capitalize() for n in OVERLAY_NAMES},
+)
+async def merge_slash(interaction: discord.Interaction,
+                      size: typing.Optional[app_commands.Choice[int]] = None,
+                      shade: bool = False, grid: bool = False,
+                      spawns: bool = False, push: bool = False):
+    """/merge -- the reaction workflow, with the options typed rather than parsed.
+
+    Deliberately takes no attachments. A slash command has no variadic
+    attachment option, so offering the drag-and-drop path here would mean
+    MAX_SHOTS separate slots cluttering the picker and one file dialog each;
+    `!merge` keeps that job, where dropping four files on one message just
+    works.
+
+    The choices and descriptions above are built from MAP_SIZES,
+    MAP_SIZE_NAMES and OVERLAY_HELP for the same anti-drift reason help_text
+    is: a layer the parser accepts but the UI does not name is a feature nobody
+    can find, and one the UI names but the parser rejects is an error the
+    player did not earn."""
+    # First statement, before the history scan below: an interaction has three
+    # seconds to be answered at all, and collect_marked_shots walks up to
+    # HISTORY_LIMIT messages at 100 per API call before anything is sent.
+    # Ephemeral because it is a placeholder rather than a message -- the real
+    # ack goes to the channel, where everyone waiting on the merge can see it.
+    await interaction.response.defer(ephemeral=True)
+    caller = Caller.from_interaction(interaction)
+    layers = {n for n, on in (("shade", shade), ("grid", grid),
+                              ("spawns", spawns), ("push", push)) if on}
+    log_invocation(caller, f"/merge {size.value if size else None} "
+                           f"{' '.join(sorted(layers))}")
+    await do_merge(caller, size.value if size else None, layers)
+
+
+@bot.tree.command(name="merge-help",
+                  description="How to use the merge bot")
+async def merge_help_slash(interaction: discord.Interaction):
+    """The half of help_text that the option descriptions cannot carry.
+
+    Discord renders the command and option descriptions inline as you type, so
+    the board size and the layers document themselves under /merge. Everything
+    else in help_text has nowhere to appear: the MARK/DONE reaction workflow,
+    the shot limit, the accepted formats, the two-adjoining-edges rule, the
+    crop, the ruin outlines and the credits. Hence a command of its own.
+
+    Ephemeral: someone reading the instructions does not need to post them to
+    the channel, and a game thread does not need a wall of help in it."""
+    await interaction.response.send_message(help_text(), ephemeral=True)
+
+
+async def do_merge(caller, map_size, overlays):
+    """Run one merge and report it, however the merge was asked for.
+
+    Shared by both front ends, which is what puts them on one queue: MERGE_LOCK,
+    _waiting, _running_* and merge_speed are module state reached only through
+    here, so a /merge queues behind a !merge and wait_estimate covers both. Do
+    not give either front end its own path to the semaphore."""
+    global _running_shots, _running_since
+
     if map_size is not None and not template_for(map_size).exists():
-        await say(ctx, f"Missing `{template_for(map_size).name}` on the bot "
-                       f"host. {SAD_EMOJI}")
+        await caller.send(f"Missing `{template_for(map_size).name}` on the bot "
+                          f"host. {SAD_EMOJI}")
         return
     if map_size is None and not any(template_for(n).exists() for n in MAP_SIZES):
-        await say(ctx, f"No board templates on the bot host. {SAD_EMOJI}")
+        await caller.send(f"No board templates on the bot host. {SAD_EMOJI}")
         return
 
-    shots = [a for a in ctx.message.attachments
+    shots = [a for a in caller.attachments
              if pathlib.Path(a.filename).suffix.lower() in IMAGE_EXTS]
-    skipped = len(ctx.message.attachments) - len(shots)
+    skipped = len(caller.attachments) - len(shots)
 
     # Attachments on the command message itself win outright, so a quick
     # attach-and-merge never has to think about reactions. Only when there
@@ -878,13 +1247,13 @@ async def merge(ctx, size: str = None, *extras):
     if not shots:
         from_history = True
         try:
-            pairs, barren = await collect_marked_shots(ctx.channel)
+            pairs, barren = await collect_marked_shots(caller.channel)
         except discord.Forbidden:
             # Scanning needs Read Message History, which is easy to omit when
             # granting per-channel permissions. Name it rather than reporting
             # the generic "no screenshots found", which sends you hunting the
             # reactions instead of the permission.
-            await say(ctx,
+            await caller.send(
                 "Can't read this channel's history, so can't find reacted "
                 f"screenshots. {SAD_EMOJI} Needs the Read Message History "
                 "permission here."
@@ -894,28 +1263,53 @@ async def merge(ctx, size: str = None, *extras):
         source_messages = list({m.id: m for m, _ in pairs}.values())
 
     if not shots:
-        # The one reply a lost player is most likely to see, so it is where
-        # `!merge help` gets named -- a bare `!merge` no longer prints the help
-        # itself, and someone who typed it with nothing attached is exactly who
-        # was looking for it.
-        msg = (f"No usable screenshots found. {SAD_EMOJI} Attach them to this "
-               f"message, or react {MARK_EMOJI} on screenshots posted above. "
-               "`!merge help` explains how.")
+        # The one reply a lost player is most likely to see, so it is where the
+        # help gets named -- a bare `!merge` no longer prints it, and someone
+        # who ran a merge with nothing marked is exactly who was looking for it.
+        #
+        # Both routes to the help are named, because which one is reachable
+        # depends on how they got here: /merge-help needs the guild to have
+        # authorized slash commands at all, and `!merge help` always works.
+        # Attaching is named only when it is possible -- /merge takes no
+        # attachments, so telling a slash user to attach them sends them to a
+        # dead end.
+        attach = ("Attach them to this message, or react" if caller.can_attach
+                  else "React")
+        msg = (f"No usable screenshots found. {SAD_EMOJI} {attach} "
+               f"{MARK_EMOJI} on screenshots posted above, then merge again. "
+               f"`/merge-help` or `{COMMAND_PREFIX}merge help` explains how.")
         if barren:
             message, it = ("message", "it") if barren == 1 else ("messages", "them")
             msg += f" ({barren} marked {message} had no image on {it}.)"
-        await say(ctx, msg)
+        await caller.send(msg)
         return
     if len(shots) > MAX_SHOTS:
         # Easy to hit from history, since one post can carry several images.
         hint = (" Un-react some and try again." if from_history
                 else " Send fewer at a time.")
-        await say(ctx, f"Found {len(shots)} screenshots, limit is "
-                       f"{MAX_SHOTS}. {SAD_EMOJI}{hint}")
+        await caller.send(f"Found {len(shots)} screenshots, limit is "
+                          f"{MAX_SHOTS}. {SAD_EMOJI}{hint}")
         return
     oversized = [a.filename for a in shots if a.size > MAX_ATTACHMENT_BYTES]
     if oversized:
-        await say(ctx, f"Too large: {', '.join(oversized)} {SAD_EMOJI}")
+        await caller.send(f"Too large: {', '.join(oversized)} {SAD_EMOJI}")
+        return
+
+    # Refuse a wait nobody would sit through, rather than accepting it and
+    # going quiet. The queue is unbounded and merges are serialized across
+    # every guild, so a busy evening can stack a wait longer than the merge is
+    # worth -- and the player has no way to see the queue they are joining.
+    #
+    # A refusal here costs a retry; the alternative costs the same wait and
+    # then delivers. Deliberately generous, and read against a rough estimate:
+    # CLAUDE.md is explicit that board content matters nearly as much as shot
+    # count, so this is a bound on the absurd, not a scheduling policy.
+    queued_wait = wait_estimate(r.shots for r in _waiting)
+    if queued_wait > MAX_QUEUE_WAIT_S:
+        await caller.send(
+            f"Too many merges queued right now -- yours would wait "
+            f"{human_wait(queued_wait)}. {SAD_EMOJI} Try again in a few minutes."
+        )
         return
 
     note = (f" ({skipped} non-image attachment{'' if skipped == 1 else 's'} ignored)"
@@ -931,22 +1325,7 @@ async def merge(ctx, size: str = None, *extras):
         return (f"Merging {len(shots)} screenshot{plural}{at}{note} -- "
                 f"{human_wait(merge_estimate(len(shots)))}. {WAIT_EMOJI}")
 
-    # Only claim to be merging when we are. Leading with "Merging ..." while
-    # the job still sits behind another guild's merge leaves a queued player
-    # watching a static message that claims work is happening, which reads from
-    # the channel as the bot having hung. Waiting on a job in a guild you
-    # cannot see is precisely when you need telling.
-    ahead_counts = list(_waiting)
-    ahead = len(ahead_counts) + (1 if MERGE_LOCK.locked() else 0)
-    notice = None
-    if ahead:
-        notice = await say(ctx,
-            f"Queued behind {ahead} merge{'' if ahead == 1 else 's'} -- "
-            f"starting in {human_wait(wait_estimate(ahead_counts))}. {WAIT_EMOJI}"
-        )
-    else:
-        await say(ctx, starting_text())
-
+    rec = _Queued(len(shots))
     workdir = pathlib.Path(tempfile.mkdtemp(prefix="polymerge_"))
     # safe name -> "image 2 of 3". Deliberately a *position*, not the
     # filename the user uploaded: anything echoed into the channel is
@@ -959,24 +1338,41 @@ async def merge(ctx, size: str = None, *extras):
         # leave the queue the moment it stops waiting -- whether that is because
         # the slot was granted or because the wait was cancelled. An
         # `async with` gives no hook between those two.
-        _waiting.append(len(shots))
+        #
+        # Joined to the queue *before* the ack is sent, so the position the ack
+        # reports is read from the same list that refresh_queue_notices will
+        # later re-read. Removed by identity, not by value -- see _Queued.
+        _waiting.append(rec)
         try:
+            # Only claim to be merging when we are. Leading with "Merging ..."
+            # while the job still sits behind another guild's merge leaves a
+            # queued player watching a static message that claims work is
+            # happening, which reads from the channel as the bot having hung.
+            # Waiting on a job in a guild you cannot see is precisely when you
+            # need telling.
+            queued = queue_notice_text(rec)
+            rec.notice = await caller.send(queued or starting_text())
+            rec.shown = queued
+            # The public ack is up, so the slash command's ephemeral "thinking"
+            # placeholder has nothing left to say. No-op for a prefix command,
+            # which never had one.
+            await caller.clear_placeholder()
             await MERGE_LOCK.acquire()
         finally:
-            _waiting.remove(len(shots))
+            _waiting.remove(rec)
         held0 = time.monotonic()
         _running_since, _running_shots = held0, len(shots)
         try:
-            if notice is not None:
+            if rec.shown is not None and rec.notice is not None:
                 # The edit *is* the signal that the wait ended, so it replaces
                 # the queue notice rather than adding a message. Best-effort:
                 # a failed edit must never sink a merge that is about to run,
                 # the same posture as the DONE_EMOJI reactions below.
                 try:
-                    await notice.edit(content=starting_text())
+                    await rec.notice.edit(content=starting_text())
                 except discord.HTTPException:
                     pass
-            async with ctx.typing():
+            async with caller.typing():
                 paths = []
                 for i, a in enumerate(shots):
                     p = workdir / safe_name(i, a.filename)
@@ -1006,6 +1402,12 @@ async def merge(ctx, size: str = None, *extras):
                 _speed.append(min(4.0, max(0.25, held / predicted)))
             _running_since = _running_shots = None
             MERGE_LOCK.release()
+            # Everyone behind this merge just moved up one. Fired rather than
+            # awaited: the composite still has to be encoded and posted below,
+            # and the people waiting should not be told after the person who
+            # is already finished. The queue changing is the only moment these
+            # numbers move, so there is nothing a poll would catch in between.
+            asyncio.create_task(refresh_queue_notices())
 
         if rc != 0 or not out_path.exists():
             # polymerge reports every refusal by raising SystemExit with an
@@ -1027,8 +1429,9 @@ async def merge(ctx, size: str = None, *extras):
             # the command arriving and then nothing at all, which reads exactly
             # like the bot having silently dropped it. Whoever is reading the
             # log is usually not the player who got the message.
-            print(f"#{ctx.channel} merge FAILED: {head}", file=sys.stderr)
-            await say(ctx, reply=False,
+            print(f"#{caller.channel} merge FAILED: {head}", file=sys.stderr)
+            await caller.send(
+                      reply=False,
                       content=f"**Error:** {head} {SAD_EMOJI}"
                            + (f"\n```\n{rest.strip()}\n```" if rest.strip() else ""))
             return
@@ -1038,12 +1441,12 @@ async def merge(ctx, size: str = None, *extras):
             # Re-encode rather than refuse: the merge already succeeded, so
             # don't throw it away over a few MB.
             # Off the event loop because the encode is CPU-bound.
-            print(f"#{ctx.channel}: composite is {size_bytes / 1e6:.1f} MB, "
+            print(f"#{caller.channel}: composite is {size_bytes / 1e6:.1f} MB, "
                   f"re-encoding to JPEG for upload")
             smaller = await asyncio.to_thread(
                 shrink_for_upload, out_path, MAX_UPLOAD_BYTES)
             if smaller is None:
-                await say(ctx, reply=False, content=
+                await caller.send(reply=False, content=
                     f"The merge worked but the result is {size_bytes / 1e6:.1f} MB "
                     f"and I couldn't get it under this server's "
                     f"{MAX_UPLOAD_BYTES / 1e6:.0f} MB upload limit. {SAD_EMOJI}"
@@ -1058,7 +1461,7 @@ async def merge(ctx, size: str = None, *extras):
         used_size = map_size or found_size
         lock = fog_lock_line(stdout)
         if lock:
-            print(f"#{ctx.channel} merged {len(shots)} at {used_size}"
+            print(f"#{caller.channel} merged {len(shots)} at {used_size}"
                   + (" (detected)" if map_size is None else "") + f": {lock}")
         for line in (stdout or "").splitlines():
             # Same console-not-channel reasoning as fog lock: which shots got
@@ -1067,7 +1470,7 @@ async def merge(ctx, size: str = None, *extras):
             # channel -- the composite itself already shows the markers.
             if line.strip().startswith(("dropping ", "Elyrion ruin vision",
                                         "WARNING:")):
-                print(f"#{ctx.channel}: {line.strip()}")
+                print(f"#{caller.channel}: {line.strip()}")
 
         n_dropped, dropped = dropped_shots(stdout)
         used = len(shots) - n_dropped
@@ -1161,8 +1564,8 @@ async def merge(ctx, size: str = None, *extras):
         # out_path.name, not a hardcoded "merged.png": the upload-size
         # fallback above may have swapped in a JPEG, and labelling that .png
         # would hand clients a file whose extension lies about its contents.
-        await say(ctx, reply=False, content=caption,
-                  file=discord.File(out_path, filename=out_path.name))
+        await caller.send(reply=False, content=caption,
+                          file=discord.File(out_path, filename=out_path.name))
 
         # Mark history-sourced shots consumed so the next !merge in this
         # thread doesn't pick them up again. Best-effort: a missing "Add
