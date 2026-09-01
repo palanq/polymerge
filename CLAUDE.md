@@ -879,12 +879,19 @@ shared community bot sees most of. Do not rely on the ordering settling; make
 the collision impossible, which is the same call as using channel messages over
 interaction followups for the token.
 
-**Whether `polymerge-help` actually escapes it is unverified**, and depends on
-something not established here: whether Discord's picker matches a *substring*
-of a command name or only a *prefix*. "merge" is inside "polymerge-help" but
-does not start it. If it still collides, the fix is a name with no "merge" in it
-at all (`polyhelp`) and nothing but the constant changes. Test it in a guild
-rather than reasoning about it.
+**`polymerge-help` does not escape the collision, and that is now measured
+rather than assumed.** Typing `/merge` in a real guild lists both commands, so
+the picker matches a **substring** of the command name — "merge" is inside
+"polymerge-help". Only a name with no "merge" in it (`polyhelp`) would separate
+them, and changing `HELP_COMMAND` is the whole edit.
+
+It is kept anyway, as the project owner's call: the *ranking* appears to favour
+prefixes, so `/merge` sorts above `/polymerge-help` and Enter takes the right
+one. Note what that concedes — the guarantee is now "the ordering happens to
+work" rather than "there is nothing to order", which is a weaker thing than the
+rename set out to buy, and it depends on behaviour Discord does not document.
+If a report ever comes in of Enter landing on the help, that is this, and the
+fix is one constant.
 
 Either way `/merge`'s **own description names the help command**, and that is
 where most of the discoverability lives: the picker shows that line while
@@ -3346,6 +3353,40 @@ template location.
   that actually failed, and they are the ones to look at first.
 
 ## Deferred (known, deliberately not handled yet)
+
+### Two merges fired in quick succession in one channel merge the same shots
+
+Observed on the beta bot and **deliberately left alone** until it shows up in
+real use — the project owner's call, and a reasonable one: it needs two merges
+started within one merge's runtime in the *same* channel, which a group taking
+turns posting screenshots does not naturally do.
+
+The mechanism is an ordering, not a bug in any one function. In `do_merge` the
+🗺️ scan runs at the top, the queue slot is taken in the middle, and the ✅
+marks go on at the very end, after the composite posts. The ✅ is what makes a
+merge idempotent — `collect_marked_shots` skips anything already marked — so
+between a merge starting and finishing, its shots still look unclaimed:
+
+1. `/merge` A scans, finds shots 1–2, queues, runs, ✅s them.
+2. `/merge` B two seconds later scans, finds shots 1–2 *still unmarked*,
+   queues behind A, and merges them a second time.
+
+The player gets two identical composites. Nothing is corrupted and no
+screenshot is lost — this costs a queue slot and confuses, rather than
+producing a wrong map.
+
+It only bites within one channel, because the scan is per-channel: two merges in
+different channels claim disjoint sets and cannot collide.
+
+The obvious fix — ✅ at scan time rather than at the end — is wrong, and worth
+saying so before anyone reaches for it: a merge that then fails or gets dropped
+would leave its shots marked as consumed, so the retry finds nothing and the
+player has to un-react every shot to recover. That trades a duplicate for
+silent data loss, which is much the worse failure and against this file's whole
+posture. Whatever is built here has to hold a claim that is *released* when a
+merge fails — an in-flight set keyed by channel is the obvious shape, and it
+reintroduces exactly the bot-side session state the reaction design exists to
+avoid, which is the reason not to build it speculatively.
 
 ### A shot with only *one* board edge in frame
 

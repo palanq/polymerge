@@ -738,11 +738,17 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 # someone who has never run either, i.e. exactly the person least able to tell
 # the picker mis-fired.
 #
-# Whether *this* name escapes the collision depends on whether the picker
-# matches a substring of the command name or only a prefix: "merge" is inside
-# "polymerge-help" but does not start it. That is worth testing in a real guild
-# rather than assuming -- if it still collides, the fix is a name with no
-# "merge" in it at all (`polyhelp`), and nothing but this constant changes.
+# It does NOT escape the collision, which was measured rather than assumed:
+# typing `/merge` in a real guild lists both commands, so the picker matches a
+# *substring* of the command name and "merge" is inside "polymerge-help". A name
+# with no "merge" in it (`polyhelp`) is the only thing that would separate them,
+# and changing this constant is the whole edit.
+#
+# Kept anyway, deliberately: the ranking appears to favour prefixes, so `/merge`
+# sorts above `/polymerge-help` and Enter takes the right one. That is a weaker
+# guarantee than not matching at all -- it rests on an undocumented ordering --
+# but it is the project owner's call, and the explicit name is worth something
+# in a shared server where other apps also register commands.
 HELP_COMMAND = "polymerge-help"
 
 # Guild id to sync slash commands to instantly, for development. Global sync is
