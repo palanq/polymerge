@@ -766,18 +766,43 @@ async def setup_hook():
     is the same failure the Dockerfile's missing Overlays/ produced -- a
     deployment quietly disagreeing with the source -- which is why on_ready
     prints what actually synced rather than assuming it worked."""
+    # Checked before the sync rather than inside it, because setup_hook runs
+    # during login: an exception here takes the whole bot down, where a failed
+    # sync only costs the slash commands. A guild *name* pasted in place of an
+    # id is the obvious mistake and used to be fatal, which is a spectacular
+    # way to punish a typo in a development-only variable.
+    guild = None
+    if DEV_GUILD_ID:
+        if DEV_GUILD_ID.strip().isdigit():
+            guild = discord.Object(id=int(DEV_GUILD_ID.strip()))
+        else:
+            print(f"POLYMERGE_DEV_GUILD={DEV_GUILD_ID!r} is not a guild id -- "
+                  f"syncing globally instead. Turn on Developer Mode in "
+                  f"Discord, then right-click the server and Copy Server ID.",
+                  file=sys.stderr)
     try:
-        if DEV_GUILD_ID:
-            where = discord.Object(id=int(DEV_GUILD_ID))
-            bot.tree.copy_global_to(guild=where)
-            synced = await bot.tree.sync(guild=where)
-            print(f"synced {len(synced)} slash commands to guild {DEV_GUILD_ID}")
+        if guild is not None:
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            print(f"synced {len(synced)} slash commands to guild {guild.id}")
         else:
             synced = await bot.tree.sync()
             print(f"synced {len(synced)} slash commands globally")
-    except discord.HTTPException as e:
+    except Exception as e:
         # Not fatal: !merge does not need the tree, so a failed sync should cost
-        # the slash commands and nothing else.
+        # the slash commands and nothing else. A guild id the bot is not in
+        # lands here as 403/404 rather than as a crash.
+        #
+        # Deliberately broad, which is not the usual instinct and is right here.
+        # setup_hook runs during login, so *anything* raised takes the whole bot
+        # down -- and the alternative on offer is a bot that starts with no
+        # slash commands and a loud line in the log, which is strictly better
+        # than one that does not start at all. HTTPException alone was too
+        # narrow: sync can also raise MissingApplicationID, and a malformed
+        # command definition raises TypeError from the library, neither of which
+        # should cost the prefix command its deployment. Nothing is swallowed --
+        # the repr goes to stderr, and on_ready's synced-count line is what says
+        # whether the tree actually landed.
         print(f"slash command sync FAILED: {e!r}", file=sys.stderr)
 
 
