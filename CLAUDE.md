@@ -708,6 +708,17 @@ considered and rejected in favor of one-message-in/one-composite-out; marking
 via reactions keeps that property (no session to leave open, no window to
 manage) while still letting a thread fill up naturally.
 
+**The ✅ is applied at the *end* of a merge, and that ordering is deliberate.**
+It is the only thing making a merge idempotent, so marking at scan time instead
+looks tidier and is much worse: a merge that then fails or gets dropped would
+leave its shots marked consumed, the retry would find nothing, and the player
+would have to un-react every screenshot to recover — silent data loss traded
+for tidiness. The visible consequence of marking late is that two merges started
+in one channel seconds apart both see the shots unmarked and produce the same
+composite twice. That is degenerate rather than a defect: a channel is one game,
+so a second simultaneous merge has nothing to add, and it costs a duplicate
+image rather than a wrong map. Don't "fix" it by moving the mark.
+
 **There are two front ends, `!merge` and `/merge`, and they differ only in how
 the options arrive.** `!merge [size] [layers...]` parses free text; `/merge`
 takes the same two as typed options that Discord validates and describes at the
@@ -868,7 +879,37 @@ usable screenshots found" — both name it, which is the moment it is wanted.
 `help_text` interpolates the configured emoji, prefix, sizes and limits rather
 than hardcoding them.
 
-**`/merge-help` exists because the option descriptions carry only half the
+**The help command's name is `HELP_COMMAND`, and the first name it had was a
+trap worth recording.** It was `merge-help`, and `merge` is a strict prefix of
+that — so typing `/merge` matched *both* commands and Enter took whichever
+Discord had highlighted, which on the beta bot was the help. The ranking rule is
+undocumented and evidently personalized, so it converges on the right answer for
+a player who merges often and is wrong for one who has never run either — i.e.
+exactly the person least able to tell the picker mis-fired, and the person a
+shared community bot sees most of. Do not rely on the ordering settling; make
+the collision impossible, which is the same call as using channel messages over
+interaction followups for the token.
+
+**`polymerge-help` does not escape the collision, and that is now measured
+rather than assumed.** Typing `/merge` in a real guild lists both commands, so
+the picker matches a **substring** of the command name — "merge" is inside
+"polymerge-help". Only a name with no "merge" in it (`polyhelp`) would separate
+them, and changing `HELP_COMMAND` is the whole edit.
+
+It is kept anyway, as the project owner's call: the *ranking* appears to favour
+prefixes, so `/merge` sorts above `/polymerge-help` and Enter takes the right
+one. Note what that concedes — the guarantee is now "the ordering happens to
+work" rather than "there is nothing to order", which is a weaker thing than the
+rename set out to buy, and it depends on behaviour Discord does not document.
+If a report ever comes in of Enter landing on the help, that is this, and the
+fix is one constant.
+
+Either way `/merge`'s **own description names the help command**, and that is
+where most of the discoverability lives: the picker shows that line while
+someone is typing `/merge`, which is exactly where a player who needs the
+instructions already is. It costs nothing and survives any rename.
+
+**`/polymerge-help` exists because the option descriptions carry only half the
 help.** Discord renders the command and per-option descriptions inline as you
 type, so under `/merge` the board size and the four layers document themselves —
 that part of `help_text` is redundant there. Everything else in it has nowhere

@@ -727,6 +727,30 @@ intents.message_content = True
 COMMAND_PREFIX = os.environ.get("POLYMERGE_PREFIX") or "!"
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 
+# The help command's name, kept in one place because it is interpolated into
+# channel copy and into /merge's own description.
+#
+# It is deliberately *not* `merge-help`, which was the first name and was a
+# trap: `merge` is a strict prefix of it, so typing `/merge` matched both
+# commands and Enter took whichever Discord had highlighted -- which is ranked
+# by a rule Discord does not document and evidently personalizes per user. That
+# converges on the right answer for someone who merges often and is wrong for
+# someone who has never run either, i.e. exactly the person least able to tell
+# the picker mis-fired.
+#
+# It does NOT escape the collision, which was measured rather than assumed:
+# typing `/merge` in a real guild lists both commands, so the picker matches a
+# *substring* of the command name and "merge" is inside "polymerge-help". A name
+# with no "merge" in it (`polyhelp`) is the only thing that would separate them,
+# and changing this constant is the whole edit.
+#
+# Kept anyway, deliberately: the ranking appears to favour prefixes, so `/merge`
+# sorts above `/polymerge-help` and Enter takes the right one. That is a weaker
+# guarantee than not matching at all -- it rests on an undocumented ordering --
+# but it is the project owner's call, and the explicit name is worth something
+# in a shared server where other apps also register commands.
+HELP_COMMAND = "polymerge-help"
+
 # Guild id to sync slash commands to instantly, for development. Global sync is
 # what production wants -- one instance serving several guilds -- but it is not
 # instant, which makes iterating on a command signature slow. Unset in
@@ -748,18 +772,43 @@ async def setup_hook():
     is the same failure the Dockerfile's missing Overlays/ produced -- a
     deployment quietly disagreeing with the source -- which is why on_ready
     prints what actually synced rather than assuming it worked."""
+    # Checked before the sync rather than inside it, because setup_hook runs
+    # during login: an exception here takes the whole bot down, where a failed
+    # sync only costs the slash commands. A guild *name* pasted in place of an
+    # id is the obvious mistake and used to be fatal, which is a spectacular
+    # way to punish a typo in a development-only variable.
+    guild = None
+    if DEV_GUILD_ID:
+        if DEV_GUILD_ID.strip().isdigit():
+            guild = discord.Object(id=int(DEV_GUILD_ID.strip()))
+        else:
+            print(f"POLYMERGE_DEV_GUILD={DEV_GUILD_ID!r} is not a guild id -- "
+                  f"syncing globally instead. Turn on Developer Mode in "
+                  f"Discord, then right-click the server and Copy Server ID.",
+                  file=sys.stderr)
     try:
-        if DEV_GUILD_ID:
-            where = discord.Object(id=int(DEV_GUILD_ID))
-            bot.tree.copy_global_to(guild=where)
-            synced = await bot.tree.sync(guild=where)
-            print(f"synced {len(synced)} slash commands to guild {DEV_GUILD_ID}")
+        if guild is not None:
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            print(f"synced {len(synced)} slash commands to guild {guild.id}")
         else:
             synced = await bot.tree.sync()
             print(f"synced {len(synced)} slash commands globally")
-    except discord.HTTPException as e:
+    except Exception as e:
         # Not fatal: !merge does not need the tree, so a failed sync should cost
-        # the slash commands and nothing else.
+        # the slash commands and nothing else. A guild id the bot is not in
+        # lands here as 403/404 rather than as a crash.
+        #
+        # Deliberately broad, which is not the usual instinct and is right here.
+        # setup_hook runs during login, so *anything* raised takes the whole bot
+        # down -- and the alternative on offer is a bot that starts with no
+        # slash commands and a loud line in the log, which is strictly better
+        # than one that does not start at all. HTTPException alone was too
+        # narrow: sync can also raise MissingApplicationID, and a malformed
+        # command definition raises TypeError from the library, neither of which
+        # should cost the prefix command its deployment. Nothing is swallowed --
+        # the repr goes to stderr, and on_ready's synced-count line is what says
+        # whether the tree actually landed.
         print(f"slash command sync FAILED: {e!r}", file=sys.stderr)
 
 
@@ -829,7 +878,7 @@ class Caller:
     the queue notice below be edited for as long as the queue takes."""
 
     __slots__ = ("channel", "guild", "author", "attachments",
-                 "_ctx", "_interaction")
+                 "_ctx", "_interaction", "_placeholder")
 
     def __init__(self, channel, guild, author, attachments,
                  ctx=None, interaction=None):
@@ -839,6 +888,9 @@ class Caller:
         self.attachments = attachments
         self._ctx = ctx
         self._interaction = interaction
+        # Whether the deferral's ephemeral "thinking" placeholder is still on
+        # screen. False for a prefix command, which never has one.
+        self._placeholder = interaction is not None
 
     @classmethod
     def from_ctx(cls, ctx):
@@ -880,7 +932,20 @@ class Caller:
         try:
             send = (self._ctx.reply if reply and self._ctx is not None
                     else self.channel.send)
-            return await send(content, **kw) if content is not None else await send(**kw)
+            msg = await send(content, **kw) if content is not None else await send(**kw)
+            # Anything visible has now been said, so the "thinking" placeholder
+            # is redundant -- drop it here rather than at the call sites.
+            #
+            # This is the whole reason clearing lives inside send: do_merge has
+            # seven early returns (missing template, no templates, no history
+            # permission, no screenshots, too many, too large, queue full) and
+            # every one of them posts a message and returns. Clearing at each
+            # was one edit per path and one more to forget on the eighth; the
+            # symptom of forgetting is a spinner that hangs until the
+            # interaction expires, which is what happened on "no usable
+            # screenshots found".
+            await self.clear_placeholder()
+            return msg
         except discord.Forbidden:
             where = getattr(self.channel, "name", self.channel)
             me = self.guild.me if self.guild else None
@@ -900,13 +965,24 @@ class Caller:
     async def tell_privately(self, content):
         """Say something only the invoker sees, or nothing on the prefix path.
 
+        Two routes, because the placeholder may already be gone: while it is
+        still up, edit it in place -- that reuses the message the player is
+        already looking at. Once send() has cleared it, there is nothing to
+        edit and a fresh ephemeral followup is the only way through. Getting
+        this wrong loses exactly the message this class exists to deliver, on
+        the second failure rather than the first, which is a poor place to
+        discover it.
+
         Best-effort: this runs on paths that are already failing, and an
-        expired or already-consumed interaction must not raise on top of the
-        problem it is reporting."""
+        expired interaction must not raise on top of the problem it reports."""
         if self._interaction is None:
             return
         try:
-            await self._interaction.edit_original_response(content=content)
+            if self._placeholder:
+                self._placeholder = False
+                await self._interaction.edit_original_response(content=content)
+            else:
+                await self._interaction.followup.send(content, ephemeral=True)
         except discord.HTTPException:
             pass
 
@@ -914,9 +990,12 @@ class Caller:
         """Drop the ephemeral "thinking" placeholder left by the deferral.
 
         Only the slash path has one -- `!merge` posts its ack directly and has
-        nothing to clear. Best-effort for the same reason as above."""
-        if self._interaction is None:
+        nothing to clear. Idempotent, since send() calls it on every message
+        and only the first has anything to do. Best-effort: a placeholder that
+        will not delete is cosmetic, and must not sink a merge over it."""
+        if not self._placeholder:
             return
+        self._placeholder = False
         try:
             await self._interaction.delete_original_response()
         except discord.HTTPException:
@@ -1158,8 +1237,12 @@ async def merge(ctx, size: str = None, *extras):
 
 @bot.tree.command(
     name="merge",
-    description="Merge screenshots reacted "
-                + MARK_EMOJI + " in this channel into one map",
+    # Names the help command, because the picker shows this line while someone
+    # is typing `/merge` -- which is where a player who needs the instructions
+    # actually is. That is most of the discoverability the help command gives
+    # up by not being called `merge-something`, bought back for nothing.
+    description="Merge screenshots reacted " + MARK_EMOJI
+                + f" into one map -- /{HELP_COMMAND} explains",
 )
 @app_commands.choices(size=[
     app_commands.Choice(name=f"{n}x{n} ({MAP_SIZE_NAMES[n]})", value=n)
@@ -1200,7 +1283,7 @@ async def merge_slash(interaction: discord.Interaction,
     await do_merge(caller, size.value if size else None, layers)
 
 
-@bot.tree.command(name="merge-help",
+@bot.tree.command(name=HELP_COMMAND,
                   description="How to use the merge bot")
 async def merge_help_slash(interaction: discord.Interaction):
     """The half of help_text that the option descriptions cannot carry.
@@ -1268,7 +1351,7 @@ async def do_merge(caller, map_size, overlays):
         # who ran a merge with nothing marked is exactly who was looking for it.
         #
         # Both routes to the help are named, because which one is reachable
-        # depends on how they got here: /merge-help needs the guild to have
+        # depends on how they got here: the slash help needs the guild to have
         # authorized slash commands at all, and `!merge help` always works.
         # Attaching is named only when it is possible -- /merge takes no
         # attachments, so telling a slash user to attach them sends them to a
@@ -1277,7 +1360,8 @@ async def do_merge(caller, map_size, overlays):
                   else "React")
         msg = (f"No usable screenshots found. {SAD_EMOJI} {attach} "
                f"{MARK_EMOJI} on screenshots posted above, then merge again. "
-               f"`/merge-help` or `{COMMAND_PREFIX}merge help` explains how.")
+               f"`/{HELP_COMMAND}` or `{COMMAND_PREFIX}merge help` explains "
+               f"how.")
         if barren:
             message, it = ("message", "it") if barren == 1 else ("messages", "them")
             msg += f" ({barren} marked {message} had no image on {it}.)"
@@ -1353,10 +1437,6 @@ async def do_merge(caller, map_size, overlays):
             queued = queue_notice_text(rec)
             rec.notice = await caller.send(queued or starting_text())
             rec.shown = queued
-            # The public ack is up, so the slash command's ephemeral "thinking"
-            # placeholder has nothing left to say. No-op for a prefix command,
-            # which never had one.
-            await caller.clear_placeholder()
             await MERGE_LOCK.acquire()
         finally:
             _waiting.remove(rec)
