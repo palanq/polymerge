@@ -92,7 +92,7 @@ SET_FLAGS = {}
 #     is confined to the board (see sift_mask_for in polymerge).
 #   not-the-merge's-anchor: fogless, replay_ss2 -- --cross-check returns before the merge
 #     path, so it reports the *refined* anchors, and on a board with no fog the
-#     merge discards those in favour of each shot's own unrefined edge anchor
+#     merge discards those in favor of each shot's own unrefined edge anchor
 #     (see the zero-lock block in polymerge's main). Its 16.6 is the quality of
 #     an anchor nothing uses; the anchors the merge does use agree to 0.023
 #     tiles. Same shape as star_change's documented case.

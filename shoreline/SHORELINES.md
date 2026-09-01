@@ -58,7 +58,7 @@ runs one way only: **`polymerge.py` and `polybot.py` must never import this.**
 - `-o` writes a render. `--frame board` (default) is the whole board in
   template space — the blank all-fog render with this shot pasted over it, so
   board it never photographed reads as fog. `--frame shot` washes the
-  screenshot's own pixels instead, which is what a player recognises, and is
+  screenshot's own pixels instead, which is what a player recognizes, and is
   what stage 2's bot will want.
 - `--method` is `ratio` (default), `joint` or `hybrid`; see the joint-model
   section. The latter two need `shoreline_basis.npz`.
@@ -96,7 +96,7 @@ foundation, so if one turns out to be wrong the reader has to change with it:
   all four sides is ocean (or land), never shallow water. That is what makes
   a per-tile positive control possible.
 - **Ocean therefore has water on all four cardinal sides**, which resolves
-  all four of its fogged neighbours at a stroke — built, and it reaches
+  all four of its fogged neighbors at a stroke — built, and it reaches
   exactly where the rim reader is blind, in open sea where there is no
   shoreline anywhere to read.
 
@@ -121,7 +121,7 @@ as explored:
   tile **to itself** is what makes this immune to exposure, device and the
   sunrise.
 - Both restricted to **water-chromatic** pixels (G/B 0.830, R/B 0.431). This is
-  not a terrain catalogue: it identifies one tile type whose art is fixed, the
+  not a terrain catalog: it identifies one tile type whose art is fixed, the
   way the fog test does, and only to decide which pixels of an
   already-classified tile are water.
 - The band is read at its **70th percentile, not its median**, and the
@@ -147,7 +147,7 @@ conflicts, bars and `--cross-check` all unchanged.
 
 **The ocean test's false-positive rate is still not properly measured, and the
 obvious way to measure it does not work.** Scoring "does a detected ocean tile
-have a land neighbour?" with a colour-threshold land test reports ~20-30%
+have a land neighbor?" with a color-threshold land test reports ~20-30%
 violations — but it reports the *same* rate for the old strict rule on tiles
 that are unambiguously ocean by every measure (dominance 0.82-1.00), so the
 land test is what is wrong, not the detector. Do not tune ocean against that
@@ -173,12 +173,12 @@ called land when it is water, from tile (8,16)'s SW rim at 1.033, and it
 persists at every threshold setting tried. (8,16) has real land on its **NW**
 edge; the two edges meet at the west vertex and that genuine shoreline bleeds
 around the corner into the SW band. Reading each edge independently is what
-allows a neighbour edge's shoreline to be counted as this one's, so this is the
+allows a neighbor edge's shoreline to be counted as this one's, so this is the
 case for scoring whole-tile configurations jointly rather than four separate
 rims — see the deferred note.
 
 **All four edges are read.** SE/SW were expected to be unusable, since a taller
-neighbour to the south clips them — but measured they are only slightly weaker
+neighbor to the south clips them — but measured they are only slightly weaker
 (recall NW 97%, NE 94%, SW 93%, SE 85%) at the same zero false-positive rate.
 Do not drop them again without measuring.
 
@@ -234,7 +234,7 @@ zero-error result as "not yet falsified" rather than as a guarantee:
 The older figures — 277 land-adjacent and 337 water-adjacent edges over ten
 sets, land 95% recall at 0.0% false, water 87% at 1.4% — are still the source
 of the ratio distributions (land median 1.089, water 1.006, a void between
-water's max 1.028 and land's p05 1.045), but they score edges whose neighbour is
+water's max 1.028 and land's p05 1.045), but they score edges whose neighbor is
 **explored**. That is a different population from the one the reader is used
 on, and it is how the `goon_test2` (17,3) false land call survived every number
 in this file. Prefer the fog pairs; keep the two same-board sets
@@ -262,7 +262,7 @@ knowing if a future pair produces a corner error the ratio bar does not catch.
 the feature rather than falling back when it is absent, since a silently
 different method is worse than none. The default `ratio` needs no such file.
 
-**Occlusion is decided without a colour prior**, which matters because the
+**Occlusion is decided without a color prior**, which matters because the
 obvious alternative is measurably lossy: keeping only water-chromatic pixels
 throws away a median 34% of a shoreline band and more than 60% of it on a
 quarter of them, since a strong shoreline leaves the water chroma window on its
@@ -274,10 +274,10 @@ ratio in place of gray, and weighting pixels by how well-determined the basis is
 (99% of basis pixels are fitted from 60+ samples, so there is no spread to
 exploit). Do not re-land them without new evidence.
 
-**Colour is load-bearing in the templates, and only there.** The same template
-scheme scores 112 in gray and 116 in colour, and gray makes two false land calls
-where colour makes none. But as a *band statistic* replacing the ratio's gray,
-chroma is worse -- 46% recall against 84% at zero false positives. So colour
+**Color is load-bearing in the templates, and only there.** The same template
+scheme scores 112 in gray and 116 in color, and gray makes two false land calls
+where color makes none. But as a *band statistic* replacing the ratio's gray,
+chroma is worse -- 46% recall against 84% at zero false positives. So color
 helps a whole-tile match and hurts a single-band contrast; the two results are
 consistent, not contradictory.
 
@@ -287,15 +287,15 @@ and so cancels in the margin. Measured, leaving occluders in gives **22-25 false
 land calls against zero**. Cancellation needs the added error to be independent
 of the hypothesis, and in the discriminating band it is not: that band is
 *defined* as where brightness separates the hypotheses, so anything bright
-intruding there is indistinguishable from evidence. Colour does not rescue it
+intruding there is indistinguishable from evidence. Color does not rescue it
 either (22 against gray's 25) -- it makes the occluder's error large for both
-hypotheses rather than equal, so the signal drowns instead of cancelling.
+hypotheses rather than equal, so the signal drowns instead of canceling.
 
 **Only edges facing the composite's fog are measured.** The merge is already
 decided when this runs, so a reading about a tile somebody explored would be
 discarded anyway — and computing it first was pure waste. `read_shorelines`
 takes the unresolved set and skips a water tile outright when none of its four
-neighbours is still fog, which on a developed board is most of them: it cut
+neighbors is still fog, which on a developed board is most of them: it cut
 edges measured by ~95% (`goon_test` 384 → 20, `pol_archi_test` 196 → 5) with
 every verdict, and every tracked baseline, identical. The candidate list is
 built *before* the per-source chroma masks, because those are full-canvas and
@@ -327,18 +327,18 @@ until both edges are decided together.
 The model is nine images (`shoreline/tools/learn_shorelines.py` -> `shoreline_basis.npz`):
 a water base, four edge contributions, four corner interaction terms, learned
 from the fog pairs. Not sixteen per-configuration templates, because a
-neighbour is fog / explored land / explored water / board rim, so the space the
+neighbor is fog / explored land / explored water / board rim, so the space the
 detector meets is 6^4 -- measured, 87 distinct patterns among 113 tiles. Five
 terms explain 79.2% of the configuration variance and the four corner terms take
 it to **92.7%**. Two supporting measurements, both reusable: a shoreline looks
-the same whether its neighbour is fog or land (0.001-0.007 against a signal of
-0.03-0.09), *except* on NE where a fog neighbour darkens the rim by -0.043, so
+the same whether its neighbor is fog or land (0.001-0.007 against a signal of
+0.03-0.09), *except* on NE where a fog neighbor darkens the rim by -0.043, so
 four scalar fog offsets are fitted alongside.
 
 **It does not beat the per-edge reader on honest evaluation, and more training
 data will not fix that -- measured, not assumed.** Trained on all four pairs it
 scores 122/124; held out one pair at a time, 117/122. The obvious reading is a
-generalisation gap that more pairs would close, and that reading is **wrong**.
+generalization gap that more pairs would close, and that reading is **wrong**.
 The learning curve, scoring each pair against a basis trained on N others,
 flattens between two and three:
 
@@ -351,7 +351,7 @@ flattens between two and three:
 It has already asymptoted, so the limit is the model or the features, not the
 sample size. At matched coverage (~29 tiles/board) it errs 3.4% against the
 ratio method's 0.9%; at matched error it resolves 24.8 against 29.0. Two levers
-worth trying, both model changes: score in **colour** rather than gray (the
+worth trying, both model changes: score in **color** rather than gray (the
 basis discards the chroma the ratio method leans on), and **weight pixels by how
 well-determined the basis is** there, since a pixel fitted from a handful of
 samples currently counts as much as one fitted from hundreds.
@@ -385,7 +385,7 @@ in the corpus produces one.
 `shoreline/examples/` — 14 tile-detail popup renders of water tiles,
 named by which edges carry a shoreline (`NW-NE.png`, `SW-SE.png`, `SE,
 fish.png`, `NW-SE, port, borders.png`, `ocean.png`, …). These calibrated
-the shoreline constants and are the labelled test for the three-way answer:
+the shoreline constants and are the labeled test for the three-way answer:
 the fish and most border cases read correctly, and a border sitting on a
 rim reads far outside both bands, which is exactly the uncallable case. The
 two carrying a bridge and a port cannot be registered from their silhouette
@@ -433,12 +433,12 @@ agreement is what made `goon_test2` tile (17,3) stand out as the exception.
 ## Deferred: validating the ocean rule as an inference
 
 The ocean rule is built, but its *test* is
-still only lightly validated. `water_chroma_masks` identifies ocean by colour,
+still only lightly validated. `water_chroma_masks` identifies ocean by color,
 and until now that mask was used only to **exclude** ocean tiles from rim
 reading, where a false negative costs nothing. As an inference a false positive
 washes four tiles at once, so the asymmetry matters.
 
-What exists: the rule's own self-check, which says 33 of 34 explored neighbours
+What exists: the rule's own self-check, which says 33 of 34 explored neighbors
 of a detected ocean tile are water or ocean. What is missing is a corpus with
 enough open water to make that number mean something — single digits of ocean
 tiles per set today. Fresh screenshots of open sea are the thing to collect.

@@ -11,9 +11,9 @@ experiment can change the algorithm without touching the merge. Expect the two
 to drift; when they matter to each other, re-derive from polymerge. What this
 still earns its place for is the measurement modes the merge has no reason to
 carry -- the near-miss sheet (candidates just under the accept bar, the only
-view onto false negatives) and --crops for labelling.
+view onto false negatives) and --crops for labeling.
 
-The idea is the project owner's: a bar is *always* centred on its city tile's
+The idea is the project owner's: a bar is *always* centered on its city tile's
 south vertex, and the merge already knows every south vertex exactly. So there
 is nothing to search for. Go to the vertex, look at the fixed region a bar would
 have to occupy, and ask whether it looks like one.
@@ -87,14 +87,14 @@ SCORE_MIN = 0.34              # accept a hypothesis at or above this. Low,
                               # discrimination -- at 0.55 the corpus loses 13
                               # real bars that the project owner confirmed.
 
-# **The bar's own colour, as a corroborator at a known place -- not as a way to
-# find anything.** The distinction matters: a colour *fill* score fails badly
+# **The bar's own color, as a corroborator at a known place -- not as a way to
+# find anything.** The distinction matters: a color *fill* score fails badly
 # here (see edge_rows), because "bright and desaturated" is fog, snow and sand.
-# Asking "is the modal colour inside this already-located rectangle the colour a
+# Asking "is the modal color inside this already-located rectangle the color a
 # bar is painted" is a different and much easier question, the same way
 # RUIN_NOMINATE_SAT is safe where a saturation classifier is not.
 #
-# Measured over 31 confirmed bars and 13 confirmed non-bars: the modal colour of
+# Measured over 31 confirmed bars and 13 confirmed non-bars: the modal color of
 # a real bar is **228** off-white (222-234) or a saturated blue, while every
 # white false positive -- ice, snow, UI panels -- reads **252**. The bar is
 # simply not painted pure white, and that ~24 gray levels is the whole margin.
@@ -102,17 +102,17 @@ BAR_MODE_V = (198, 240)       # off-white body
 BAR_MODE_S = 60               # ...must be this desaturated
 BAR_BLUE_S = 180              # a filled segment is vividly blue; a washed-out
                               # blue at S=128 is pol_archi_test's false positive
-# **The colour box is fixed per tile, and independent of the silhouette.** The
+# **The color box is fixed per tile, and independent of the silhouette.** The
 # *small* bar's footprint is a subset of the capped one, so a box comfortably
 # inside it is inside the bar whichever length this bar turns out to be -- which
-# means the colour test needs nothing from the edge test, and the two are
+# means the color test needs nothing from the edge test, and the two are
 # genuinely separate pieces of evidence rather than a pipeline.
 #
 # Sampling the *detected* rectangle instead couples them and costs accuracy: it
 # inherits whatever the width snap got wrong, and it runs off the frame on tiles
 # near a shot's edge, where out-of-frame black then wins the mode outright.
 #
-# Measured over 55 labelled tiles, this box on its own keeps 32 of 35 real bars
+# Measured over 55 labeled tiles, this box on its own keeps 32 of 35 real bars
 # and rejects 16 of 20 non-bars. Two of its three misses are out-of-frame in
 # that shot and the tile is detected in another; the four it admits are pale
 # water and ice, which is exactly what the edge test throws out.
@@ -159,8 +159,8 @@ def edge_rows(bgr):
 
     A bar is a bright oblong on darker terrain, so going down the image its top
     is a *rising* step and its bottom a *falling* one. That signed pair is the
-    signature, and it needs no colour at all -- which matters, because the
-    obvious colour-fill score does not work: `light` is "bright and
+    signature, and it needs no color at all -- which matters, because the
+    obvious color-fill score does not work: `light` is "bright and
     desaturated", which is precisely what fog, snow and pale sand are. Measured,
     it called 225 tiles bar-like across three sets, most of them open board.
     """
@@ -184,7 +184,7 @@ def probe(sy, origin, u_col, u_row, i, j):
     **A bar is not always brighter than what is behind it.** The obvious
     reading of the silhouette -- a rising luminance step along the top and a
     falling one along the bottom -- holds for the off-white and blue bars, and
-    fails outright for a red one: pure red converts to a grey of about 76 while
+    fails outright for a red one: pure red converts to a gray of about 76 while
     grass sits near 130, so a red bar is a *darker* oblong on brighter ground
     and both its steps run the other way. scorched_earth's Icalus at (15,6) is
     six red segments with no white at all, and a bright-on-dark test finds no
@@ -251,7 +251,7 @@ def _probe_polarity(sy, origin, u_col, u_row, i, j, flip):
 
     scored = []
     for h in BAR_HALVES:
-        # Score each side on its own and keep the better one. A bar is centred,
+        # Score each side on its own and keep the better one. A bar is centered,
         # so the two sides measure the same object, and one clean side settles
         # it -- which is what makes a unit standing on an end harmless.
         #
@@ -294,10 +294,10 @@ def _probe_polarity(sy, origin, u_col, u_row, i, j, flip):
     }
 
 
-def modal_colour(bgr, origin, u_col, u_row, i, j, half=BOX_HALVES[0]):
-    """Modal BGR in the fixed box at tile (i, j), and what colour it is.
+def modal_color(bgr, origin, u_col, u_row, i, j, half=BOX_HALVES[0]):
+    """Modal BGR in the fixed box at tile (i, j), and what color it is.
 
-    Returns (bgr, is_a_bar_colour, is_red).
+    Returns (bgr, is_a_bar_color, is_red).
     """
     tile = float(np.linalg.norm(u_col))
     vx, vy = origin + (i + 1) * u_col + (j + 1) * u_row
@@ -309,11 +309,11 @@ def modal_colour(bgr, origin, u_col, u_row, i, j, half=BOX_HALVES[0]):
             or y1 >= bgr.shape[0] or x1 >= bgr.shape[1]):
         return None, False, False
     patch = bgr[y0:y1 + 1, x0:x1 + 1].reshape(-1, 3)
-    # Out-of-frame pixels carry no colour, and in a warped shot they are black
+    # Out-of-frame pixels carry no color, and in a warped shot they are black
     # -- so leaving them in lets them win the mode outright. Both bars this
     # probe missed against the project owner's labels (test_ss_3 (10,9),
     # badland_test3 (15,16)) scored well on the silhouette and were then
-    # rejected for a modal colour of (0,0,0). The mask taxonomy excludes these
+    # rejected for a modal color of (0,0,0). The mask taxonomy excludes these
     # pixels everywhere else; inside the merge `valid` does it properly.
     patch = patch[patch.max(axis=1) > BOX_DARK]
     if len(patch) < 20:
@@ -341,41 +341,41 @@ def probe_shot(bgr, origin, u_col, u_row, n):
     out = {}
     for i in range(1, n - 1):
         for j in range(1, n - 1):
-            # **Colour takes part in the selection, it does not just filter
+            # **Color takes part in the selection, it does not just filter
             # afterwards.** Two polarities are on offer, and picking the
-            # better-scoring one first and checking its colour second throws
+            # better-scoring one first and checking its color second throws
             # away a good candidate whenever a wrong-polarity reading of the
             # same tile happens to score higher.
             #
             # And the dark polarity is scoped to *red*, which is the only
-            # reason it exists: red converts to a low grey, so a red bar is
+            # reason it exists: red converts to a low gray, so a red bar is
             # darker than the ground. White and blue bars are bright and the
             # ordinary polarity finds them. Left unscoped it admits four false
             # positives corpus-wide, every one of them water or ice -- where a
             # dark oblong on bright ground occurs naturally -- and it cannot be
-            # told from a blue bar by colour, because water reads S=186 against
+            # told from a blue bar by color, because water reads S=186 against
             # a real blue bar's 187. Scoped, it keeps scorched_earth's Icalus
             # and costs nothing: beautiful_test3 (12,11), the one real bar the
             # dark polarity added, is found in that set's other shot anyway.
-            # Colour first, because it is independent of the edge test and
+            # Color first, because it is independent of the edge test and
             # far cheaper -- one patch and a mode, against a row-pair search
             # over the whole band. Order is otherwise free: neither test needs
             # anything the other produces.
-            # Colour on the *small* preset box first: it is independent of the
+            # Color on the *small* preset box first: it is independent of the
             # edge test, far cheaper -- one patch and a mode against a row-pair
             # search over the whole band -- and it sits inside the bar whichever
             # length this one is, so it can reject a tile before any of the
             # geometry runs.
-            mode, ok, red = modal_colour(bgr, origin, u_col, u_row, i, j)
+            mode, ok, red = modal_color(bgr, origin, u_col, u_row, i, j)
             if not ok:
                 continue
             best = None
             for dark in (False, True):
                 # The dark polarity exists only because red converts to a low
-                # grey, so a red bar is darker than the ground it sits on.
+                # gray, so a red bar is darker than the ground it sits on.
                 # White and blue bars are bright and the ordinary polarity
                 # finds them. Unscoped it admits four false positives corpus
-                # wide, every one water or ice, and colour cannot separate
+                # wide, every one water or ice, and color cannot separate
                 # those from a blue bar: water reads S=186 against a real blue
                 # bar's 187.
                 if dark and not red:
@@ -387,11 +387,11 @@ def probe_shot(bgr, origin, u_col, u_row, n):
                     best = m
             if best:
                 # Now that the edge test has said short or long, re-read the
-                # colour from the matching preset box. Nothing is measured --
+                # color from the matching preset box. Nothing is measured --
                 # one of two fixed rectangles is chosen -- and the wider one
                 # gives the mode several times as many pixels to work with.
                 wide = BOX_HALVES[BAR_HALVES.index(best["half"])]
-                m2, ok2, _ = modal_colour(bgr, origin, u_col, u_row, i, j, wide)
+                m2, ok2, _ = modal_color(bgr, origin, u_col, u_row, i, j, wide)
                 best["mode"], best["mode_ok"] = (m2, ok2) if m2 else (mode, ok)
                 if not best["mode_ok"]:
                     continue
@@ -408,7 +408,7 @@ def main():
     args = ap.parse_args()
 
     names = args.only or list(bl.SETS)
-    kept, cut = [], {"unseen": 0, "score": 0, "colour": 0, "plate": 0,
+    kept, cut = [], {"unseen": 0, "score": 0, "color": 0, "plate": 0,
                      "diff": 0}
     for name in names:
         d = os.path.join(ROOT, "tests", name, "debug")
@@ -445,7 +445,7 @@ def main():
                 # probe's discriminator -- "nothing on an isometric board is
                 # horizontal" -- is true of terrain and false of the game's own
                 # screen-aligned HUD, and u_forest2's "Game Stats" and "End
-                # Turn" scored 0.56 and 0.67 as bars. But the *colour* test
+                # Turn" scored 0.56 and 0.67 as bars. But the *color* test
                 # rejects both on its own (modal (48,48,48), a dark UI panel),
                 # so the gate is redundant for that job -- and it is not free:
                 # `--min-valid-frac` asks whether enough of a tile is
@@ -460,7 +460,7 @@ def main():
                     cut["score"] += 1
                     continue
                 if not m.get("mode_ok"):
-                    cut["colour"] += 1
+                    cut["color"] += 1
                     continue
                 # The plate test is reported, not enforced. Measured on eight
                 # bars the project owner confirmed it reads 0.14-0.58 tile
@@ -499,7 +499,7 @@ def main():
                                    interpolation=cv2.INTER_NEAREST))
 
     print(f"{len(kept)} bars   (rejected: {cut['unseen']} unwitnessed, "
-          f"{cut['score']} on score, {cut['colour']} on colour, "
+          f"{cut['score']} on score, {cut['color']} on color, "
           f"{cut['diff']} on the differential)")
     print(f"{'set':17s} {'shot':12s} {'tile':9s} {'span':>6s} {'score':>6s} "
           f"{'top':>5s} {'bot':>5s} {'end':>5s} {'plate':>6s}")

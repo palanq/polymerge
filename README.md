@@ -42,7 +42,7 @@ echo "$PAT" | docker login ghcr.io -u <github-user> --password-stdin
 
 ## Discord setup
 
-- **Message Content Intent** must be ticked under Bot -> Privileged Gateway
+- **Message Content Intent** must be checked under Bot -> Privileged Gateway
   Intents in the developer portal. Without it `message.content` arrives empty
   and `!merge` silently never fires.
 - **Channel permissions**: `view_channel`, `send_messages`, `attach_files`,
@@ -88,12 +88,12 @@ All optional except the token. Set them in `.env` beside `compose.yaml`.
 | `POLYBOT_DISCORD_TOKEN` | *required* | the bot token, read from `.env`. Fails at `up` with a clear message if unset. Compose maps it to `DISCORD_TOKEN` inside the container, which is the name polybot reads |
 | `POLYMERGE_MARK_EMOJI` | 🗺️ | react with this to opt a shot into the next merge |
 | `POLYMERGE_DONE_EMOJI` | ✅ | the bot marks merged shots with it. **State, not decoration** -- it is how a later merge knows what it already used |
-| `POLYMERGE_HAPPY_EMOJI` | wolf | flavour only |
-| `POLYMERGE_SAD_EMOJI` | wolf | flavour only |
-| `POLYMERGE_WAIT_EMOJI` | wolf | flavour only |
-| `POLYMERGE_CREDIT_EMOJI` | wolf | flavour only |
+| `POLYMERGE_HAPPY_EMOJI` | wolf | flavor only |
+| `POLYMERGE_SAD_EMOJI` | wolf | flavor only |
+| `POLYMERGE_WAIT_EMOJI` | wolf | flavor only |
+| `POLYMERGE_CREDIT_EMOJI` | wolf | flavor only |
 
-The four flavour defaults are *application* emoji owned by the ArcticWolves bot
+The four flavor defaults are *application* emoji owned by the ArcticWolves bot
 app, so they render in every server that app is in. **A different bot
 application will not resolve those IDs** and will post the raw `<:name:id>`
 text -- set them to your own, or to empty (`POLYMERGE_HAPPY_EMOJI=`) to drop

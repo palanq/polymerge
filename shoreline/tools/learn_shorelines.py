@@ -2,7 +2,7 @@
 """Learn the shoreline basis images from the fog/fogless pairs.
 
 The model, in canonical tile space (a K x K resample of one tile's water
-surface, normalised by that tile's own core brightness):
+surface, normalized by that tile's own core brightness):
 
     predicted(h) = W0 + sum_{d in h} B_d + sum_{corners with both edges in h} C_x
 
@@ -10,7 +10,7 @@ for a hypothesis h, a subset of {NW, NE, SE, SW} naming which edges carry a
 shoreline. Nine images in all: one water base, four edge contributions, four
 corner interaction terms.
 
-Why this shape rather than 16 templates per configuration: a neighbour is not
+Why this shape rather than 16 templates per configuration: a neighbor is not
 binary. It can be fog, explored land, explored water or the board rim, and each
 occludes differently -- so the configuration space the detector actually meets
 is 6^4, and measured over the fog pairs it is dozens of distinct patterns among
@@ -18,10 +18,10 @@ about as many tiles. Learning templates for that is hopeless. Learning five, and
 corner terms, is not: measured, additive-plus-corner explains 92.7% of the
 configuration variance where additive alone explains 79.2%.
 
-The bases are learned from tiles whose neighbours are *explored*, because that
-population is rich (hundreds of labelled tiles, all 15 configurations) and
+The bases are learned from tiles whose neighbors are *explored*, because that
+population is rich (hundreds of labeled tiles, all 15 configurations) and
 the thing being learned transfers: a shoreline looks the same whether the
-neighbour is fog or land, to within 0.001-0.007 against a signal of 0.03-0.09.
+neighbor is fog or land, to within 0.001-0.007 against a signal of 0.03-0.09.
 The one exception is a genuine fog shading effect, carried as four scalars --
 see FOG_DELTA below.
 
@@ -58,7 +58,7 @@ CORE = slice(14 * K // 40, 26 * K // 40)
 
 
 def gather(tags):
-    """Per-tile (normalised patch, visibility, configuration, fog-facing dirs).
+    """Per-tile (normalized patch, visibility, configuration, fog-facing dirs).
 
     Read off the *fogless* image so every tile on the board contributes, not
     only the explored ones -- an unexplored tile renders identically there.
@@ -104,7 +104,7 @@ def gather(tags):
                     continue
                 cfg, ok = [], True
                 for d in ORDER:
-                    di, dj = ps.SHORE_NEIGHBOUR[d]
+                    di, dj = ps.SHORE_NEIGHBOR[d]
                     k = (i + di, j + dj)
                     if not (0 <= k[0] < size and 0 <= k[1] < size):
                         continue          # board rim: no land out there
@@ -119,8 +119,8 @@ def gather(tags):
                 rec = (patch / float(np.median(core)), vis, tuple(cfg))
                 if want_fog:
                     ff = [d for d in ORDER
-                          if (i + ps.SHORE_NEIGHBOUR[d][0],
-                              j + ps.SHORE_NEIGHBOUR[d][1]) in fogset]
+                          if (i + ps.SHORE_NEIGHBOR[d][0],
+                              j + ps.SHORE_NEIGHBOR[d][1]) in fogset]
                     if ff:
                         fogfacing.append(rec + (tuple(ff),))
                 else:
@@ -128,18 +128,18 @@ def gather(tags):
     return out, fogfacing
 
 
-def gather_colour(tags):
-    """Per-tile (normalised BGR patch, visibility, configuration).
+def gather_color(tags):
+    """Per-tile (normalized BGR patch, visibility, configuration).
 
-    Colour, not gray, and that is load-bearing rather than a refinement: the
-    same template scheme scores 112 in gray and 116 in colour under
-    leave-one-out, and gray makes two false *land* calls where colour makes
+    Color, not gray, and that is load-bearing rather than a refinement: the
+    same template scheme scores 112 in gray and 116 in color under
+    leave-one-out, and gray makes two false *land* calls where color makes
     none. A shoreline is a sandy shift, so its evidence is partly chromatic,
     and collapsing three channels to luminance throws that half away.
 
-    Each channel is normalised by that channel's own median over the tile's
+    Each channel is normalized by that channel's own median over the tile's
     core, so a shot's exposure and white balance divide out and what remains is
-    the tile's own colour structure."""
+    the tile's own color structure."""
     out = []
     for tag in tags:
         size = PAIR_SIZES[tag]
@@ -158,7 +158,7 @@ def gather_colour(tags):
             patch, vis = got
             og = ps.shore_canon_patch3(wc, ocean, o, uc, ur, i, j, drop)
             if og is not None and og[1].mean() > 0.5:
-                continue                  # ocean: recognised by colour, not here
+                continue                  # ocean: recognized by color, not here
             core = patch[CORE, CORE][vis[CORE, CORE]]
             if core.shape[0] < 40:
                 continue
@@ -167,7 +167,7 @@ def gather_colour(tags):
                 continue
             cfg, ok = [], True
             for d in ORDER:
-                di, dj = ps.SHORE_NEIGHBOUR[d]
+                di, dj = ps.SHORE_NEIGHBOR[d]
                 k = (i + di, j + dj)
                 if not (0 <= k[0] < size and 0 <= k[1] < size):
                     continue              # board rim: no land out there
@@ -183,7 +183,7 @@ def gather_colour(tags):
 
 
 def fit_templates(samples):
-    """One colour template per configuration: the masked mean of the tiles that
+    """One color template per configuration: the masked mean of the tiles that
     actually have it.
 
     Direct means rather than an additive basis, because measured they are the
@@ -236,7 +236,7 @@ def fit_basis(samples):
 
 
 def fit_fog_delta(fogfacing, basis):
-    """One scalar per direction: how much a *fog* neighbour darkens or brightens
+    """One scalar per direction: how much a *fog* neighbor darkens or brightens
     that edge's band when there is no shoreline on it.
 
     Measured to matter on exactly one direction (NE, -0.040 against a signal of
@@ -247,7 +247,7 @@ def fit_fog_delta(fogfacing, basis):
         num = []
         for patch, vis, cfg, ff in fogfacing:
             if d in cfg or d not in ff:
-                continue                  # want: no shoreline, fog neighbour
+                continue                  # want: no shoreline, fog neighbor
             pred = basis[0] + sum(basis[1 + k] for k, dd in enumerate(ORDER)
                                   if dd in cfg)
             for ci, (a, b) in enumerate(CORNERS):
@@ -275,14 +275,14 @@ def main():
     samples, fogfacing = gather(tags)
     from collections import Counter
     cnt = Counter(c for _, _, c in samples)
-    print(f"{len(samples)} labelled water tiles, {len(cnt)} configurations, "
+    print(f"{len(samples)} labeled water tiles, {len(cnt)} configurations, "
           f"{len(fogfacing)} fog-facing tiles")
     basis, used = fit_basis(samples)
-    tkeys, tmats, tcounts = fit_templates(gather_colour(tags))
+    tkeys, tmats, tcounts = fit_templates(gather_color(tags))
     print(f"{len(tkeys)} direct templates, "
           f"{tcounts.min()}-{tcounts.max()} samples each")
     delta = fit_fog_delta(fogfacing, basis)
-    print("fog-neighbour offsets (no shoreline on that edge): "
+    print("fog-neighbor offsets (no shoreline on that edge): "
           + "  ".join(f"{d}={v:+.4f}" for d, v in zip(ORDER, delta)))
     np.savez_compressed(args.o, basis=basis, used=used, delta=delta,
                         tpl_keys=np.array(tkeys), tpl=tmats, tpl_n=tcounts,

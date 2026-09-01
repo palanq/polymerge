@@ -81,7 +81,7 @@ per-file rects, key them on something unambiguous.
   silhouette, so anchoring "succeeds", but the tile lattice period is off by
   N_real/N_given, every tile's fog art lands out of phase, the fog test
   therefore matches nothing and calls the *entire board* explored, and the
-  merge degenerates into whichever source the winner rule happens to favour
+  merge degenerates into whichever source the winner rule happens to favor
   pasting its own fog over everyone else's terrain. `--min-fog-lock` (below)
   exists solely to make this loud. **`test_ss_3` is a 20x20 board** — it was
   being run at `--map-size 18`, which is what produced the "yad's vision is
@@ -231,7 +231,7 @@ per-file rects, key them on something unambiguous.
   | `perilous_test` | **18x18** | 2 | landscape; ice/blossom board; two lighthouses in frame |
   | `missized_test` | **18x18** | 3 | turn 0, ~fully fogged; one shot at s_it=2.23 |
   | `basin_treaties` | **18x18** | 2 | one shot at s_it=0.40, the most zoomed-*in* in the corpus; two disjoint islands |
-  | `xizauh` | 20x20 | 4 | Polaris player; ice terrain reads as fog to every colour test |
+  | `xizauh` | 20x20 | 4 | Polaris player; ice terrain reads as fog to every color test |
   | `u_forest` | **18x18** | 4 | Elyrion, three shots from one player; ~85% fog; vivid ruin markers |
   | `u_forest2` | **18x18** | 2 | turn 1, two disjoint starts; Elyrion; drawer-tab chrome |
   | `fogless` | **16x16** | 2 | replay; no fog anywhere; turn-timeline chrome |
@@ -262,7 +262,7 @@ per-file rects, key them on something unambiguous.
   screenshot in the corpus and the only **desert** board, and it came from a
   Discord user reporting that one of their two shots silently vanished from
   the merge. It is the regression test for `PERIOD_MIN_PROMINENCE` — a board
-  whose pale sand and white city roofs defeat the colour test that picks the
+  whose pale sand and white city roofs defeat the color test that picks the
   region `fog_period_scale` autocorrelates. Keep it.
 
   `missized_test` is the regression test for `fog_period_scale`'s **sweep
@@ -302,18 +302,18 @@ per-file rects, key them on something unambiguous.
   `xizauh` is the set where **terrain most resembles fog**. Its `pol.jpg` is a
   Polaris player's view, and Polaris renders its territory as pale blue-white
   ice — the same brightness and the same low saturation as the fog cube. The
-  colour prefilter that picks the region `fog_period_scale` autocorrelates
+  color prefilter that picks the region `fog_period_scale` autocorrelates
   admits **83.5% of that shot's valid pixels** as fog-ish, the highest in the
   corpus and well above the 49.2% on `badland_test/oum.jpg` that motivated
   `PERIOD_MIN_PROMINENCE` in the first place. So this is the harder version of
   the same test: the prominence rule has to find a real periodic peak inside a
-  frame that is five-sixths "fog" by colour. It does — 64.3px at ncc 0.68, and
+  frame that is five-sixths "fog" by color. It does — 64.3px at ncc 0.68, and
   the shot then anchors to within 0.013 tiles of `imp1.png` by SIFT.
 
   It matters beyond `fog_period_scale`, because the standing decision against
-  identifying fog by colour/saturation has always been justified by "mountains,
+  identifying fog by color/saturation has always been justified by "mountains,
   snow and ice are exactly as desaturated as fog", and until now the corpus had
-  no set where a *whole player's territory* was that colour. `perilous_test`
+  no set where a *whole player's territory* was that color. `perilous_test`
   has ice terrain but not an ice-tribe player; `pol_archi_test` is Polaris but
   nearly fully explored, so little fog remains to confuse. Any future change to
   fog classification should be run against this set specifically. It is also
@@ -367,7 +367,7 @@ per-file rects, key them on something unambiguous.
 
   Twenty-four sets but fewer distinct boards — `test_screenshots`, `test_ss_2` and
   `beautiful_test3` are all the same map, which is worth remembering when
-  judging whether a change generalises (it also gives ruin-vision detection
+  judging whether a change generalizes (it also gives ruin-vision detection
   three independent looks at the same ruins; see below). Mixed aspect ratios,
   devices and file formats (jpg/png/webp), deliberately not uniform, since the
   pipeline has to be robust to arbitrary phone/tablet captures. `test_ss_3`
@@ -389,7 +389,7 @@ per-file rects, key them on something unambiguous.
   `basin_treaties` bracket the zoom range, at s_it=2.23 and s_it=0.40 (see
   above), and `badland_test2` and `perilous_test` add two more landscape
   captures to `badland_test`'s one. `xizauh` is the one set where a player's
-  own terrain is the same colour as fog. **`u_forest` is the set where ruin
+  own terrain is the same color as fog. **`u_forest` is the set where ruin
   markers are rendered most vividly**, and with `basin_treaties` it is the
   historical regression test for the retired `RUIN_VIVID_*` band — both were
   finding a fraction of their ruins through a saturation cap calibrated on
@@ -440,9 +440,9 @@ per-file rects, key them on something unambiguous.
 
   ### City-bar ground truth (confirmed with the project owner)
 
-  **Six sets are now labelled, and this is the only thing any bar detector
+  **Six sets are now labeled, and this is the only thing any bar detector
   should be judged on.** Everything else in this section is a measurement of
-  behaviour; this is a measurement of truth. Tiles are given per *board*, since
+  behavior; this is a measurement of truth. Tiles are given per *board*, since
   a bar belongs to a city rather than to a screenshot.
 
   | set | real bars | flagged but **not** bars |
@@ -454,17 +454,17 @@ per-file rects, key them on something unambiguous.
   | `badland_test3` | 16 — (4,16) (6,13) (9,9) (9,15) (9,18) (11,12) (12,8) (12,16) (15,6) (15,9) (15,13) (15,16) (18,7) (18,10) (18,13) (18,16) | (3,3) |
   | `scorched_earth` | 10 — (2,3) (2,9) (3,6) (6,3) (6,6) (6,9) (9,4) (12,4) (13,9) (15,6) | (4,8) (8,9) (11,13) |
 
-  The four larger sets were labelled by eye over the union of everything the
+  The four larger sets were labeled by eye over the union of everything the
   shipped detector and the anchor-first probe each proposed, so the "not bars"
   column is *flagged* false positives rather than an exhaustive sweep of the
   board — a bar neither detector proposed would not appear in either column.
   Read recall against these numbers as an upper bound.
 
-  Two further labelled facts, both worth keeping because they cost time to
+  Two further labeled facts, both worth keeping because they cost time to
   establish:
   - **`test_ss_2` (15,18) has no bar for anyone.** The city Szugusha is there
     with a plainly visible name plate, and no bar under it in any shot. It was
-    briefly mislabelled as real from a thumbnail, which is the trap: **a plate
+    briefly mislabeled as real from a thumbnail, which is the trap: **a plate
     means "city", not "bar"**, and the two look alike at a glance. Any future
     plate-based test has to survive this case.
   - **The 25 candidates in the 0.34-0.55 score band split 12 real / 13 false**
@@ -474,13 +474,13 @@ per-file rects, key them on something unambiguous.
 
   **`scorched_earth` carries the corpus's only majority-red bar** — Icalus at
   (15,6), six red segments and no white. Keep it for that alone: red is the one
-  bar colour that breaks a luminance-based silhouette test, because pure red
-  converts to a grey of about 76 against grass at about 130, so a red bar is
+  bar color that breaks a luminance-based silhouette test, because pure red
+  converts to a gray of about 76 against grass at about 130, so a red bar is
   *darker* than its background where white and blue bars are brighter.
 
   **Both replay sets have a *known* city-bar answer, which nothing else in the
   corpus does, and that makes them the only ground truth the bar detector has.**
-  (They were the only one; four more sets are labelled above.)
+  (They were the only one; four more sets are labeled above.)
   Each is a single player on an early turn, so each board carries exactly **one**
   population bar — `fogless` Tetesum at (12,4), `replay_ss2` Bergo at (4,3),
   both confirmed with the project owner. Two separate bar bugs were found by
@@ -516,7 +516,7 @@ per-file rects, key them on something unambiguous.
   stays plausible and only the tile bookkeeping is wrong. What settles it is
   measurement, not appearance: **autocorrelating the terrain lattice** (the same
   shift-NCC `fog_period_scale` uses, over the whole board region rather than the
-  fog-coloured subset) gives an 80px fundamental with clean harmonics at
+  fog-colored subset) gives an 80px fundamental with clean harmonics at
   160/240/320, against a span of 1330.6px in *both* directions on *both* shots —
   `1330.6/80 - 0.78 = 15.85`. For 20 the period would have to be 64px and there
   is no peak there. Only then does the grid overlay confirm it, and at a crop
@@ -578,7 +578,7 @@ per-file rects, key them on something unambiguous.
   the figure this entry used to carry; the board-region table below records the
   drop.) `--cross-check` returns before the merge path, so it reports
   the *refined* anchors, and on a board with no fog the merge discards those in
-  favour of each shot's own unrefined edge anchor (see the zero-lock block in
+  favor of each shot's own unrefined edge anchor (see the zero-lock block in
   `main`). Those agree to **0.023 tiles**. Same shape as `star_change` below:
   the number is the quality of an anchor nothing uses. Judge the set on its
   union (256/256) and conflicts (0).
@@ -691,7 +691,7 @@ A thin Discord front end, **deployed and working**: it runs in the project
 owner's team server and real users have merged with it successfully. The plan
 is to share it with the broader community once the owner is confident there
 are no further major bugs or missing features — so treat channel-facing
-behaviour (message wording, what gets posted vs logged) as
+behavior (message wording, what gets posted vs logged) as
 production-sensitive, not scaffolding. `badland_test` came from a real user's
 failure report; expect more sets to arrive that way.
 
@@ -801,7 +801,7 @@ and a thread inherits the latter normally. So "posted nothing, reacted fine" is
 an ordinary state. `Caller.send` swallows a `Forbidden`, logs it and returns
 `None` — which from the caller's side is indistinguishable from success — and the
 ✅ loop ran unconditionally on the result. The player got no composite, every shot
-was ticked as already merged, and re-running answered *"No usable screenshots
+was checked off as already merged, and re-running answered *"No usable screenshots
 found"*, with no remedy but to hunt up the channel un-reacting by hand.
 
 The fix is to gate the loop on `Caller.send`'s return value, and the console says
@@ -852,7 +852,7 @@ should.**
   intent gates attachments exactly as it gates content. Shedding it is the usual
   headline reason to migrate to slash commands and it does not apply here.
 - **Nothing was deleted.** `parse_overlays`, the alias table, the legacy
-  `no`-prefix words and both unrecognised-input replies still serve `!merge`.
+  `no`-prefix words and both unrecognized-input replies still serve `!merge`.
   Discord validating the typed options means the slash path cannot *reach*
   those replies; it does not make them dead.
 
@@ -883,7 +883,7 @@ rather than merely handled, collapses `Caller.send` to one implementation for
 both front ends, and is what lets the queue notice below be edited for as long
 as the queue takes. The ephemeral placeholder the deferral leaves is cleared
 with `clear_placeholder` once the public ack is up — a step `!merge` has no
-analogue for, since it posts its ack directly.
+analog for, since it posts its ack directly.
 
 **The queue notice updates live, and this changed `_waiting`'s contract.** It
 used to hold bare shot counts, justified by "only the sum is ever read, so
@@ -958,7 +958,7 @@ directory, since the bot runs polymerge with `cwd` set to a per-merge temp dir.
 polymerge's `MAP_SIZE_CHOICES`; 30 is deferred — see the `Overlays/` section).
 `template_for` resolves `Overlays/<name>-blank.png` and nothing else; the old
 `template_NxN.png` fallback is gone with the files. Two bits of channel copy
-had to change for five sizes rather than two: the unrecognised-size reply lists
+had to change for five sizes rather than two: the unrecognized-size reply lists
 them comma-separated with a final "or" instead of four "or"s, and the
 "board measured as" caption names **no** alternative size at all — listing five
 buried the actual result, and it briefly suggested the nearest one instead,
@@ -969,7 +969,7 @@ says to re-merge with the size stated if the measurement looks wrong.
 attempts a merge. Spending the shortest form of the command on help cost the
 common case (shots attached, wanting a merge) an extra round trip once the
 size became measurable. `!merge help` (or `!merge ?`) still prints it, and the
-two replies a lost player actually reaches — an unrecognised size, and "no
+two replies a lost player actually reaches — an unrecognized size, and "no
 usable screenshots found" — both name it, which is the moment it is wanted.
 `help_text` interpolates the configured emoji, prefix, sizes and limits rather
 than hardcoding them.
@@ -991,11 +991,11 @@ the picker matches a **substring** of the command name — "merge" is inside
 "polymerge-help". Only a name with no "merge" in it (`polyhelp`) would separate
 them, and changing `HELP_COMMAND` is the whole edit.
 
-It is kept anyway, as the project owner's call: the *ranking* appears to favour
+It is kept anyway, as the project owner's call: the *ranking* appears to favor
 prefixes, so `/merge` sorts above `/polymerge-help` and Enter takes the right
 one. Note what that concedes — the guarantee is now "the ordering happens to
 work" rather than "there is nothing to order", which is a weaker thing than the
-rename set out to buy, and it depends on behaviour Discord does not document.
+rename set out to buy, and it depends on behavior Discord does not document.
 If a report ever comes in of Enter landing on the help, that is this, and the
 fix is one constant.
 
@@ -1065,9 +1065,9 @@ is on by default** — a merge nobody asked a question of hands back the map as
 the game draws it. `shade` was on by default once, and the cost was not the
 shading but the second thing every player then had to learn in order to turn it
 off. `no`-prefixed words (`noshade`) and `plain` still parse, and are
-deliberately no longer named in the help or in the unrecognised-word reply:
-with an empty default they remove nothing, but a player who learnt `noshade`
-under the old behaviour should get a merge rather than an error. Each layer now
+deliberately no longer named in the help or in the unrecognized-word reply:
+with an empty default they remove nothing, but a player who learned `noshade`
+under the old behavior should get a merge rather than an error. Each layer now
 gets a one-line explanation in `!merge help`, built from `OVERLAY_HELP` so the
 help cannot name a layer the parser rejects or miss one it accepts. Three
 details in `parse_overlays` and the command signature:
@@ -1076,15 +1076,15 @@ details in `parse_overlays` and the command signature:
   are the same command and `!merge grid` means "measure the size, add the
   grid". Position-based parsing looked equivalent and was not: only the first
   argument was tested, so a trailing `20` reached `parse_overlays`, which
-  strips non-letters, left an empty stem, and came back as an unrecognised
+  strips non-letters, left an empty stem, and came back as an unrecognized
   word. The help tells players the layer words go in any order and they
   reasonably assume the number does too. A *second* number is deliberately not
   consumed — `!merge 20 16` is ambiguous, so the spare falls through to the
-  unrecognised-word reply rather than one of the two being picked silently.
+  unrecognized-word reply rather than one of the two being picked silently.
 - **Synonyms are accepted** (`shading`, `checkerboard`, `zones`, `arrows`, …)
   and case and punctuation are stripped. This is typed into a chat box, not a
   shell, and a player who guesses a reasonable word should not get an error.
-- **An unrecognised word is an error, not a silent ignore.** Silently dropping
+- **An unrecognized word is an error, not a silent ignore.** Silently dropping
   a typo'd layer would mean the player gets a composite missing the thing they
   asked for and no reason why.
 Layers a board size does not have are skipped rather than refused, and the
@@ -1169,7 +1169,7 @@ Don't "fix" it into a lookup. Blowing it would be the worst way to fail: the
 merge has already succeeded and cost ~20s, and the player would get nothing.
 So the bot falls back to JPEG, which on that same composite gives 1.4 MB at
 quality 95 — a 4x reduction at a mean absolute error under 1/255, invisible
-on the game's flat colour art. The lower quality rungs should never be
+on the game's flat color art. The lower quality rungs should never be
 reached; they exist so a pathological board degrades instead of failing. Two
 details worth keeping: OpenCV is imported inside that function rather than at
 module scope (the event loop should not carry it for a path that almost never
@@ -1239,7 +1239,7 @@ two failures look different. Without it `message.content` arrives empty so
 `collect_marked_shots` walks a thread full of marked screenshots and reports
 finding none. That second one is the misleading half: the bot is plainly alive
 and answering while insisting the shots are not there. Note also that once the
-app is verified the intent must be *applied* for, not merely ticked in the
+app is verified the intent must be *applied* for, not merely checked in the
 developer portal.
 
 **Merges are serialized, and a player waiting behind one is told roughly how
@@ -1294,7 +1294,7 @@ per-image dicts on basename. Merges are serialized behind a semaphore, since
 concurrent merges are CPU-bound and would only make each other slower — see the
 wait-estimate note above for what a queued player is told.
 For testing bot-side logic without a live server, drive `run_polymerge`
-directly — it reproduces polymerge's behaviour, including failure text
+directly — it reproduces polymerge's behavior, including failure text
 passthrough, with no Discord connection.
 
 ## What the game guarantees
@@ -1352,7 +1352,7 @@ exploits it has to change with it.
   and a usable zoom/pan reference, and it is why a lattice that is even
   slightly out of period destroys the signal outright rather than degrading it.
   Fog is the *only* deterministic art on the board — see the standing decision
-  against cataloguing terrain.
+  against cataloging terrain.
   Note the *lattice*, though, is not fog's alone: crop fields, tile borders and
   territory dashes all repeat at the same tile step, so an autocorrelation can
   read a correct period off a frame with almost no fog in it
@@ -1379,7 +1379,7 @@ exploits it has to change with it.
 - **Elyrion sees ruins through fog**, each ruin marked with a **cluster of
   several small rainbow diamonds** drawn on top of the fog cube — not a single
   diamond. Only an Elyrion player's screenshot shows these. The cluster is not
-  centred on its tile and is not contained by it, but its pooled centroid does
+  centered on its tile and is not contained by it, but its pooled centroid does
   land inside the correct tile. Crucially the diamonds *tint* the fog rather
   than replacing it — measured over 32 genuine marker components, mean V runs
   218–247 and mean S 104–117, against fog's own V 230+ / S below 92. That
@@ -1437,13 +1437,13 @@ exploits it has to change with it.
     bar's true subdivision count.** Dividers do not survive every capture — at
     `vengir_cultist`'s `v2` zoom the whole bar is 66 px in the shot's own pixels
     — so the count is a lower bound and nothing should be built on it.
-  - **The bar is centred on its city tile's south vertex**, sitting just above
+  - **The bar is centered on its city tile's south vertex**, sitting just above
     it (measured: bottom edge ~10px below the vertex). That is what locates the
     city from a bar, and it makes an occluded bar's true extent recoverable —
     mirror the visible side about the vertex.
   - Segments are not uniform. Observed states include a blue segment, a **red**
     segment, a white segment with a dark dot, and an empty segment; a segment
-    can carry a dot in any of those colours. `beautiful_test3/ely.jpg` is the confirmed red case — the
+    can carry a dot in any of those colors. `beautiful_test3/ely.jpg` is the confirmed red case — the
     city at (18,13) has a complete 135px 4-segment bar reading red, white, white,
     white, with the first segment measuring BGR [72,101,232] at hue 6. **The
     semantics are not documented here and should not be guessed at** — see the
@@ -1454,11 +1454,11 @@ exploits it has to change with it.
 - **The capture badge is a pin, drawn above the tile it marks, with a glow
   around it.** So a capture on a rim tile floats it out over the sky beyond the
   board, joined to the silhouette by nothing but its own halo — never assume it
-  overlaps the board. Both facts matter to geometry rather than to colour: the
+  overlaps the board. Both facts matter to geometry rather than to color: the
   halo is bright enough to pass `--dark-thresh`, so anything fitting the board
   outline must exclude the badge *and* its glow (`badge_halo`), or the
   silhouette grows a bump where there is no board.
-- **Ruins are never adjacent.** No two ruins occupy neighbouring tiles, in
+- **Ruins are never adjacent.** No two ruins occupy neighboring tiles, in
   either the edge- or corner-sharing sense. This is a placement guarantee, so
   two detections on adjacent tiles are not two ruins — they are one diamond
   cluster straddling a tile border, and must be merged (`cluster_ruin_tiles`).
@@ -1471,7 +1471,7 @@ exploits it has to change with it.
   - *Separation* — no two cities sit within `CITY_MIN_GAP` = 2 tiles, which is
     stronger than the "never adjacent" this file used to record. **Verified
     against the 50 confirmed cities in the ground-truth table: the minimum
-    Chebyshev separation is exactly 3 on every labelled set, never 1 or 2.** So
+    Chebyshev separation is exactly 3 on every labeled set, never 1 or 2.** So
     two detections that close cannot both be real, and the weaker on the
     evidence is dropped.
   - *Rim* — row or column 0 or n-1 holds no city, so a detection snapping there
@@ -1482,7 +1482,7 @@ exploits it has to change with it.
 
   Using the separation rule the *other* way -- to stop scanning near a confident
   detection, since nothing can be there -- was tried and measured inert (0.44s
-  against 0.46s on a 5-shot merge). There is little to save, because the colour
+  against 0.46s on a 5-shot merge). There is little to save, because the color
   test already rejects most tiles before any geometry runs, so the tiles a skip
   would remove are the cheap ones.
 
@@ -1514,13 +1514,13 @@ Facts about these files worth knowing before touching them:
 
 - **They are drop-in templates.** RGB is 0 wherever alpha is (premultiplied
   against black), so a plain `cv2.imread` yields exactly the black-sky image the
-  pipeline expects. `normal-*.png` are **16-bit** and are normalised on load.
+  pipeline expects. `normal-*.png` are **16-bit** and are normalized on load.
 - **Every layer shares its blank's exact pixel frame.** Verified per size: same
   canvas, and the grid lines land exactly on the blank's fog tile boundaries.
   So overlays need **no warping or registration at all** — `main` builds the
   composite in template space and the layers alpha-blend straight on.
 - **Straight, not premultiplied, alpha.** `*-push` and `*-Nspawns` carry pixels
-  whose colour exceeds their alpha, which only makes sense unpremultiplied; the
+  whose color exceeds their alpha, which only makes sense unpremultiplied; the
   dark layers composite identically either way.
 - **The spawn filename encodes the zone grid, not the player count**:
   `2spawns` is a 2x2 grid of 4 zones, `3spawns` a 3x3 of 9. The 9 zones on
@@ -1528,7 +1528,7 @@ Facts about these files worth knowing before touching them:
   hardcode the digit — `overlay_layer_path` globs it.
 - **`shade` and `spawns` are clipped to fog** (`OVERLAY_FOG_ONLY`), confirmed
   with the project owner; `grid` and `push` cover the whole board. The split is
-  between layers that *fill* and layers that *reference*. A colour wash over
+  between layers that *fill* and layers that *reference*. A color wash over
   real terrain dulls the map art the merge exists to show, while over fog — a
   flat expanse of one repeated render — it is what makes the area readable as
   tiles at all. A lattice or an arrow is read *against* the map rather than
@@ -1580,17 +1580,17 @@ in-game grid on. The old templates' pink (BGR ~`116,51,220`, hue 336°) spawn
 rhombuses were deliberate content, not artifacts, and are recorded here so
 nobody "cleans" them out of those files either.
 
-**The spawn zone's colour changed when `Overlays/` replaced those templates,
+**The spawn zone's color changed when `Overlays/` replaced those templates,
 and this file never caught up.** The live `Overlays/*spawns.png` layer — what
 every merge actually draws today — measures BGR ~`(9,31,251)`, hue **6°**: a
 saturated, near-pure red, not the old templates' magenta-pink at hue 336°.
 Confirmed across every size that has a spawn layer (`huge`, `large`, `normal`,
 `small`); `overlay_layer_path` doesn't care which shade it is, but anything
-choosing a colour to sit *next to* this one — the ruin marker below is the one
+choosing a color to sit *next to* this one — the ruin marker below is the one
 example — has to measure the live layer, not the retired templates.
 
 Note the spawn layer coexists with `--ruin-vision`'s ruin markers, which are
-also diamond outlines. The two are told apart by colour and are deliberately
+also diamond outlines. The two are told apart by color and are deliberately
 far apart in hue: **spawn zone (a layer) is hue 6°, ruin under fog (detected)
 is `RUIN_MARK_BGR`, a deep violet at hue 274° — 92° away, the largest
 separation of the candidates measured.** `RUIN_MARK_BGR` used to be amber
@@ -1656,8 +1656,8 @@ factor of 2 away rather than a few percent, so taking the smallest strong peak
 keeps the fundamental.
 
 **It must require a real peak, not just a high score** (`PERIOD_MIN_PROMINENCE`).
-The region it autocorrelates is chosen by a *colour* test, and that test is
-exactly as unreliable as the standing decision says colour tests are: pale
+The region it autocorrelates is chosen by a *color* test, and that test is
+exactly as unreliable as the standing decision says color tests are: pale
 sand, white city roofs, snow and mountains are all bright and unsaturated like
 fog. On `badland_test` — a desert board, mostly explored — 27% of the frame
 was admitted as "fogish", and a non-periodic region's autocorrelation simply
@@ -1721,7 +1721,7 @@ spurious case and rejected a genuine one.
 
 The saturation mask used for this **never classifies a tile** — it only decides
 whether a *correspondence* counts — which is the distinction that makes
-`RUIN_NOMINATE_SAT` acceptable where a colour-based fog test is not. Do not
+`RUIN_NOMINATE_SAT` acceptable where a color-based fog test is not. Do not
 promote it into one.
 This path **is** load-bearing, on `badland_test3/cym.png`, which has no
 opposite edge pair and borrows both a zoom (1908 inliers against `yad.png`) and
@@ -1783,7 +1783,7 @@ omitted.** The same measurement answers the stronger question: instead of
 checking a supplied N, just report the one measured. Nothing about it is
 circular — the board span and the fog period are both in the shot's *own*
 pixels, and the template contributes only `dir_a` (the fixed projection angle,
-identical at every N) and the centre of `fog_period_scale`'s 5x-wide sweep.
+identical at every N) and the center of `fog_period_scale`'s 5x-wide sweep.
 Verified directly: `goon_test2` reads 17.93/17.87 with the 18 template loaded
 and 17.96/17.99 with the 20.
 
@@ -1824,7 +1824,7 @@ Three properties are what make it not-a-guess, and all three matter:
   runs on the plain brightness mask and has no sunrise-sky fallback, and both
   that set's shots need one, so both report `[none]` — every edge, not just a
   phantom pair. Verified identical before and after `_board_component`, so it
-  was never about kick's phantom. Normalise each pair by the *template's* span in its own
+  was never about kick's phantom. Normalize each pair by the *template's* span in its own
   direction when comparing them — the a and b spans differ by 0.17% even on a
   square board (1858.93 vs 1862.05 at 20x20), which is nothing against the 3%
   threshold but not nothing against the 0.00–1.24% healthy pairs report.
@@ -1874,7 +1874,7 @@ honest measurement in the corpus sits **0.32** from its true size
 **9.4** away. It cannot swallow a real disagreement either, because a halving
 never lands on a board size — half of 11/14/16/18/20/30 is 5.5/7/8/9/10/15,
 none of which are sizes — and staying under 1.0 keeps a genuine reading of a
-*neighbouring* size plausible, so two different boards still reach the spread
+*neighboring* size plausible, so two different boards still reach the spread
 check rather than being filtered apart here. Verified: `goon_test2/imp.jpg` +
 `test_ss_2/cym1.jpg` still report the 1.91-tile disagreement.
 
@@ -1887,7 +1887,7 @@ runs are the common case, not the corner: only **6 of 18 sets** have three or
 more (see the standing decision against majority voting).
 
 **No corpus set reaches the filter at the current sweep floor** — the harmonic
-that motivated it is fixed upstream — so this is defence in depth. It is still
+that motivated it is fixed upstream — so this is defense in depth. It is still
 reproducible on demand by forcing `fog_period_scale(lo=0.45)`, which puts
 `z2.png` back to 8.60; the expected result is the measurement named and
 discarded, size detected as 18, and **all three shots merged**.
@@ -1912,7 +1912,7 @@ someone actually meant.
 candidates by fog alignment, so a shot with no fog in frame is not being refined
 at all — it is walking to the argmax of noise. This is the same reasoning that
 already stops a borrowed pan being refined (`borrow_pan`, below); the difference
-is that a fogless board cannot be recognised *up front* the way `borrow_pan` can,
+is that a fogless board cannot be recognized *up front* the way `borrow_pan` can,
 so the check has to be after the fact. In `main`, any shot whose refined anchor
 locks **zero** fog tiles is put back on its own unrefined edge/fog-period prior.
 
@@ -2077,15 +2077,15 @@ re-rendering the templates larger** — that treats the symptom.
 `--cross-check` is still the way to catch a residual case, and `star_change`
 still behaves oddly for its own documented reason (almost no fog in one shot).
 
-One class of that behaviour turned out **not** to be an algorithm problem at
+One class of that behavior turned out **not** to be an algorithm problem at
 all, and is worth ruling out first: when the lattice period is wrong (wrong
-`--map-size`), there is nothing to lock onto, so the refinement optimises
+`--map-size`), there is nothing to lock onto, so the refinement optimizes
 noise and wanders to the edge of its search window. The tell is a large,
 inconsistent correction — on `test_ss_3` at 18, `yad1` and `yad2` have priors
 agreeing to 0.01% yet refined 1.7% apart (+2.46% vs +0.79%). So a refinement
 correction above ~1%, or two same-zoom shots disagreeing after refinement,
 should send you to check the fog-lock count before you go looking for a
-subtler bug in the optimiser.
+subtler bug in the optimizer.
 
 Note the old form of this claim — "at the correct map size every shot corrects
 by at most 0.36% and moves pan 1-6px" — was already stale and is not a usable
@@ -2166,8 +2166,8 @@ whatever lies furthest out in that direction — so one scrap of bright chrome
 sitting *outside* the board captures that edge outright and leaves the real one
 orphaned, supported by nothing. It is not a near miss and it does not degrade
 gracefully:
-- `u_forest2/ely.png` carries the game's collapsed side-drawer tab (a dark-grey
-  rounded panel with a `<` chevron, glued to the right frame edge). Its grey
+- `u_forest2/ely.png` carries the game's collapsed side-drawer tab (a dark-gray
+  rounded panel with a `<` chevron, glued to the right frame edge). Its gray
   clears `--dark-thresh` and its chevron gives it enough texture to survive
   `sky_mask`, so it enters the mask — and it sits **577px past the true NE
   rim**, taking `b-min` with it. That rim's 800 boundary points then support
@@ -2191,7 +2191,7 @@ the banner glyphs too small to sustain a run at any angle.
 **But angle alone is not enough at a small smoothing window — a triangle has
 diagonals.** What makes the test discriminating is the *size* of that window:
 `BOARD_ANGLE_SMOOTH` (35) averages the outline tangent over ~70px, which
-suppresses rasterisation and the fog rim's scalloping, and also means a fragment
+suppresses rasterization and the fog rim's scalloping, and also means a fragment
 must sustain the angle across ~70px of outline before it registers at all. A
 board edge runs for hundreds of pixels; a UI glyph's straight edge runs for tens,
 and its corners contaminate the estimate long before a run accumulates. So the
@@ -2299,7 +2299,7 @@ measure (`e1` vs `e3`, 107 inliers, 0.016 tiles), and the set comes off
 **unchanged to three decimals** by this, which is what confirms their diagnosis
 is the right one.
 
-The lesson generalises past SIFT: *two screenshots agreeing about pixels that
+The lesson generalizes past SIFT: *two screenshots agreeing about pixels that
 are not the board is not evidence about the board.*
 
 **Do not derive the template silhouette from the alpha channel** — it was tried
@@ -2335,7 +2335,7 @@ class of subtle bug in this codebase:
   in each image's own pixels depending on zoom, which would bias the fit.
   It is the one mask that subtracts the badge **halo** rather than the badge
   (`badge_halo`), and it is the only mask that needs to: a few glowing pixels
-  do not change what colour a tile is, but they do change where the silhouette
+  do not change what color a tile is, but they do change where the silhouette
   appears to end. `star_change/oum2.png` is the case — see that function.
 
 ### 3. Per-tile compositing (`sample_tile`, winner selection, paste loop)
@@ -2354,7 +2354,7 @@ apparently-explored tiles (whole-tile <= 0.20) have a wedge 95th percentile of
 5; anything in 0.75–0.85 behaves identically. The old 0.65 default sat inside
 the false-positive band and turned `test_ss_3` tile (18,18) from forest into
 fog. The one flip at 0.80 that looks wrong isn't: `goon_test2` q.jpg tile
-(14,13) scores 0.986 on the wedge and its neighbours score 0.93–0.95 whole-tile
+(14,13) scores 0.986 on the wedge and its neighbors score 0.93–0.95 whole-tile
 fog in that same shot, so it is genuinely occluded fog.
 
 Winner-per-tile is ranked by **ascending** `scale[n]` among sources that
@@ -2381,7 +2381,7 @@ the `test_ss_3` failure, and why the guard is worth more than it looks.
 
 **Sharpness is only the tiebreak; fog evidence outranks it**
 (`--fog-frac-margin`, `fog_pixel_mask`/`tile_fog_fraction`). A tall city can
-fill a tile's inset centre in *every* shot, so the fog test sees nothing but
+fill a tile's inset center in *every* shot, so the fog test sees nothing but
 towers and calls the tile explored even in a shot where it is really fog —
 which then wins on sharpness and pastes its own fog fringe. Confirmed on
 `test_ss_3` tile (10,9) = Ichphy, a cym city sitting right on yad's
@@ -2418,7 +2418,7 @@ that matches. Alpha compositing is exact and invertible:
 C = f·α·S + (1 − f·α)·F
 ```
 
-`S`, `α` are the sprite's colour and alpha, known per pixel. `F` is the fog
+`S`, `α` are the sprite's color and alpha, known per pixel. `F` is the fog
 behind it, known per pixel because fog is one deterministic render and the shot
 is anchored to it — `fog_illumination` already fits the shot's lighting onto the
 template and `fog_pixel_mask` already trusts that prediction to ±26 gray levels.
@@ -2426,7 +2426,7 @@ So the only unknown is `f`, this frame's fade, and with `D = C − F` and
 `K = α(S − F)` it falls out as a one-parameter projection `f = <D,K>/<K,K>`.
 
 **Score the correlation, not the residual — this is the whole design.** A
-residual is minimised by there being nothing there: measured, blank fog scores a
+residual is minimized by there being nothing there: measured, blank fog scores a
 *better* residual (4.9) than a genuine flame (23.9), because a flame is a large
 departure from fog and fitting it leaves a larger absolute error than fitting
 noise. `corr = <D,K>/(|D||K|)` asks the question that discriminates — of whatever
@@ -2452,7 +2452,7 @@ ruins are never adjacent, which `cluster_ruin_tiles` already uses.
 `RUIN_VIVID_*` band). All of them are gone, along with the island test
 (`RUIN_RING_PX`), the hue-spread tests, the area bounds, the morphological close
 and `_fog_borne_pieces`. The reason they had to go is worth keeping, because any
-future colour threshold here will fall into it: **mean saturation was computed
+future color threshold here will fall into it: **mean saturation was computed
 over pixels already above a saturation floor, so it measured how crisply the
 marker was captured rather than what the marker is.** The sprite proves this
 directly — composited over fog at rising opacity it produces mean S
@@ -2460,7 +2460,7 @@ directly — composited over fog at rising opacity it produces mean S
 entire observed 104–159 spread out of one sprite.
 
 The close and `_fog_borne_pieces` are not replaced by anything: a score map has
-no components, so there is nothing to bridge into neighbouring explored terrain.
+no components, so there is nothing to bridge into neighboring explored terrain.
 `u_forest` (2,1) — the tile the close used to swallow whole — is still detected.
 The island test is likewise unnecessary; terrain bleeding across a tile border is
 rejected on *shape* now, and keeping it would only endanger the frontier markers
@@ -2475,27 +2475,27 @@ shorelines, `--cross-check` — is unchanged on all 21 sets.
 answers rather than obvious failures:**
 
 - **Fitting at a cluster's centroid instead of at a flame.** A merged blob's
-  centre is not where any flame is, and genuine markers scored as low as 0.033
+  center is not where any flame is, and genuine markers scored as low as 0.033
   that way, against 0.89 when scored as a map. This is the same trap the old
   morphological close set, in a new place.
 - **`pmask` is the wrong mask here; use `wmask`.** The taxonomy makes `pmask`
   look right ("was this pixel photographed"), but it deliberately keeps pixels
-  too dark to judge colour by, and those add their darkness to `|D|` in the
+  too dark to judge color by, and those add their darkness to `|D|` in the
   correlation's denominator without adding anything a flame kernel explains.
   Measured: `u_forest` drops from 9 ruins to 7 on that change alone.
 - **Non-max suppression must run inside the accepted set.** Dilating the raw
-  score map lets a position rejected by a gate shadow an accepted neighbour, and
+  score map lets a position rejected by a gate shadow an accepted neighbor, and
   that is not a corner case — a flame at the edge of a photo sits right beside
   windows that hang further off it and score higher on a sliver. On
   `basin_treaties` (0,9) the ruin was found (corr 0.815), gated in, and then
-  silently suppressed by a neighbour that had been gated out. **No threshold
+  silently suppressed by a neighbor that had been gated out. **No threshold
   change could have fixed it**, and both thresholds were swept before the cause
   was found.
 
 - **A cropped correlation invents edges, and a small epsilon turns them into
   huge scores.** `matchTemplate` zero-pads its input, so every crop boundary is
   a fictional edge where the `|D|` denominator is truncated and the score
-  inflated. Harmless with one crop round the whole fog region — the only edges
+  inflated. Harmless with one crop around the whole fog region — the only edges
   were real canvas edges — and *not* harmless once `RUIN_NOMINATE_SAT` made one
   box per nominated cluster. Compounded by a `1e-9` clamp that turned "no
   support here" into an enormous number rather than no number: measured corr
@@ -2522,7 +2522,7 @@ implementation was **7.6s**.
 
 The structural reason for the increase is worth stating, because it is not
 something to tune away: the old detector thresholded on saturation and then
-labelled components, so its work scaled with the number of *saturated pixels*,
+labeled components, so its work scaled with the number of *saturated pixels*,
 and fog has almost none. A matched filter asks its question at every position,
 so its work scales with **area searched**, whatever is there. That is the price
 of the property that made it correct.
@@ -2547,7 +2547,7 @@ The last two together took ~35% off, with byte-identical output on all 21 sets.
 A sixth, `RUIN_NOMINATE_SAT`, takes a further **~35%**: search only near
 saturated pixels (`ruin_search_boxes`). This is the retired HSV detector's idea
 kept for the one job it is actually good at, and the distinction matters.
-Saturation failed as a *classifier*; "is there anything colourful here" is a
+Saturation failed as a *classifier*; "is there anything colorful here" is a
 different and much easier question. Per-*flame* it is still hopeless — the
 weakest genuine flame peaks at **S=71**, below bare fog's own 99th percentile of
 90, so no threshold separates them pixel by pixel. What makes it safe is a game
@@ -2562,7 +2562,7 @@ that is the whole point: measured over 16 Elyrion shots the nomination's
 bounding box is still **80%** of the fog region — markers are scattered, so one
 box round them all saves nothing — while the sum of component boxes is **12%**.
 Note the realised saving is ~35%, not the ~8x that 12% suggests: the nomination
-itself costs a colour convert and a component pass, and per-box overhead eats
+itself costs a color convert and a component pass, and per-box overhead eats
 the rest.
 
 Note `matchTemplate` only evaluates windows that fit wholly inside its input, so
@@ -2606,7 +2606,7 @@ not earn one. Three details make it sit right:
   (`fog_illumination`'s gain) into template space, so the pasted fog matches the
   fog around it instead of showing a rectangle of that shot's exposure.
 - It uses **`pmask`, not `wmask`** — this is a *pasting* operation, and the mask
-  taxonomy reserves `wmask` for judging colour. This is the one place in the
+  taxonomy reserves `wmask` for judging color. This is the one place in the
   ruin path where the taxonomy points the other way; see the trap below.
 
 Violet because it sits 92° from the spawn-zone layer's hue and gives 4.5x the
@@ -2617,8 +2617,8 @@ marker or a copy, and the report names those tiles so the knowledge is not lost.
 
 **Then merge adjacent detections** (`cluster_ruin_tiles`), unchanged by the
 rewrite, because a ruin's marker is a *cluster* of flames and ruins are never
-adjacent (see the game facts above) — so neighbouring detections are one cluster
-straddling a tile border. Flood-fill over the 8-neighbourhood (three of the five
+adjacent (see the game facts above) — so neighboring detections are one cluster
+straddling a tile border. Flood-fill over the 8-neighborhood (three of the five
 clusters on `test_ss_elyruins` meet only at a tile *corner*), then assign the
 cluster to the tile holding the centroid of all its pixels pooled across sources.
 
@@ -2659,14 +2659,14 @@ inferred, and `★ N`'s embassy ambiguity never matters.
 
 #### Detection is anchored, not searched
 
-**A bar is always centred on its city tile's south vertex, and the merge already
+**A bar is always centered on its city tile's south vertex, and the merge already
 knows every south vertex exactly.** So there is nothing to look for. Go to the
 vertex, examine the fixed region a bar would have to occupy, and ask whether it
 is one — a hypothesis test with three outcomes per tile: no bar, short bar,
 capped bar.
 
 That is the whole design, and it deletes the machinery the old bottom-up
-detector needed in order to *find* candidates: connected-component labelling, a
+detector needed in order to *find* candidates: connected-component labeling, a
 segment height window, an aspect window, a solidity test, run grouping and an
 even-pitch test are all gone, along with `SEG_*`, `BAR_SPAN_MAX` and
 `BAR_PITCH_TOL`. Everything left is in **tile widths**, so none of it passes
@@ -2680,7 +2680,7 @@ Three pieces of evidence, and they are independent:
    board edge, tile border, territory dash and terrain facet runs at `dir_a`
    (30.7°) or `dir_b` (149°) — so *nothing on terrain is horizontal*. This is
    `_board_component`'s chrome test applied to a much smaller object.
-2. **The colour** (`_bar_mode`). The modal colour inside a preset box.
+2. **The color** (`_bar_mode`). The modal color inside a preset box.
 3. **The width.** Only two are legal, so the extent is *snapped*, never measured.
 
 **The bands and boxes are fixed, not searched, and that is load-bearing.**
@@ -2689,17 +2689,17 @@ the name plate sits directly above the bar and is also a bright horizontal
 rectangle, so an unconstrained search returns the *plate's* two edges — readable
 in the output as a bottom edge *above* the vertex, which no bar can have.
 
-#### Why the colour test is allowed here
+#### Why the color test is allowed here
 
-This file's standing rule is against identifying things by colour, and a colour
+This file's standing rule is against identifying things by color, and a color
 *fill* score does fail badly here: `light` means "bright and desaturated", which
 is exactly fog, snow and pale sand, and it called **225 tiles bar-like across
-three sets**. But "is the modal colour inside this already-known rectangle the
-colour a bar is painted" is a different and much easier question — the same
+three sets**. But "is the modal color inside this already-known rectangle the
+color a bar is painted" is a different and much easier question — the same
 distinction that makes `RUIN_NOMINATE_SAT` safe where a saturation classifier is
 not.
 
-Measured over 55 labelled tiles: a real bar's mode is **228 off-white**, a
+Measured over 55 labeled tiles: a real bar's mode is **228 off-white**, a
 saturated blue, or a saturated red, while every white false positive — ice,
 snow, UI panels — reads **252**. The game does not paint the bar pure white, and
 those ~24 gray levels are the entire margin.
@@ -2709,7 +2709,7 @@ Two details that are not tuning:
 - **The box is preset, one per legal width, and never derived from the
   silhouette.** The short bar's footprint is a subset of the capped one, so the
   small box is inside the bar whichever length this one is — which is what lets
-  colour run *first*, independently, and reject a tile before any geometry
+  color run *first*, independently, and reject a tile before any geometry
   happens. Sampling the *detected* rectangle instead couples the two tests, and
   it runs off the frame on tiles near a shot's edge.
 - **Filter by `wmask`.** That is `valid` — chrome, out-of-frame and too-dark
@@ -2720,7 +2720,7 @@ Two details that are not tuning:
 #### Red bars invert the silhouette, which is why polarity is tried both ways
 
 **A bar is not always brighter than what is behind it.** Pure red converts to a
-grey of about 76 while grass sits near 130, so a red bar is a *darker* oblong on
+gray of about 76 while grass sits near 130, so a red bar is a *darker* oblong on
 *brighter* ground and both its edges step the other way. `scorched_earth`'s
 Icalus at (15,6) is six red segments with no white, and a bright-on-dark test
 finds no row pair there whatsoever — not a weak score, nothing.
@@ -2728,7 +2728,7 @@ finds no row pair there whatsoever — not a weak score, nothing.
 So both polarities are tried. But the dark one is **scoped to red**, which is
 its only justification: white and blue bars are bright and the ordinary polarity
 finds them. Unscoped it admits four false positives corpus-wide, every one water
-or ice, and **colour cannot separate those from a blue bar** — water reads
+or ice, and **color cannot separate those from a blue bar** — water reads
 S=186 against a real blue bar's 187. Scoping costs nothing: the one real bar the
 dark polarity added, `beautiful_test3` (12,11), is found in that set's other
 shot at score 0.57 anyway.
@@ -2742,12 +2742,12 @@ detector miss it entirely. The old reports' "N segments" meant "segments the
 detector resolved", which was never the bar's true subdivision count.
 
 The claim ranking's `span_of` therefore now asks the question it actually wants:
-does this bar physically reach its S/SW/SE neighbours? That is exactly the
+does this bar physically reach its S/SW/SE neighbors? That is exactly the
 capped width, and the short one does not.
 
 #### Measured against the ground truth
 
-Scored against the six labelled sets (see the ground-truth table in the test-set
+Scored against the six labeled sets (see the ground-truth table in the test-set
 section):
 
 | | TP | FP | FN | precision | recall |
@@ -2757,7 +2757,7 @@ section):
 For comparison, on `test_ss_3` the old detector scored 7 of 9 with 3 real bars
 missed.
 
-**The single "miss", `badland_test3` (15,16), is expected behaviour and should
+**The single "miss", `badland_test3` (15,16), is expected behavior and should
 not be chased** (confirmed with the project owner): the `cym` player simply did
 not photograph that city's whole bar, so there is nothing there to match. The
 tile also fails `--min-valid-frac` in that shot for the same underlying reason —
@@ -2771,7 +2771,7 @@ which is what bar promotion is supposed to guarantee: it only reorders sources
 that already witnessed a tile.
 
 **Runtime is at parity with the old detector** — ~0.46s on a 5-shot merge, 2%
-of it — but only after the modal colour was written correctly, and how that went
+of it — but only after the modal color was written correctly, and how that went
 is worth recording because two of the three obvious implementations are *slower*
 than the naive one.
 
@@ -2792,7 +2792,7 @@ answer 8x faster than the next best, and it is what took the phase from ~0.9s to
 
 The other cut available -- using the two-tile city separation to stop scanning
 near a confident detection -- was tried and measured inert (0.44s against
-0.46s). The colour test already rejects most tiles before any geometry runs, so
+0.46s). The color test already rejects most tiles before any geometry runs, so
 a skip only removes the cheap ones.
 
 
@@ -2807,10 +2807,10 @@ tile border, territory dash and terrain facet runs at `dir_a` (30.7°) or `dir_b
 banner instead.
 
 This is *not* the retired "detect the label plate and search beneath it" idea in
-the standing decisions. That one tried to segment the plate by **colour** and
-failed because the plate is translucent and tinted by the player's colour over
+the standing decisions. That one tried to segment the plate by **color** and
+failed because the plate is translucent and tinted by the player's color over
 whatever terrain is behind it. This asks only for a long horizontal *intensity
-step*, which needs no colour at all.
+step*, which needs no color at all.
 
 Measured over the corpus's 203 detections — longest horizontal edge run in the
 band a plate would occupy (8–56px above the tile's south vertex, ±95px wide),
@@ -2904,7 +2904,7 @@ Two attempts at fixing the grouping are worth recording, both failed:
   no longer candidates at all. One lesson survives and is worth keeping for any
   future grouping code: **a rejected run must claim nothing**, or the valid
   smaller runs inside it never get their turn.
-- **Labelling the colour arms separately**, so a white UI element touching a
+- **Labeling the color arms separately**, so a white UI element touching a
   blue segment did not weld into one component (`badland_test3`'s Zirhi read
   36x24 instead of 36x14). Specified, measured at +8ms/shot, never built — and
   moot now, since nothing labels components any more.
@@ -2912,7 +2912,7 @@ Two attempts at fixing the grouping are worth recording, both failed:
 Also retired with it: the **south-vertex floor** and the **span/pitch group
 tests**. Those were doing real work against the old detector's fragments, and
 they are unnecessary against a detector that only ever emits a bar at a legal
-width centred on a vertex.
+width centered on a vertex.
 
 
 ### Three ways of finding a bar that were tried and do not work
@@ -2922,8 +2922,8 @@ from a false one rather than about finding a bar at all, so it lives with the
 splice discussion above.)
 
 All three were measured on `star_change`, and all three fail for the same
-reason, which is the standing decision about colour restated: **the game paints
-terrain in every colour its UI uses**, so nothing about a bar can be isolated by
+reason, which is the standing decision about color restated: **the game paints
+terrain in every color its UI uses**, so nothing about a bar can be isolated by
 appearance alone. Do not retry these without new evidence.
 
 - **Detecting the dividers directly.** The divider is described above as "the
@@ -2942,10 +2942,10 @@ appearance alone. Do not retry these without new evidence.
   of periodic structure: the tile lattice, crop rows, fences, territory dashes.
 - **Detecting the city label plate and searching beneath it.** The bar always
   sits ~6px under a name plate, so anchoring the search there would let every
-  per-segment test be loosened. But the plate is not colour-separable, and fails
+  per-segment test be loosened. But the plate is not color-separable, and fails
   *inconsistently*, which is worse than failing outright: `imp.png`'s blue plate
   sits over blue water and its pixels come back as one **1462x1334** component
-  spanning half the board, while `oum2.png`'s identically-coloured plate comes
+  spanning half the board, while `oum2.png`'s identically-colored plate comes
   back as a clean 105x49, and `oum.png`'s orange plate over sand does not enter
   the mask at all. This is almost certainly what killed the earlier
   `city_tiles`/`propagate_city_owner` attempt recorded in the standing decisions,
@@ -2968,18 +2968,18 @@ template location, so comparing sources like-for-like — the move
 palette. It also covers exactly the cases that matter, since a bar is only
 *lost* when another shot wins those tiles, which requires overlap. A related
 idea worth pursuing with it: find the city by its **text** (a structural signal,
-unlike the plate's colour), then use the vision guarantee — if the three tiles
+unlike the plate's color), then use the vision guarantee — if the three tiles
 S/SW/SE of that text are non-fog in exactly one shot, that shot is the owner's;
 if in several, compare those tiles between them to see which one holds a bar.
 
-The **city tile comes from where the bar sits**: a bar is centred on its city
+The **city tile comes from where the bar sits**: a bar is centered on its city
 tile's **south vertex**, with its bottom edge ~10px below it (confirmed with the
 project owner; `BAR_BOT_BAND` now states it as 0.070–0.170 tile widths, and
 `BAR_TOP_BAND` the other edge). That vertex is `origin + (i+1)*u_col +
-(j+1)*u_row`, so inverting the basis at the bar's centre names the city
+(j+1)*u_row`, so inverting the basis at the bar's center names the city
 outright — no dependence on the city sprite's height, which grows with its
 level and so could not have served. Measured over the corpus's 33 complete
-bars, the bar centres within a median 1.1px of that vertex in x (p90 3.1) and
+bars, the bar centers within a median 1.1px of that vertex in x (p90 3.1) and
 its bottom sits 10.3 +- 11.7px below in y.
 
 **The snap cannot be ambiguous**, which is what makes it better than the
@@ -3041,7 +3041,7 @@ still the only complete bar cut), and bar counts down from 263 to 192.
 **A star-icon test does not work, and the star asset in `Assets/star.png` is
 kept only so nobody has to re-derive that.** The idea is a good one on its face
 — a city label carries a `★ N`, the star is a fixed sprite, and the ruin
-detector proves that matching the game's own sprite beats any colour threshold.
+detector proves that matching the game's own sprite beats any color threshold.
 It fails for three independent reasons, each measured:
 - **The premise is false, and in both directions.** Every city shows a `★ N`
   *unless it is besieged* — an enemy unit standing on it stops it producing
@@ -3068,12 +3068,12 @@ It fails for three independent reasons, each measured:
 Note the star is also **not owner-only** — an embassy renders `★ N` on a foreign
 city — so even a perfect star detector could not confer ownership. Its only
 possible role was as a corroborating landmark, and the numbers above close that
-off. A colour-threshold version is worse still and was tried first: gold blobs
+off. A color-threshold version is worse still and was tried first: gold blobs
 fire on yellow roads, ruin sprites and a capital's orange crown icon, matching
 66% of the *false* detections.
 
 **Vision nominates an owner too, with no detection at all.** The game
-guarantees a city's owner sight of all 8 neighbours, so a source that *alone*
+guarantees a city's owner sight of all 8 neighbors, so a source that *alone*
 sees every tile of some 3x3 block is the only candidate owner of a city there.
 That signal is already sitting in `samples`, and it reaches bars no detector
 can: `star_change`'s Nunusum welds 7 of its 8 segments onto the white ice city
@@ -3094,17 +3094,17 @@ makes.
 Preservation is a **priority** change, not a compositing one: promote that
 source to the front of `priority` around the city. Three points matter:
 - **Claim strength depends on whether a bar could really be there.** The bar
-  never extends past the city tile and its S, SW and SE neighbours, so those
+  never extends past the city tile and its S, SW and SE neighbors, so those
   four are a *strong* claim and the rest of the 3x3 a weak one. Both mechanisms
   emit both, ranked: detected-bar-strong > vision-strong > detected-bar-weak >
   vision-weak, sharpest first on a tie, with everything collected before
   anything is applied so overlapping blocks cannot be resolved by iteration
   order. **At equal strength a city's own tile beats another city's claim on it
-  as a neighbour** — a bar certainly covers the tile its city stands on,
-  whereas a neighbour's claim there is speculative — and only then does
+  as a neighbor** — a bar certainly covers the tile its city stands on,
+  whereas a neighbor's claim there is speculative — and only then does
   sharpness decide. That last tiebreak is what keeps a *label* whole. A city's
-  name plate is 155px wide and centred on the same south vertex as its bar
-  (measured on Icasum: plate x 1283–1438, centre 1360.5 against the vertex's
+  name plate is 155px wide and centered on the same south vertex as its bar
+  (measured on Icasum: plate x 1283–1438, center 1360.5 against the vertex's
   1362.6), so it spans three tiles — its own, S, and SE — all of which sit
   inside the city's strong claim. Without the proximity rule the city's own
   tile fell to sharpness and the label was assembled from two shots that render
@@ -3123,7 +3123,7 @@ source to the front of `priority` around the city. Three points matter:
   (11,12) today (see the note in the segment-window section — it predates the
   south-vertex floor, which is not what removed it). Keep the rule and keep the
   history — what it defends against is a false positive competing with a real
-  bar for a neighbouring tile, and the corpus still has 14 adjacent detected
+  bar for a neighboring tile, and the corpus still has 14 adjacent detected
   pairs, of which the `beautiful_test3` (18,10)/(18,11) one exercises it.
 - Still promote a *superset* of the tiles the bar can touch, within a claim:
   promoting only some of them would cut the bar at a tile border. The 3x3 is
@@ -3190,17 +3190,17 @@ delete a false positive, and the ranking only has to arbitrate what survives.
 **Vertex offset does not reduce the false-positive rate — tried, measured, and
 not kept.** It is the most promising-looking idea available, because unlike the
 three below it rests on a confirmed game fact rather than on appearance (a bar
-is centred on its city's south vertex), and the numbers look decisive: over the
+is centered on its city's south vertex), and the numbers look decisive: over the
 corpus's 219 detections, those ≥100px wide sit a median **1.4px** from their
 vertex (p90 9.8) while narrower ones sit at 18-20px (p90 42), and on the
 `beautiful_test3` case the genuine 122px bar is 0.9px off against the two false
 positives' 18.9 and 18.3 — a 20x separation. It fails twice over anyway:
-- **As a filter**, because a genuine 135px bar centred on its vertex reaches
+- **As a filter**, because a genuine 135px bar centered on its vertex reaches
   67.5px out *by definition*, which is exactly where the threshold must sit.
   Rejecting on furthest-edge distance removed 78 of 219 detections including
   **35 of the 52 complete bars** — it clips real bars before impostors.
-- **As a claim tiebreak**, because a genuine fragment is off-centre by
-  construction (seeing half a bar puts its bbox centre half a bar off), so
+- **As a claim tiebreak**, because a genuine fragment is off-center by
+  construction (seeing half a bar puts its bbox center half a bar off), so
   offset really separates complete-from-narrow, which `span_of` already does
   directly and better. Wired in after completeness it left every tracked
   baseline identical and every complete bar intact, moving one contested tile
@@ -3298,7 +3298,7 @@ template location.
   template's fog art. This was gotten wrong once already and silently
   dropped mountain tiles from the composite. **Ruin-vision detection used to
   be the one exception and no longer is** — it now matches the game's own
-  sprite against a prediction of the fog behind it, so no colour threshold
+  sprite against a prediction of the fog behind it, so no color threshold
   decides anything there either. That change was not tidying: the saturation
   statistic it removed was measuring how crisply a marker had been
   photographed, and had silently cost two sets most of their ruins.
@@ -3372,11 +3372,11 @@ template location.
   plausibility filter — 8.60 is not near any board size — and what should
   resolve a genuine conflict is the fog lock, not a headcount; see the deferred
   item.
-- **Don't try to catalogue or classify terrain appearance.** There are ~16
+- **Don't try to catalog or classify terrain appearance.** There are ~16
   tribes, each with its own skin for plains/forest/mountain plus variants, so
   the same logical terrain has hundreds of possible appearances — an
-  appearance catalogue is not a finite job. This closes off the obvious idea
-  of replacing the mean-colour `--consistency-thresh` check with a terrain
+  appearance catalog is not a finite job. This closes off the obvious idea
+  of replacing the mean-color `--consistency-thresh` check with a terrain
   classifier. Fog is the only art on the board that is one fixed render, which
   is exactly why the whole pipeline is built on it and not on terrain.
 - **The old `group -> template` fit-residual metric was vacuous** — fitting a
@@ -3446,7 +3446,7 @@ template location.
      key enabler is a game guarantee: *a city's owner always has vision on the
      8 tiles adjacent to it*, so those tiles are never fog in the shot showing
      the bar, and promoting it can never paste fog over someone's terrain.
-     This needs only *detection that a bar exists* plus rough localisation —
+     This needs only *detection that a bar exists* plus rough localization —
      never a pixel-accurate outline — because the shot containing a bar **is**
      the owner's shot by definition (nobody else renders one). No ownership
      inference is required, which is what makes `★ N`'s embassy ambiguity
@@ -3454,7 +3454,7 @@ template location.
      the safe choice): promoting only some of them cuts the bar in half at a
      tile border, which looks worse than not preserving it at all.
      The same guarantee doubles as a free correctness check — a shot showing a
-     bar must not have fog on that city's neighbours; if it does, the
+     bar must not have fog on that city's neighbors; if it does, the
      detection is wrong.
   2. **Copy the bar's pixels** as a fallback where promotion is too costly.
      Faithful by construction, but leaves a sharpness seam where UI from one
@@ -3487,14 +3487,14 @@ template location.
   shot's fog pixel simply *equals* the template's pixel there once the shot's
   overall illumination is fitted out (`fog_illumination`, fitted on that
   shot's own fog-locked tiles). A local NCC cannot do this job however it is
-  tuned: an 11x11 window centred in a ~10px fog fringe still straddles the
+  tuned: an 11x11 window centered in a ~10px fog fringe still straddles the
   occluder, and on the Ichphy tile it scored the fogged shots 0.034 against
   the clear ones' 0.023 — no separation — where the windowless pixel
   comparison gives 0.089 vs 0.000. Don't retry the windowed version.
 - **The fog cube being taller does *not* make it bleed into the tile south of
   it.** This looks like it should follow from the variable-height fact and it
   was measured and rejected: the north-rim fog NCC of an explored tile is
-  -0.069 when its northern neighbours are fog in that source, versus +0.017
+  -0.069 when its northern neighbors are fog in that source, versus +0.017
   when they are not. No contamination, and the sign is backwards.
 - **A better prior is not a better answer.** Pan was switched from the
   support-weighted blend of both edges to "use the bottom lip, fall back to the
@@ -3676,7 +3676,7 @@ either**; the third is what shipped, as a warning:
 
 - **`fog_period_scale` returning None on every shot.** This looks like the
   discriminator, and nearly is: it never consults `--map-size` (it takes
-  `tile_px` only to centre a 5x-wide sweep, and the answer is invariant to which
+  `tile_px` only to center a 5x-wide sweep, and the answer is invariant to which
   template supplies it — `test_ss_3/yad1.png` reads 80.2/80.3/79.8/79.9/79.9px
   across all five), it returns None on both `fogless` shots, and it finds a
   period on every board in the corpus that has fog, including the cases built to
@@ -3688,17 +3688,17 @@ either**; the third is what shipped, as a warning:
   it waves that set through at 14, 16 *and* 20 — a silent wrong-size merge, the
   most destructive failure available here. Branching only the *hint* on it is no
   better: it invites the player to force that same merge.
-- **A fog-ish colour fraction.** `fogless` reads 0.083/0.090 against
+- **A fog-ish color fraction.** `fogless` reads 0.083/0.090 against
   `star_change/oum.png`'s 0.248, which looks like a 2.8x margin until you notice
   the only things in between are `goon_test/fogless.png` (0.105) and
   `archers_test2/fogless.png` (0.203) — excluded reference renders that are
   themselves fogless. That is a threshold calibrated on one set, and it is a
-  colour-based fog test, which this program does not do.
+  color-based fog test, which this program does not do.
 - **The conflict fraction after the merge** (`CONFLICT_FRAC_SUSPECT`) — which
   works, and is the one that shipped. It succeeds because it stops asking about
   fog and measures the *harm* instead: an out-of-phase lattice puts each
   source's fog on another source's terrain, and fog against terrain is an
-  enormous colour distance, so `--consistency-thresh` sees it directly. It is
+  enormous color distance, so `--consistency-thresh` sees it directly. It is
   the only signal here that catches a wrong size without having to find fog.
 
   **The denominator has to be comparable tiles, not the board.** Conflicts need
@@ -3823,10 +3823,10 @@ intact rather than tuned to hide them.
   technology does not see a resource another player does, so two shots of one
   tile can legitimately differ.
 - **Unit art desaturates once that unit has moved this turn**, so the same
-  unit differs in colour between two players' shots of the same moment.
+  unit differs in color between two players' shots of the same moment.
 
 For scale, at the correct map size the conflict counts run 0–28 per set (see
-the companion baselines above) — mostly small colour distances consistent
+the companion baselines above) — mostly small color distances consistent
 with the above. `star_change`'s 28 is the high end and is **not** explained
 away: two shots of one board are expected to agree, and a unit that moved
 between them is user error on the players' part, not a case the merge should

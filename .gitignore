@@ -8,7 +8,7 @@
 # tables in CLAUDE.md key to those exact files. Note they carry player handles in
 # the HUD -- badland_test3/cym.png reads "Waiting for yodagem..." across its top
 # band -- which is why this repo is private. Redacting them is not the
-# alternative: those pixels are documented program behaviour (see the --top-crop
+# alternative: those pixels are documented program behavior (see the --top-crop
 # residual note in CLAUDE.md's deferred section) and editing them would silently
 # invalidate the baselines.
 debug/
@@ -48,7 +48,7 @@ __pycache__/
 # does not copy it.
 polymerge_old.py
 
-# Emoji artwork retired from the bot's flavour set, kept locally in case it is
+# Emoji artwork retired from the bot's flavor set, kept locally in case it is
 # revisited. Safe to keep out of the repo: nothing reads Emojis/ at runtime --
 # polybot names emoji by Discord snowflake (`<:wolfwait:1541528693430681660>`),
 # so these PNGs are upload sources for the developer portal rather than assets --

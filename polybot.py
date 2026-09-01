@@ -190,7 +190,7 @@ MARK_EMOJI = os.environ.get("POLYMERGE_MARK_EMOJI") or "🗺️"
 # uploaded to this server, or an app-owned emoji. A guild emoji from *another*
 # server additionally needs the bot in that server and USE_EXTERNAL_EMOJIS.
 DONE_EMOJI = os.environ.get("POLYMERGE_DONE_EMOJI") or "✅"
-# Flavour. Unlike MARK_EMOJI/DONE_EMOJI above, nothing keys on these -- they
+# Flavor. Unlike MARK_EMOJI/DONE_EMOJI above, nothing keys on these -- they
 # decorate messages and the bot never reads them back, so a deployment that
 # cannot reach them can blank any of them out (POLYMERGE_HAPPY_EMOJI=) without
 # breaking anything.
@@ -202,7 +202,7 @@ DONE_EMOJI = os.environ.get("POLYMERGE_DONE_EMOJI") or "✅"
 # Placement is per *sentence*, not per message: these strings mostly read
 # "[what happened]. [what to do about it].", and a glyph parked at the very end
 # would attach itself to the advice rather than to the news. So the emoji
-# trails the sentence it is about, after that sentence's full stop.
+# trails the sentence it is about, after that sentence's period.
 HAPPY_EMOJI = os.environ.get("POLYMERGE_HAPPY_EMOJI") or "<:wolfyay:1541488102114328586>"
 SAD_EMOJI = os.environ.get("POLYMERGE_SAD_EMOJI") or "<:wolfconfused:1541488101241782354>"
 CREDIT_EMOJI = os.environ.get("POLYMERGE_CREDIT_EMOJI") or "<:arcticwolves:1541488099010281492>"
@@ -297,7 +297,7 @@ def template_for(map_size):
 
 
 def parse_overlays(words):
-    """Turn the words after `!merge [size]` into (layers, unrecognised).
+    """Turn the words after `!merge [size]` into (layers, unrecognized).
 
     Bare words add a layer. Order does not matter and case does not either,
     because this is typed into a chat box rather than a shell.
@@ -305,8 +305,8 @@ def parse_overlays(words):
     Nothing is on by default, so `no`-prefixed words and `plain` have nothing
     left to remove. They are still parsed, and deliberately no longer
     advertised: they were needed only while `shade` was on by default, and a
-    player who learnt `noshade` then should get a merge rather than an error
-    now. Removing them would turn a once-correct command into an unrecognised
+    player who learned `noshade` then should get a merge rather than an error
+    now. Removing them would turn a once-correct command into an unrecognized
     word."""
     layers = set(OVERLAY_DEFAULT)
     unknown = []
@@ -548,7 +548,7 @@ def shrink_for_upload(png_path, limit):
 
     Quality is chosen for fidelity first: on the largest composite in the
     corpus, quality 95 gives 1.40 MB (a 4x reduction) at a mean absolute error
-    under 1/255, which is invisible on the game's flat colour art. That is so
+    under 1/255, which is invisible on the game's flat color art. That is so
     far inside the limit that the lower rungs should never be reached -- they
     exist only so a pathological board degrades gradually instead of failing.
 
@@ -677,7 +677,7 @@ def fog_lock_line(stdout):
     """polymerge prints one 'fog lock (...)' line per run: how many tiles matched
     the template's fog art, which is what says the tile lattice really lined up.
 
-    It is no longer the first line of defence against a wrong size. polymerge's
+    It is no longer the first line of defense against a wrong size. polymerge's
     board-size check owes nothing to --map-size and refuses before a composite is
     ever written, wherever some shot spans the board. What is left for this
     number is the case that check abstains on -- a stated size on a board no shot
@@ -749,9 +749,9 @@ async def run_polymerge(workdir, image_paths, map_size, out_path, overlays=None)
 
 
 intents = discord.Intents.default()
-# Privileged: also has to be ticked under Bot -> Privileged Gateway Intents in
+# Privileged: also has to be checked under Bot -> Privileged Gateway Intents in
 # the Discord developer portal, and once the app is verified it has to be
-# *applied* for rather than merely ticked.
+# *applied* for rather than merely checked.
 #
 # It gates more than the command. MESSAGE_CONTENT covers every user-authored
 # field on a message object -- content, embeds, components, poll, and
@@ -793,7 +793,7 @@ bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents)
 # with no "merge" in it (`polyhelp`) is the only thing that would separate them,
 # and changing this constant is the whole edit.
 #
-# Kept anyway, deliberately: the ranking appears to favour prefixes, so `/merge`
+# Kept anyway, deliberately: the ranking appears to favor prefixes, so `/merge`
 # sorts above `/polymerge-help` and Enter takes the right one. That is a weaker
 # guarantee than not matching at all -- it rests on an undocumented ordering --
 # but it is the project owner's call, and the explicit name is worth something
@@ -1028,7 +1028,7 @@ class Caller:
         Only Forbidden is swallowed, and only after logging the diagnosis to
         the console; anything else propagates to the error handlers as normal.
 
-        `reply` is honoured for a prefix command and ignored for a slash one,
+        `reply` is honored for a prefix command and ignored for a slash one,
         which has no invoking message to reply to."""
         try:
             send = (self._ctx.reply if reply and self._ctx is not None
@@ -1247,7 +1247,7 @@ def help_text():
     `!merge` on its own does *not* print this -- it attempts a merge, since
     that is what someone who has already attached their shots wants, and the
     size is measurable without them saying it. The two replies a lost player
-    actually reaches -- an unrecognised size, and no screenshots found -- both
+    actually reaches -- an unrecognized size, and no screenshots found -- both
     name `!merge help`, so it stays one message away from anywhere someone
     gets stuck.
 
@@ -1340,7 +1340,7 @@ async def merge(ctx, size: str = None, *extras):
     # So the size is the first digit-only word wherever it sits, and every
     # other word is a layer. A stray *second* number is deliberately left in
     # `words`, so it falls through to parse_overlays and is reported as
-    # unrecognised: `!merge 20 16` is ambiguous, and picking one silently is
+    # unrecognized: `!merge 20 16` is ambiguous, and picking one silently is
     # the one failure this program cannot afford.
     #
     # None of this parsing is dead now that /merge exists, and it is not
@@ -1566,7 +1566,7 @@ async def do_merge(caller, map_size, overlays):
     try:
         # Acquired explicitly rather than with `async with`, so this merge can
         # leave the queue the moment it stops waiting -- whether that is because
-        # the slot was granted or because the wait was cancelled. An
+        # the slot was granted or because the wait was canceled. An
         # `async with` gives no hook between those two.
         #
         # Joined to the queue *before* the ack is sent, so the position the ack
@@ -1788,7 +1788,7 @@ async def do_merge(caller, map_size, overlays):
             caption += (f" No {' or '.join(gone)} {layer} {exist} for {size_txt} "
                         f"boards, so {it} left off.")
         # out_path.name, not a hardcoded "merged.png": the upload-size
-        # fallback above may have swapped in a JPEG, and labelling that .png
+        # fallback above may have swapped in a JPEG, and labeling that .png
         # would hand clients a file whose extension lies about its contents.
         posted = await caller.send(reply=False, content=caption,
                                    file=discord.File(out_path, filename=out_path.name))
@@ -1803,7 +1803,7 @@ async def do_merge(caller, map_size, overlays):
         # needs SEND_MESSAGES (SEND_MESSAGES_IN_THREADS in a thread) while
         # reacting needs ADD_REACTIONS, and a thread inherits the latter
         # normally. The result was the worst available: the player got no
-        # composite, every one of their shots was ticked as already merged, and
+        # composite, every one of their shots was checked off as already merged, and
         # re-running !merge answered "No usable screenshots found" -- with
         # nothing to do about it but hunt up the channel un-reacting by hand.
         #

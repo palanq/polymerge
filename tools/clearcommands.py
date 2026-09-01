@@ -13,7 +13,7 @@ whether it goes away on its own depends on the scope:
   time -- alongside the global set, which is what produces duplicate and stale
   entries in the picker.
 
-This clears either. It is a maintenance action rather than bot behaviour, so it
+This clears either. It is a maintenance action rather than bot behavior, so it
 lives here instead of growing a flag on polybot: tools/ is never shipped (the
 Dockerfile copies only polybot.py, polymerge.py, Overlays/ and Assets/) and
 nothing imports it.

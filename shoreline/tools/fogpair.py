@@ -10,7 +10,7 @@ detector can see and what is actually there.
 
 This is the only harness that scores the population the reader is actually
 applied to -- tiles the shot itself sees as fog. The older measurements scored
-edges whose neighbour was *explored*, which is a different population and is
+edges whose neighbor was *explored*, which is a different population and is
 how a false call once survived every other number recorded for it.
 
 Not shipped: nothing imports it.
@@ -89,7 +89,7 @@ def truth_tiles(warped_clear, wmask, origin, u_col, u_row, n):
 
     Read on the same dropped rhombus the shoreline reader uses, since the
     lattice marks fog cube tops and real terrain is drawn below them. Tiles
-    that are neither clearly water nor clearly land are left unlabelled rather
+    that are neither clearly water nor clearly land are left unlabeled rather
     than guessed -- an ambiguous truth would score the detector on noise."""
     H, W = wmask.shape
     drop = ps.SHORE_DROP_FRAC * float(np.linalg.norm(u_col))
@@ -142,7 +142,7 @@ def score(tag, size, basis_pack=None, method="ratio"):
                                                 basis_pack)
     claims, uncalled = {}, []
     for (i, j, d), (verdict, ratio) in reads.items():
-        di, dj = ps.SHORE_NEIGHBOUR[d]
+        di, dj = ps.SHORE_NEIGHBOR[d]
         k = (i + di, j + dj)
         if k not in fog:
             continue
@@ -151,7 +151,7 @@ def score(tag, size, basis_pack=None, method="ratio"):
         else:
             claims.setdefault(k, set()).add(verdict)
     for (i, j) in oceans:
-        for d, (di, dj) in ps.SHORE_NEIGHBOUR.items():
+        for d, (di, dj) in ps.SHORE_NEIGHBOR.items():
             k = (i + di, j + dj)
             if k in fog:
                 claims.setdefault(k, set()).add("water")
@@ -174,11 +174,11 @@ def score(tag, size, basis_pack=None, method="ratio"):
     # really water. Ocean counts, since the ocean rule reaches them too --
     # without it the denominator excludes tiles the reader does resolve and
     # coverage comes out above 100%.
-    addressable = {k for k in fog for d, (di, dj) in ps.SHORE_NEIGHBOUR.items()
+    addressable = {k for k in fog for d, (di, dj) in ps.SHORE_NEIGHBOR.items()
                    if (k[0] - di, k[1] - dj) in expl
                    and truth.get((k[0] - di, k[1] - dj)) == "water"}
     addressable |= {k for (i, j) in oceans
-                    for (di, dj) in ps.SHORE_NEIGHBOUR.values()
+                    for (di, dj) in ps.SHORE_NEIGHBOR.values()
                     for k in [(i + di, j + dj)] if k in fog}
     return ok, bad, len(claims), len(addressable), detail, uncalled
 
@@ -245,7 +245,7 @@ def run(method, loo=False):
           f"ground truth")
     print(f"uncalled edges facing fog, by what was really there: "
           f"water {missed.get('water', 0)}, land {missed.get('land', 0)}, "
-          f"unlabelled {missed.get(None, 0)}")
+          f"unlabeled {missed.get(None, 0)}")
 
 
 if __name__ == "__main__":

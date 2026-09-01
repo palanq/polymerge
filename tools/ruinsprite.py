@@ -21,7 +21,7 @@ The sprite settles it, because the compositing is exact and invertible:
 
     C = f*a*S + (1 - f*a)*F
 
-S and a are the sprite's colour and alpha, known per pixel from the PNG. F is
+S and a are the sprite's color and alpha, known per pixel from the PNG. F is
 the fog behind it, known per pixel because fog is one deterministic render and
 the shot is anchored to it -- polymerge fits the shot's illumination onto the
 template (fog_illumination) and now writes that gain into anchor.json. So at a
@@ -172,7 +172,7 @@ def flame_sites(ruins_vis, warped):
 
     That overlay paints accepted pixels pure red *over* the warped image, which
     is why the warped image had to be written separately -- the overlay has
-    destroyed the very colours anything downstream wants to measure. The
+    destroyed the very colors anything downstream wants to measure. The
     accepted set is still recoverable as "red here, not red in the source". The
     tile outlines the same overlay draws are excluded by shape: those are thin
     and tile-sized, a flame is a compact blob around 20x32.
@@ -208,11 +208,11 @@ def corr_map(obs, fog, spr, fog_mean, valid):
     ratio, which is exactly the property the shipped HSV thresholds lack. The
     fitted fade is recovered separately where it is wanted, as <D,K>/<K,K>.
 
-    Returned maps are indexed by the *centre* of the kernel window.
+    Returned maps are indexed by the *center* of the kernel window.
     """
     spr_bgr, spr_a = spr
     kh, kw = spr_a.shape
-    # K needs one fog colour rather than the per-pixel field, or it stops being
+    # K needs one fog color rather than the per-pixel field, or it stops being
     # a fixed kernel and the whole thing stops being a convolution. The shot's
     # own mean fog is the right constant and costs almost nothing in accuracy:
     # these renders' fog is uniform tile to tile (per-tile mean spans 228.6-230.2
@@ -265,10 +265,10 @@ KNOWN_RUINS = {
 
 
 def cluster(tiles):
-    """Merge tiles touching in the 8-neighbourhood, as cluster_ruin_tiles does.
+    """Merge tiles touching in the 8-neighborhood, as cluster_ruin_tiles does.
 
     Ruins are never adjacent (a placement guarantee), so two detections on
-    neighbouring tiles are one diamond cluster straddling a tile border rather
+    neighboring tiles are one diamond cluster straddling a tile border rather
     than two ruins. Only after this does a count mean anything.
     """
     todo, out = set(tiles), []
@@ -291,7 +291,7 @@ def cluster(tiles):
 def local_maxima(score, allowed, radius):
     """Peaks of `score` inside `allowed`, no two within `radius`.
 
-    A dilation compares each pixel against the best in its neighbourhood, so a
+    A dilation compares each pixel against the best in its neighborhood, so a
     plateau's whole top would qualify; the >= then ties are broken by taking
     the strongest first and suppressing the rest, which is what keeps one flame
     from being reported several times.
@@ -342,11 +342,11 @@ def candidate_sites(warped, fog_mask, min_sat, tile_px):
 
 
 def best_fit_at(obs_img, fog_img, spr, cx, cy, search=6):
-    """Best (f, residual, corr, dx, dy) for a flame centred near (cx, cy).
+    """Best (f, residual, corr, dx, dy) for a flame centered near (cx, cy).
 
     The flames move, so a thresholded blob's centroid is not the sprite's
     position to the pixel. A small search absorbs that; kept small on purpose,
-    so the match cannot wander onto a neighbouring flame in the same cluster.
+    so the match cannot wander onto a neighboring flame in the same cluster.
     """
     spr_bgr, spr_a = spr
     kh, kw = spr_a.shape
@@ -361,7 +361,7 @@ def best_fit_at(obs_img, fog_img, spr, cx, cy, search=6):
             f, r, c = fit_fade(obs_img[y0:y0 + kh, x0:x0 + kw],
                                fog_img[y0:y0 + kh, x0:x0 + kw], spr_bgr, spr_a)
             # ranked by corr, not residual: the search is looking for where the
-            # sprite *is*, and residual is minimised by finding less of it
+            # sprite *is*, and residual is minimized by finding less of it
             if c > best[2]:
                 best = (f, r, c, dx, dy)
     return best
@@ -581,7 +581,7 @@ def report(rows, args):
         for r in rows:
             if r["kind"] == "flame":
                 by[r["frac"]].append(r["corr"])
-        # Ranked on corr, not residual. Residual is minimised by explaining
+        # Ranked on corr, not residual. Residual is minimized by explaining
         # *less* of the flame, so it would prefer a kernel too small to be the
         # sprite -- it gets the size wrong in a specific, confident direction.
         print("\nscale sweep -- match quality over genuine flames, by flame "

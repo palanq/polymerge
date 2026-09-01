@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # `!merge 16` outright, drew no decorative layer at any size, and registered 18
 # and 20 against different fog art from the rest. Those two files and their
 # fallback are gone, so this COPY is now the only thing standing between the
-# bot and a startup refusal -- which is the intended behaviour.
+# bot and a startup refusal -- which is the intended behavior.
 #
 # Assets/ carries the Elyrion ruin sprite. Without it ruin detection reports
 # NO-RUIN-SPRITE and switches itself off; the merge still runs.

@@ -59,7 +59,7 @@ def _first_existing(*paths):
 #   * a water tile always has at least one shoreline. A tile with water on all
 #     four sides is ocean (or land), never shallow water;
 #   * ocean therefore has water on all four sides, so an ocean tile resolves
-#     all four of its fogged neighbours at a stroke -- built, and it reaches
+#     all four of its fogged neighbors at a stroke -- built, and it reaches
 #     exactly where the rim reader is blind, in open sea where there is no
 #     shoreline anywhere to read. SHORELINES.md records what is still only
 #     lightly validated about it.
@@ -124,9 +124,9 @@ SHORE_BAND_PCT = 70      # the band's brightness is read at this percentile, not
 # not.
 SHORE_RATIO_HI = 1.045   # at or above: shoreline present -> land beyond
 SHORE_RATIO_LO = 1.02    # below: no shoreline -> water beyond
-# Water's own colour, as chromaticity ratios so a shot's overall gain divides
+# Water's own color, as chromaticity ratios so a shot's overall gain divides
 # out. Measured off the sprites (G/B 0.830, R/B 0.431 for water; 0.574, 0.292
-# for ocean) and confirmed on the corpus. This is *not* a terrain catalogue --
+# for ocean) and confirmed on the corpus. This is *not* a terrain catalog --
 # see the standing decision in CLAUDE.md. It identifies one tile type whose art
 # is fixed, the way the fog test does, and it is used only to decide which
 # pixels of an already-classified tile are water; nothing here classifies fog,
@@ -174,10 +174,10 @@ SHORE_MIN_CORE_PX = 200  # measurements -- deliberately unscaled, as in
                          # _region_ncc and tile_fog_fraction
 SHORE_LAND_BGR = (64, 200, 64)     # green wash: fog hiding land
 SHORE_WATER_BGR = (230, 160, 40)   # blue wash: fog hiding water. Both are
-SHORE_WASH_ALPHA = 0.45            # clear of the two colours already spoken
+SHORE_WASH_ALPHA = 0.45            # clear of the two colors already spoken
                                    # for on a composite -- red is a spawn zone
                                    # layer, violet is a ruin marker.
-SHORE_NEIGHBOUR = {"NW": (-1, 0), "NE": (0, -1), "SE": (1, 0), "SW": (0, 1)}
+SHORE_NEIGHBOR = {"NW": (-1, 0), "NE": (0, -1), "SE": (1, 0), "SW": (0, 1)}
 
 
 # ---- joint whole-tile shoreline model -------------------------------------
@@ -237,9 +237,9 @@ def shore_canon_patch(gray, keep, origin, u_col, u_row, i, j, drop,
 
 def shore_canon_patch3(bgr, keep, origin, u_col, u_row, i, j, drop,
                        k=SHORE_BASIS_K):
-    """shore_canon_patch, in colour. Colour is not a refinement here: the same
-    template scheme scores 112 in gray and 116 in colour under leave-one-out,
-    and gray makes two false *land* calls where colour makes none."""
+    """shore_canon_patch, in color. Color is not a refinement here: the same
+    template scheme scores 112 in gray and 116 in color under leave-one-out,
+    and gray makes two false *land* calls where color makes none."""
     n0 = origin + i * u_col + j * u_row + np.float32([0, drop])
     u = (np.arange(k) + 0.5) / k
     U, V = np.meshgrid(u, u, indexing="ij")
@@ -299,7 +299,7 @@ def load_shore_basis(path=None):
 def _hypotheses():
     """Every subset of the four edges except the empty one -- a shallow water
     tile always has at least one shoreline (game fact); a tile with none is
-    ocean, which is recognised by colour and never reaches here."""
+    ocean, which is recognized by color and never reaches here."""
     out = []
     for bits in range(1, 16):
         out.append(tuple(d for k, d in enumerate(SHORE_BASIS_EDGES)
@@ -311,7 +311,7 @@ SHORE_HYPOTHESES = _hypotheses()
 
 
 def shore_predict(basis, hyp, fog_dirs=(), delta=None):
-    """The tile this hypothesis predicts, in normalised units."""
+    """The tile this hypothesis predicts, in normalized units."""
     pred = basis[0].copy()
     for k, d in enumerate(SHORE_BASIS_EDGES):
         if d in hyp:
@@ -319,7 +319,7 @@ def shore_predict(basis, hyp, fog_dirs=(), delta=None):
     for c, (a, b) in enumerate(SHORE_BASIS_CORNERS):
         if a in hyp and b in hyp:
             pred += basis[1 + len(SHORE_BASIS_EDGES) + c]
-    # A fog neighbour shades the water along that edge slightly differently from
+    # A fog neighbor shades the water along that edge slightly differently from
     # land. Measured negligible on three directions and -0.040 on NE, so it is
     # carried as four scalars rather than four images.
     if delta is not None:
@@ -341,7 +341,7 @@ def read_shorelines_joint(warped_bgr, wmask, origin, u_col, u_row, explored,
     out, ocean_tiles = {}, {}
     candidates = []
     for (i, j) in explored:
-        facing = [d for d, (di, dj) in SHORE_NEIGHBOUR.items()
+        facing = [d for d, (di, dj) in SHORE_NEIGHBOR.items()
                   if (i + di, j + dj) in unresolved]
         if facing:
             candidates.append(((i, j), facing))
@@ -399,7 +399,7 @@ def read_shorelines_joint(warped_bgr, wmask, origin, u_col, u_row, explored,
                 continue
             e0 = float(((obs[sel] - preds[h0][sel]) ** 2).mean())
             e1 = float(((obs[sel] - preds[h1][sel]) ** 2).mean())
-            margin = e0 - e1          # >0 favours a shoreline on d
+            margin = e0 - e1          # >0 favors a shoreline on d
             if margin >= SHORE_MARGIN:
                 out[(i, j, d)] = ("land", margin)
             elif margin <= -SHORE_MARGIN:
@@ -437,17 +437,17 @@ SHORE_ROBUST_FLOOR = 0.04   # ...but never tighter than this, so a clean tile
 
 def shore_template_margins(warped_bgr, wmask, origin, u_col, u_row, explored,
                            unresolved, templates):
-    """Per-edge evidence from the learned colour templates, as
-    {(i, j, d): margin}, positive favouring a shoreline on that edge.
+    """Per-edge evidence from the learned color templates, as
+    {(i, j, d): margin}, positive favoring a shoreline on that edge.
 
     Two things make this worth having despite the ratio reader being the more
     accurate of the two overall. It decides all four edges together, so a corner
     shared by two edges is attributed rather than trimmed away -- the one
     failure the ratio reader cannot fix by any threshold. And it decides what is
-    occluded *without a colour prior*: an occluder is defined as a pixel that no
+    occluded *without a color prior*: an occluder is defined as a pixel that no
     hypothesis explains, found from the per-pixel minimum residual across all
     fifteen templates and cut at a MAD-based threshold. That matters because the
-    obvious alternative -- keep only water-coloured pixels -- throws away a
+    obvious alternative -- keep only water-colored pixels -- throws away a
     median 34% of a shoreline band and sometimes all of it, since a strong
     shoreline leaves the water chroma window on its way to sand.
 
@@ -458,7 +458,7 @@ def shore_template_margins(warped_bgr, wmask, origin, u_col, u_row, explored,
     keys = [h for h in templates if h]     # drop "none": that tile is ocean
     if not keys:
         return out
-    cand = [((i, j), [d for d, (di, dj) in SHORE_NEIGHBOUR.items()
+    cand = [((i, j), [d for d, (di, dj) in SHORE_NEIGHBOR.items()
                       if (i + di, j + dj) in unresolved]) for (i, j) in explored]
     cand = [c for c in cand if c[1]]
     if not cand:
@@ -529,7 +529,7 @@ def read_shorelines_hybrid(warped_bgr, wmask, origin, u_col, u_row, explored,
     Each method has one thing it does better, measured on the fog pairs under
     leave-one-out. The ratio reader is more accurate overall (115 correct
     against the templates' best zero-error 107) because its per-tile
-    normalisation adapts to each tile, where a template averaged over boards
+    normalization adapts to each tile, where a template averaged over boards
     cannot. But it is structurally blind at a corner, and that is its one
     remaining error. The templates decide all four edges at once and so are not.
 
@@ -611,7 +611,7 @@ def read_shorelines(warped_bgr, wmask, origin, u_col, u_row, explored,
     rather than a forced choice.
 
     The ocean tiles are returned rather than read: ocean has water on all four
-    cardinal sides by definition, so it resolves its neighbours outright and
+    cardinal sides by definition, so it resolves its neighbors outright and
     has no rim to read. That inference is the caller's to make.
 
     `explored` is the set of tiles this source witnessed as explored; a fogged
@@ -631,7 +631,7 @@ def read_shorelines(warped_bgr, wmask, origin, u_col, u_row, explored,
     # they would be the whole cost of the phase.
     candidates = []
     for (i, j) in explored:
-        facing = [d for d, (di, dj) in SHORE_NEIGHBOUR.items()
+        facing = [d for d, (di, dj) in SHORE_NEIGHBOR.items()
                   if (i + di, j + dj) in unresolved]
         if facing:
             candidates.append(((i, j), facing))
@@ -655,7 +655,7 @@ def read_shorelines(warped_bgr, wmask, origin, u_col, u_row, explored,
         area = int(inside.sum())
         if area < SHORE_MIN_CORE_PX:
             continue
-        # Ocean resolves its neighbours without any rim reading: it has water on
+        # Ocean resolves its neighbors without any rim reading: it has water on
         # all four cardinal sides by definition, which is also why it carries no
         # shoreline and could never be read the ordinary way.
         n_water = int((inside & water[y0:y1, x0:x1]).sum())
@@ -709,7 +709,7 @@ def read_shorelines(warped_bgr, wmask, origin, u_col, u_row, explored,
 # every source of a finished merge. Below is what replaces that caller: one
 # screenshot, anchored on its own.
 #
-# The one deliberate difference in behaviour. polymerge asked about the tiles
+# The one deliberate difference in behavior. polymerge asked about the tiles
 # with no winner -- fog in the finished composite, which also sweeps in tiles
 # nobody photographed at all. With a single shot the honest set is narrower:
 # the tiles this shot itself witnessed as *fog*. A rim facing off the edge of
@@ -719,7 +719,7 @@ def read_shorelines(warped_bgr, wmask, origin, u_col, u_row, explored,
 
 
 def load_shot(path, args):
-    """One screenshot in the mask flavours the anchor and the sampler need.
+    """One screenshot in the mask flavors the anchor and the sampler need.
 
     A dict rather than five returns because sky_rebuild has to write back into
     it: everything downstream -- the warp, the tile sampling -- must see the
@@ -750,7 +750,7 @@ def load_shot(path, args):
             S["valid"] = S["valid"] & ~badge
             S["frame"] = S["frame"] & ~badge
             # The halo, not the badge, comes off the edge mask: a few glowing
-            # pixels do not change what colour a tile is, but they do change
+            # pixels do not change what color a tile is, but they do change
             # where the silhouette appears to end.
             S["halo"] = pm.badge_halo(badge, found)
             S["edge"] = S["edge"] & ~S["halo"]
@@ -781,7 +781,7 @@ def sky_rebuild_for(S, args):
 
 
 def wash_polys(shore_tiles, origin, u_col, u_row, shape):
-    """The wash as its own layer: (colour image, coverage mask).
+    """The wash as its own layer: (color image, coverage mask).
 
     Kept separate from the blend so the same tiles can be painted either on the
     board view or, inverse-warped, back onto the screenshot's own pixels."""
@@ -825,7 +825,7 @@ def main():
                          "template space -- the blank all-fog render with this "
                          "shot pasted over it, so board it never photographed "
                          "reads as fog. 'shot' washes the screenshot's own "
-                         "pixels instead, which is what a player recognises.")
+                         "pixels instead, which is what a player recognizes.")
     ap.add_argument("--map-size", type=int, choices=list(pm.MAP_SIZE_CHOICES),
                     help="board is this many tiles on a side. Omit it to "
                          "measure it off the screenshot (see detect_map_size); "
@@ -972,12 +972,12 @@ def main():
     # without a rim reading -- and it reaches exactly where the rim reader
     # cannot, in open sea where there is no shoreline anywhere to read.
     for (i, j) in oceans:
-        readings += [((i, j, d), ("water", None)) for d in SHORE_NEIGHBOUR]
+        readings += [((i, j, d), ("water", None)) for d in SHORE_NEIGHBOR]
     claims = {}                   # (i, j) -> {verdict -> [(d, ratio)]}
     for (i, j, d), (verdict, ratio) in readings:
         if verdict is None:
             continue
-        di, dj = SHORE_NEIGHBOUR[d]
+        di, dj = SHORE_NEIGHBOR[d]
         key = (i + di, j + dj)
         if key not in fog:        # off the board, explored, or unphotographed
             continue
@@ -986,7 +986,7 @@ def main():
     shore_tiles, shore_conflict = {}, []
     for key, per_verdict in claims.items():
         if len(per_verdict) > 1:
-            # Two water tiles disagreeing about one fogged neighbour is a
+            # Two water tiles disagreeing about one fogged neighbor is a
             # defect signal, not noise to average: shoreline <=> land is a
             # biconditional, so both cannot be right. Report it, mark nothing.
             shore_conflict.append((key, per_verdict))
@@ -1029,7 +1029,7 @@ def main():
         for (i, j, d), (verdict, ratio) in reads.items():
             if verdict is not None:
                 continue
-            di, dj = SHORE_NEIGHBOUR[d]
+            di, dj = SHORE_NEIGHBOR[d]
             key = (i + di, j + dj)
             if key in shore_tiles or key not in fog:
                 continue
