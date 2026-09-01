@@ -708,6 +708,17 @@ considered and rejected in favor of one-message-in/one-composite-out; marking
 via reactions keeps that property (no session to leave open, no window to
 manage) while still letting a thread fill up naturally.
 
+**The ✅ is applied at the *end* of a merge, and that ordering is deliberate.**
+It is the only thing making a merge idempotent, so marking at scan time instead
+looks tidier and is much worse: a merge that then fails or gets dropped would
+leave its shots marked consumed, the retry would find nothing, and the player
+would have to un-react every screenshot to recover — silent data loss traded
+for tidiness. The visible consequence of marking late is that two merges started
+in one channel seconds apart both see the shots unmarked and produce the same
+composite twice. That is degenerate rather than a defect: a channel is one game,
+so a second simultaneous merge has nothing to add, and it costs a duplicate
+image rather than a wrong map. Don't "fix" it by moving the mark.
+
 **There are two front ends, `!merge` and `/merge`, and they differ only in how
 the options arrive.** `!merge [size] [layers...]` parses free text; `/merge`
 takes the same two as typed options that Discord validates and describes at the
@@ -3353,40 +3364,6 @@ template location.
   that actually failed, and they are the ones to look at first.
 
 ## Deferred (known, deliberately not handled yet)
-
-### Two merges fired in quick succession in one channel merge the same shots
-
-Observed on the beta bot and **deliberately left alone** until it shows up in
-real use — the project owner's call, and a reasonable one: it needs two merges
-started within one merge's runtime in the *same* channel, which a group taking
-turns posting screenshots does not naturally do.
-
-The mechanism is an ordering, not a bug in any one function. In `do_merge` the
-🗺️ scan runs at the top, the queue slot is taken in the middle, and the ✅
-marks go on at the very end, after the composite posts. The ✅ is what makes a
-merge idempotent — `collect_marked_shots` skips anything already marked — so
-between a merge starting and finishing, its shots still look unclaimed:
-
-1. `/merge` A scans, finds shots 1–2, queues, runs, ✅s them.
-2. `/merge` B two seconds later scans, finds shots 1–2 *still unmarked*,
-   queues behind A, and merges them a second time.
-
-The player gets two identical composites. Nothing is corrupted and no
-screenshot is lost — this costs a queue slot and confuses, rather than
-producing a wrong map.
-
-It only bites within one channel, because the scan is per-channel: two merges in
-different channels claim disjoint sets and cannot collide.
-
-The obvious fix — ✅ at scan time rather than at the end — is wrong, and worth
-saying so before anyone reaches for it: a merge that then fails or gets dropped
-would leave its shots marked as consumed, so the retry finds nothing and the
-player has to un-react every shot to recover. That trades a duplicate for
-silent data loss, which is much the worse failure and against this file's whole
-posture. Whatever is built here has to hold a claim that is *released* when a
-merge fails — an in-flight set keyed by channel is the obvious shape, and it
-reintroduces exactly the bot-side session state the reaction design exists to
-avoid, which is the reason not to build it speculatively.
 
 ### A shot with only *one* board edge in frame
 
