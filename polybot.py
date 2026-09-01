@@ -872,7 +872,7 @@ class Caller:
     the queue notice below be edited for as long as the queue takes."""
 
     __slots__ = ("channel", "guild", "author", "attachments",
-                 "_ctx", "_interaction")
+                 "_ctx", "_interaction", "_placeholder")
 
     def __init__(self, channel, guild, author, attachments,
                  ctx=None, interaction=None):
@@ -882,6 +882,9 @@ class Caller:
         self.attachments = attachments
         self._ctx = ctx
         self._interaction = interaction
+        # Whether the deferral's ephemeral "thinking" placeholder is still on
+        # screen. False for a prefix command, which never has one.
+        self._placeholder = interaction is not None
 
     @classmethod
     def from_ctx(cls, ctx):
@@ -923,7 +926,20 @@ class Caller:
         try:
             send = (self._ctx.reply if reply and self._ctx is not None
                     else self.channel.send)
-            return await send(content, **kw) if content is not None else await send(**kw)
+            msg = await send(content, **kw) if content is not None else await send(**kw)
+            # Anything visible has now been said, so the "thinking" placeholder
+            # is redundant -- drop it here rather than at the call sites.
+            #
+            # This is the whole reason clearing lives inside send: do_merge has
+            # seven early returns (missing template, no templates, no history
+            # permission, no screenshots, too many, too large, queue full) and
+            # every one of them posts a message and returns. Clearing at each
+            # was one edit per path and one more to forget on the eighth; the
+            # symptom of forgetting is a spinner that hangs until the
+            # interaction expires, which is what happened on "no usable
+            # screenshots found".
+            await self.clear_placeholder()
+            return msg
         except discord.Forbidden:
             where = getattr(self.channel, "name", self.channel)
             me = self.guild.me if self.guild else None
@@ -943,13 +959,24 @@ class Caller:
     async def tell_privately(self, content):
         """Say something only the invoker sees, or nothing on the prefix path.
 
+        Two routes, because the placeholder may already be gone: while it is
+        still up, edit it in place -- that reuses the message the player is
+        already looking at. Once send() has cleared it, there is nothing to
+        edit and a fresh ephemeral followup is the only way through. Getting
+        this wrong loses exactly the message this class exists to deliver, on
+        the second failure rather than the first, which is a poor place to
+        discover it.
+
         Best-effort: this runs on paths that are already failing, and an
-        expired or already-consumed interaction must not raise on top of the
-        problem it is reporting."""
+        expired interaction must not raise on top of the problem it reports."""
         if self._interaction is None:
             return
         try:
-            await self._interaction.edit_original_response(content=content)
+            if self._placeholder:
+                self._placeholder = False
+                await self._interaction.edit_original_response(content=content)
+            else:
+                await self._interaction.followup.send(content, ephemeral=True)
         except discord.HTTPException:
             pass
 
@@ -957,9 +984,12 @@ class Caller:
         """Drop the ephemeral "thinking" placeholder left by the deferral.
 
         Only the slash path has one -- `!merge` posts its ack directly and has
-        nothing to clear. Best-effort for the same reason as above."""
-        if self._interaction is None:
+        nothing to clear. Idempotent, since send() calls it on every message
+        and only the first has anything to do. Best-effort: a placeholder that
+        will not delete is cosmetic, and must not sink a merge over it."""
+        if not self._placeholder:
             return
+        self._placeholder = False
         try:
             await self._interaction.delete_original_response()
         except discord.HTTPException:
@@ -1401,10 +1431,6 @@ async def do_merge(caller, map_size, overlays):
             queued = queue_notice_text(rec)
             rec.notice = await caller.send(queued or starting_text())
             rec.shown = queued
-            # The public ack is up, so the slash command's ephemeral "thinking"
-            # placeholder has nothing left to say. No-op for a prefix command,
-            # which never had one.
-            await caller.clear_placeholder()
             await MERGE_LOCK.acquire()
         finally:
             _waiting.remove(rec)
