@@ -1125,6 +1125,30 @@ MAP_SIZE_DEFERRED = (30,)
 MAP_SIZE_CHOICES = tuple(n for n in sorted(BOARD_SIZE_NAMES)
                          if n not in MAP_SIZE_DEFERRED)
 
+
+def size_list():
+    """The board sizes, phrased for a player rather than for a shell.
+
+    Every message this appears in is one polybot passes straight to a Discord
+    channel, and the reader there has never seen this program's command line:
+    naming --map-size sends them hunting for a flag they have no way to type,
+    and the bot's own equivalent is a bare word (`!merge 20`). So these
+    messages say what to *do* -- retry with the size included -- and leave the
+    flag to --help, where the only person who can use it is already looking.
+
+    Same comma-then-"or" shape as polybot's unrecognized-size reply, because
+    four "or"s read badly at five sizes."""
+    return (", ".join(str(n) for n in MAP_SIZE_CHOICES[:-1])
+            + f" or {MAP_SIZE_CHOICES[-1]}")
+
+
+# The remedy clause every "we could not work the size out" refusal ends with.
+# One constant so the five of them cannot drift apart -- they are the same
+# sentence to the player whichever internal check produced them.
+# No trailing full stop: one caller continues the sentence with a second
+# remedy ("..., or with at least one screenshot that ...").
+RESTATE_SIZE = "Please retry including the map size ({})"
+
 # How far two shots' independently measured board sizes may differ before
 # neither is believed. Across the corpus's edge-pair shots every measurement
 # lands within 0.32 tiles of the truth, and the sizes being told apart are 2
@@ -2961,17 +2985,25 @@ def _no_measurement_reason(why):
 
     Note "counted" is the honest verb throughout. Nothing here guesses a size;
     it measures one, and refuses when it cannot."""
-    sizes = " or ".join(str(n) for n in MAP_SIZE_CHOICES)
-    tail = f" Pass the size explicitly (--map-size {sizes})."
+    tail = " " + RESTATE_SIZE.format(size_list())
     kinds = set(why.values())
+    # Both branches state the cause and the remedy and stop there. Why the fog
+    # is needed, and what it is measured against, is this file's business and
+    # not the player's -- they cannot act on it, and it is the difference
+    # between a message read and a message skimmed.
     if kinds == {"no-fog"}:
-        return ("these screenshots have no fog left to measure the board "
-                "against.\nCounting the tiles across a board uses the fog's "
-                "repeat as a ruler, so a fully-explored board -- a replay, or a "
-                "finished game -- has to be told its size." + tail)
+        # No second remedy, deliberately: the board has no fog left, so no
+        # amount of re-photographing it brings the ruler back, and inviting the
+        # player to try sends them round a loop that cannot succeed.
+        return "these screenshots have no fog left to measure." + tail + "."
     if kinds == {"no-span"}:
-        return ("no screenshot spans the whole board in one direction, which is "
-                "what counting the tiles across it needs." + tail)
+        # Here there is a second remedy and it is the better one, so it is
+        # offered alongside rather than instead. "Two opposite sides" rather
+        # than the internal a-min/a-max vocabulary: what a shot must contain to
+        # have its tiles counted is both ends of one direction.
+        return ("no screenshot spans the whole board." + tail
+                + ", or with at least one screenshot that shows two opposite "
+                  "sides of the board.")
     # Mixed, or a cause with no tailored line of its own. Name them per shot, so
     # the summary can never contradict the detail lines printed above it.
     said = {"no-fog": "no fog left to measure against",
@@ -2980,7 +3012,7 @@ def _no_measurement_reason(why):
             "phantom-pair": "its edge pairs disagree, so one is a phantom",
             "no-outline": "no board outline found"}
     detail = "; ".join(f"{n} ({said.get(w, w)})" for n, w in sorted(why.items()))
-    return f"no screenshot could be measured -- {detail}.{tail}"
+    return f"no screenshot could be measured -- {detail}.{tail}."
 
 
 def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
@@ -3017,9 +3049,15 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     registration path untouched. Only ever runs when --map-size is omitted."""
     basis = _probe_basis(dark_thresh)
     if basis is None:
-        raise SystemExit("cannot detect the map size: no Overlays/<name>-"
-                         "blank.png on disk to take the board's projection "
-                         "from.")
+        # An install fault, not anything the player did, so the headline says
+        # so plainly and the path that identifies it goes on the second line
+        # for whoever runs the deployment. Same split as the refusals below:
+        # polybot promotes only the first line, and puts the rest in a code
+        # block underneath.
+        raise SystemExit("this is not installed correctly, so it cannot work "
+                         "the board size out.\n(no Overlays/<name>-blank.png "
+                         "on disk to take the board's projection from -- see "
+                         "the Dockerfile.)")
     dir_a, dir_b, tile_px, t_span = basis
     tags = ["a-min", "a-max", "b-min", "b-max"]
     implied = {}
@@ -3097,26 +3135,30 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
         print(implausible_note(discarded))
     if not implied:
         detail = "  ".join(f"{n}={v:.2f}" for n, v in sorted(discarded.items()))
+        # Headline first and remedy with it; the per-shot numbers are debugging
+        # detail and go below, where polybot renders them in a code block the
+        # player can ignore.
         raise SystemExit(
             f"cannot detect the map size: no screenshot measured anything "
-            f"close to a real board size ({detail}). Pass the size explicitly "
-            f"(--map-size " + " or ".join(str(n) for n in MAP_SIZE_CHOICES)
-            + ").")
+            f"close to a real board size. " + RESTATE_SIZE.format(size_list()) + "."
+            + f"\n(measured {detail})")
     vals = sorted(implied.values())
     spread = vals[-1] - vals[0]
     if spread > MAP_SIZE_DETECT_MAX_SPREAD:
         raise SystemExit(
             f"the screenshots disagree about the board size by {spread:.2f} "
-            f"tiles ({', '.join(f'{k} {v:.2f}' for k, v in implied.items())}) "
-            f"-- are these all screenshots of the same board? Pass --map-size "
-            f"explicitly to override.")
+            f"tiles -- are these all screenshots of the same board? "
+            + RESTATE_SIZE.format(size_list()) + "."
+            + f"\n(measured {', '.join(f'{k} {v:.2f}' for k, v in implied.items())})")
     med = float(np.median(vals))
     size = int(round(med))
     if size not in MAP_SIZE_CHOICES:
+        # Sizes without the "x", the way a player writes one to the bot: the
+        # supported list is a list of things to *type*, not of board shapes.
         raise SystemExit(
-            f"detected a {size}x{size} board (measured {med:.2f} tiles across), "
-            f"but the only templates available are "
-            + " and ".join(f"{n}x{n}" for n in MAP_SIZE_CHOICES) + ".")
+            f"this looks like a {size}x{size} board, which is not a size this "
+            f"can merge. The sizes it handles are " + size_list()
+            + f".\n(measured {med:.2f} tiles across)")
     print(f"detected map size: {size}x{size} (measured {med:.2f} tiles across "
           f"{len(implied)} of {len(names)} shot(s))")
     return size
@@ -3324,7 +3366,11 @@ def main():
     template, valid_t, edge_t = load_template(template_path, args.dark_thresh,
                                               args.erode_px)
     if template is None:
-        raise SystemExit(f"cannot read template {template_path}")
+        # Install fault, like the missing-Overlays refusal in detect_map_size:
+        # nothing the player did, so the path goes below the headline.
+        raise SystemExit(f"this is not installed correctly, so it cannot merge "
+                         f"this board size.\n({template_path} is missing or "
+                         f"unreadable.)")
     tmpl_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
     print(f"template: {template_path}")
 
@@ -3572,18 +3618,21 @@ def main():
     if implied_n_of:
         med = float(np.median(list(implied_n_of.values())))
         if abs(med - args.map_size) > 0.4:
-            detail = "  ".join(f"{n}={v:.2f}" for n, v in sorted(implied_n_of.items()))
-            # First line carries the whole answer in plain words, because the
-            # Discord bot passes this text straight to the channel where the
-            # reader is a player, not a developer. The method detail follows
-            # for whoever is debugging.
+            # One sentence, no method and no per-shot table: this goes straight
+            # to a Discord channel, where the reader is a player who wants the
+            # answer and the fix. The evidence is already on stdout -- every
+            # shot printed its own "board size implied by span/fog-period"
+            # line during anchoring -- so nothing is lost by leaving it there.
+            #
+            # "or without a size" is the better of the two remedies and is why
+            # it is offered: omitting it makes this program measure the board
+            # rather than take anyone's word for it, which is exactly what went
+            # wrong here.
             got = int(round(med))
             raise SystemExit(
                 f"This looks like a {got}x{got} board, not "
-                f"{args.map_size}x{args.map_size}.\n"
-                f"(measured {med:.2f} tiles across from the screenshots "
-                f"themselves -- board span over fog repeat period, which does "
-                f"not depend on --map-size being right. Per shot: {detail})")
+                f"{args.map_size}x{args.map_size}. Please retry with size "
+                f"{got} or without a size.")
 
     Wt, Hct = template.shape[1], template.shape[0]
     warped, wmask, wmask_raw, pmask, pmask_raw, scale = {}, {}, {}, {}, {}, {}
@@ -3726,13 +3775,15 @@ def main():
         #     star_change/oum.png's 0.248, which is one set's worth of margin,
         #     and it is a color-based fog test besides.
         if size_was_detected:
+            # The reasoning that makes this a refusal rather than a warning --
+            # the size came from the fog, so fog is present and should have
+            # locked -- is in the comment above and in the numbers below. The
+            # player gets the outcome and what to do about it.
             raise SystemExit(
-                f"no shot locked onto the fog artwork (best "
-                f"{max(fog_lock.values())} tiles, need {args.min_fog_lock}) -- "
-                f"the tile lattice does not match these screenshots.\nThe size "
-                f"was measured from the fog, so there is fog here and it should "
-                f"have locked. State the size instead (--map-size "
-                + " or ".join(str(n) for n in MAP_SIZE_CHOICES) + ").")
+                f"the board size measured from these screenshots does not fit "
+                f"them. " + RESTATE_SIZE.format(size_list()) + "."
+                + f"\n(no shot locked onto the fog artwork: best "
+                f"{max(fog_lock.values())} tiles, need {args.min_fog_lock})")
         size_unverified = True
         print(f"\nWARNING: no shot locked onto the fog artwork (best "
               f"{max(fog_lock.values())} tiles). Merging as "
@@ -3905,7 +3956,14 @@ def main():
                 per.pop(n, None)
             del fog_lock[n]
         if not names:
-            raise SystemExit("every input was dropped as misanchored")
+            # Same audience as the refusals above: "misanchored" names an
+            # internal state, and the player needs the consequence and the
+            # remedy instead. The per-shot lines just printed carry the cause
+            # for the console.
+            raise SystemExit(
+                "none of these screenshots could be placed on the board. "
+                "Check they are all of the same board, and that the size is "
+                "right.")
 
     # Per-pixel fog evidence, used to rank sources against each other on the
     # *same* tile. A tall city can fill a tile's inset center in every shot, so

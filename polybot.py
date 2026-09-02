@@ -1454,12 +1454,22 @@ async def do_merge(caller, map_size, overlays):
     not give either front end its own path to the semaphore."""
     global _running_shots, _running_since
 
+    # Both of these are install faults, so the channel gets the consequence in
+    # words a player can act on ("ask whoever runs the bot") and the missing
+    # filename goes to the console, where the person who can fix it is reading.
+    # Naming `huge-blank.png` at a player tells them nothing they can use and
+    # reads as the bot blaming them for its own deployment.
     if map_size is not None and not template_for(map_size).exists():
-        await caller.send(f"Missing `{template_for(map_size).name}` on the bot "
-                          f"host. {SAD_EMOJI}")
+        print(f"#{caller.channel} merge FAILED: no "
+              f"{template_for(map_size).name} on the host", file=sys.stderr)
+        await caller.send(f"Can't merge {map_size}x{map_size} right now. "
+                          f"{SAD_EMOJI} Ask whoever runs the bot.")
         return
     if map_size is None and not any(template_for(n).exists() for n in MAP_SIZES):
-        await caller.send(f"No board templates on the bot host. {SAD_EMOJI}")
+        print(f"#{caller.channel} merge FAILED: no board renders on the host "
+              f"at all -- is Overlays/ in the image?", file=sys.stderr)
+        await caller.send(f"Can't merge right now. {SAD_EMOJI} Ask whoever "
+                          f"runs the bot.")
         return
 
     shots = [a for a in caller.attachments

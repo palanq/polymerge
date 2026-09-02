@@ -1129,6 +1129,62 @@ because the two want opposite advice — a board with no fog left cannot be
 measured at any zoom, whereas a board no shot spans just needs zooming out — and
 `_no_measurement_reason` distinguishes them precisely so the right one is said.
 
+**polymerge's refusal text *is* channel copy, so it may not name a command-line
+flag.** This is the whole reason `SystemExit` messages are passed through rather
+than replaced — but it cuts both ways: `Pass the size explicitly (--map-size 11
+or 14 …)` was reaching players as the headline of the commonest refusal, and a
+player has no command line to pass anything on. The bot's own equivalent is a
+bare word (`!merge 20`), and telling someone to type `--map-size` sends them
+looking for something that does not exist in Discord.
+
+`size_list()` and `RESTATE_SIZE` in polymerge are the one remedy sentence all
+five size refusals end with — *"Please retry including the map size (11, 14, 16,
+18 or 20)"* — kept in one place so they cannot drift apart, since to the player
+they are the same sentence whichever internal check produced them. `size_list`
+uses polybot's comma-then-"or" shape for the same reason polybot does: four
+"or"s read badly at five sizes. Nothing is lost on the CLI side, where `--help`
+and the usage line already document the flag to the only person who can use it.
+
+Three conventions come with it, and the third is the one that keeps being
+relearned:
+- **The first line carries the cause *and* the remedy; measurements go below,
+  if they go at all.** polybot promotes line one to the headline and renders
+  the rest in a code block, so a per-shot table in the headline buries the
+  answer. Several refusals were rearranged for this, not just reworded — and
+  the wrong-stated-size one then had its code block dropped outright, since
+  every shot already prints its own *"board size implied by span/fog-period"*
+  line to stdout during anchoring. **Check stdout before writing a second
+  line**: the diagnostic is usually already there, and a code block in the
+  channel is a cost paid by every player to serve nobody.
+- **Only offer a remedy that can work.** The no-fog refusal deliberately does
+  *not* suggest re-photographing the board — there is no fog to bring back — and
+  the no-span one does, because a wider shot really is the better fix. This is
+  the same distinction `_no_measurement_reason` exists for, now visible in the
+  advice rather than only in the diagnosis.
+- **The cause is not the *mechanism*.** The first pass at this shipped
+  *"no screenshot spans the whole board, so there is nothing to count the tiles
+  across"* and *"these screenshots have no fog left to measure the board
+  against"*, plus a line explaining that the fog's repeat is used as a ruler.
+  All of that is this file's business, not the player's: they cannot act on it,
+  and a smart player infers the shape of the problem from the remedy anyway.
+  The clauses are gone — *"no screenshot spans the whole board"*, *"these
+  screenshots have no fog left to measure"* — and the reasoning lives in the
+  code comments where it was always meant to. **This is the failure mode to
+  watch when adding a refusal here**: explaining the merge to someone who only
+  wants their map back is the natural thing to write and the wrong thing to
+  send.
+
+The same sweep removed internal vocabulary from the refusals that had it
+(*"every input was dropped as misanchored"*, *"detected a 15x15 board, but the
+only templates available are…"*). **Never name a template, a board render or an
+`Overlays/` file in channel copy**: players have no idea the merge registers
+against blank board images and do not need one — an install fault reads to them
+as *"can't merge 20x20 right now, ask whoever runs the bot"*, with the filename
+logged to the console where the person who can fix it is reading. polybot's two
+replies used to name `huge-blank.png`; polymerge's two now say only that it is
+not installed correctly. `--single`'s message still names its
+flag, correctly: nothing but a command line can reach it.
+
 **Oversized composites are re-encoded, not refused** (`shrink_for_upload`).
 The composite is a little under the template's own size (2880x1800 at 20x20)
 and a densely-explored board makes a big one — the largest in the corpus is
