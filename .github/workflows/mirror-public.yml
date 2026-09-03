@@ -1,0 +1,93 @@
+# Publishes polybot.py, polymerge.py and requirements.txt to a public repo, so
+# the claim made to players -- "no message text or screenshot leaves the bot
+# except back to the Discord channel it was used in" -- is something they can
+# check rather than take on trust.
+#
+# Say it that precisely, and not "sends nothing anywhere but Discord". The
+# operator's console does receive something: which channel a merge ran in, who
+# asked, how many shots, and polymerge's own diagnostic lines (which name the
+# sanitized upload filenames on a dropped shot). None of it is image content and
+# none of it leaves the host, but a claim that reads as "nothing is recorded" is
+# wrong, and being caught out on it costs more than the logs are worth.
+#
+# Only these files go out. tests/ holds 75 real game screenshots carrying player
+# handles in the HUD (see .gitignore, which is why this repo is private);
+# shoreline/ is a separate pre-alpha program with its own captures; Overlays/
+# and Assets/ are the game's own art. None of that is needed to read what the
+# bot does with an image.
+#
+# The mirror is therefore NOT a buildable checkout, and publish/README.md says
+# so outright. A reader who assumes it is one and finds it does not run learns
+# the wrong thing about the code.
+#
+# Drift is the whole risk here: a mirror three months stale is a verifiable
+# claim that is wrong, which is worse than making no claim. Hence pushing on
+# every change rather than by hand, and hence the source SHA in every mirror
+# commit message -- "here is the code" and "here is what is deployed" stay
+# joined only if you can trace one to the other. Same failure shape as the
+# Dockerfile that shipped without Overlays/.
+name: Mirror public source
+
+on:
+  push:
+    branches: [main]
+    # Deliberately narrow. Every other path in this repo is either private data
+    # or irrelevant to the mirror, and a workflow that fired on all of them
+    # would spend most runs discovering it has nothing to do.
+    paths:
+      - polybot.py
+      - polymerge.py
+      - requirements.txt
+      - publish/README.md
+      - .github/workflows/mirror-public.yml
+  workflow_dispatch:        # for the first run, and after editing MIRROR_REPO
+
+# Least privilege: the job reads this repo through the default checkout and
+# writes only to the mirror, through MIRROR_TOKEN. It never needs to write here.
+permissions:
+  contents: read
+
+env:
+  # The one line to change if you name the public repo something else. It must
+  # already exist -- Actions will not create it -- and MIRROR_TOKEN must carry
+  # Contents: read and write on it.
+  MIRROR_REPO: palanq/polymerge-source
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the private source
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Check out the public mirror
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MIRROR_REPO }}
+          token: ${{ secrets.MIRROR_TOKEN }}
+          path: mirror
+
+      - name: Copy the published files
+        run: |
+          set -euo pipefail
+          cp source/polybot.py source/polymerge.py source/requirements.txt mirror/
+          cp source/publish/README.md mirror/README.md
+
+      - name: Commit and push, if anything actually moved
+        run: |
+          set -euo pipefail
+          cd mirror
+          git add -A
+          # An unchanged mirror must be a no-op rather than an empty commit:
+          # this fires on any push touching the paths above, including one that
+          # only edits a comment in a file that is not itself mirrored.
+          if git diff --cached --quiet; then
+            echo "mirror already matches ${GITHUB_SHA} -- nothing to push"
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "Sync from ${GITHUB_REPOSITORY}@${GITHUB_SHA:0:7}"
+          git push
