@@ -1,14 +1,16 @@
 # Publishes polybot.py, polymerge.py and requirements.txt to a public repo, so
-# the claim made to players -- "no message text or screenshot leaves the bot
-# except back to the Discord channel it was used in" -- is something they can
-# check rather than take on trust.
+# a player who wants to know what the bot does with their screenshots can read
+# the code instead of taking my word for it.
 #
-# Say it that precisely, and not "sends nothing anywhere but Discord". The
-# operator's console does receive something: which channel a merge ran in, who
-# asked, how many shots, and polymerge's own diagnostic lines (which name the
-# sanitized upload filenames on a dropped shot). None of it is image content and
-# none of it leaves the host, but a claim that reads as "nothing is recorded" is
-# wrong, and being caught out on it costs more than the logs are worth.
+# publish/README.md deliberately makes no claims about the bot's behavior -- it
+# says what the files are and stops. That is the safe posture while the copy is
+# unsettled: a README asserting nothing cannot assert anything false, and the
+# source is the thing being published anyway. If prose about privacy goes back
+# in, two claims are known to be wrong and must not return. The bot *does* read
+# message text, because `!merge 20 grid` is parsed out of it -- see the
+# message_content comment in polybot.py. And something *is* recorded: the
+# console gets the command as typed, the channel, the caller, the shot count and
+# polymerge's diagnostics, which name upload filenames on a dropped shot.
 #
 # Only these files go out. tests/ holds 75 real game screenshots carrying player
 # handles in the HUD (see .gitignore, which is why this repo is private);
@@ -16,9 +18,9 @@
 # and Assets/ are the game's own art. None of that is needed to read what the
 # bot does with an image.
 #
-# The mirror is therefore NOT a buildable checkout, and publish/README.md says
-# so outright. A reader who assumes it is one and finds it does not run learns
-# the wrong thing about the code.
+# The mirror is therefore not a buildable checkout. Nothing says so out loud any
+# more, so expect the occasional "it doesn't run" -- the answer is that it is a
+# mirror, not a distribution.
 #
 # Drift is the whole risk here: a mirror three months stale is a verifiable
 # claim that is wrong, which is worse than making no claim. Hence pushing on
