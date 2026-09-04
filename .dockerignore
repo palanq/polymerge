@@ -1,6 +1,10 @@
 .venv/
 tests/
 shoreline/
+# The predecessor bot's source, kept locally as a reference. 33 MB the build
+# context has no use for -- the COPY lines below name everything the image
+# needs, so this only ever cost upload time to the daemon.
+old mergebot-main/
 # Source art for the Discord app emoji, uploaded to the bot application by hand
 # rather than read at runtime -- polybot references them by the ID Discord hands
 # back (<:wolfyay:...>), never by path, so the image has no use for the ~3.8MB of

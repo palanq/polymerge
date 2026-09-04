@@ -54,3 +54,15 @@ polymerge_old.py
 # so these PNGs are upload sources for the developer portal rather than assets --
 # and the Dockerfile does not copy the directory either.
 Emojis/unused/
+
+# The predecessor bot's source, kept locally as a reference for how the merge
+# used to work. Nothing imports it and the Dockerfile does not copy it, so this
+# is the same call as polymerge_old.py above -- with one addition that makes it
+# a hard rule rather than a tidy-minded one: it carries a live Discord bot token
+# in committed source, so this directory must never be staged. (Not this bot's
+# token, and it has never been in this repo's history -- keep it that way.)
+#
+# It is also 33 MB, nearly all of it duplicates: every render under its
+# resources/overlays/ is byte-identical to the copy in Overlays/, which is where
+# those files came from in the first place.
+old mergebot-main/
