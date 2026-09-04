@@ -65,6 +65,14 @@ SETS = {
     "replay_ss2": 16,
     "vengir_cultist": 18,
     "scorched_earth": 18,
+    # The two boards kept from the predecessor bot's own control set (its
+    # "Control Screenshots/", board size stated in the original filenames). They
+    # are the only shots in the corpus this pipeline had never been run against,
+    # so they are a genuinely blind check rather than a set anything was tuned
+    # to. control_c was added specifically to test whether tall content on an
+    # explored NW rim inflates the board span -- it does not; see CLAUDE.md.
+    "control_c": 18,
+    "control_d": 20,
 }
 
 # Sets that cannot run on the default flags. Empty, and kept for the next set
