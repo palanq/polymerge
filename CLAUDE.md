@@ -3924,6 +3924,66 @@ template location.
   15.9, 21.9 -> 19.6 and 7.2 -> 7.3. This is the second change in a row where
   that column misled; time a change serially before believing it.
 
+- **The score gathers through a flat `take`, not a 2-D fancy index** — the one
+  remaining pure win, and the only change in this file's history that is
+  **bit-identical on every set and every tracked field** while still being worth
+  ~20% of a merge.
+
+  `_fog_alignment_score` read its two arrays as `img[Y + dy, X + dx]`. Numpy
+  builds a coordinate pair per element for a 2-D fancy index and does not for a
+  1-D `take`, and on this function's sample grid (226 tiles x 160 px) that is
+  the difference between **0.630 ms and 0.086 ms** for the two gathers — 7.3x on
+  them, **1.76x on the whole call**. Nothing about the arithmetic changed, so the
+  result is the same bits.
+
+  What makes it fit is that a pan is a *scalar* offset in flat coordinates:
+  `base = Yp * pw + Xp` is invariant for a whole pyramid level, and a pan of
+  `(dx, dy)` is `off = dy * pw + dx`. So the per-call address work is one integer
+  add over the sample grid (0.004 ms at int32) rather than a full 2-D index.
+  `tgtp`, `wgp` and `wvp` share the padded width, so one `base` serves all three,
+  and `ravel()` on a contiguous array is a view, so the per-zoom cost is zero.
+
+  Measured serially, four sets: `test_screenshots` 12.8 -> 9.9s, `archers_test2`
+  14.7 -> 12.7, `goon_test2` 5.7 -> 4.1, `xizauh` 10.9 -> 8.6 — **14% to 28%**.
+  `tools/baseline.py --compare` reports *identical on every set and every tracked
+  field*, which is the expected result and the whole point: a change that cannot
+  move the corpus needs no judgement call about whether the movement was worth it.
+
+  **Hoisting the float32 conversion out of the loop buys nothing on top**, and is
+  a trap at div=1. Precomputing `img.astype(np.float32).ravel()` once per zoom
+  measured **0.709 ms against the flat-take's 0.711** — the conversion of a 36k
+  gathered array is not where the time was — while at div=1 it would convert a
+  5.2M-pixel canvas per zoom candidate to save 4 ms of per-pan `astype`. Take the
+  indexing win and leave the conversions on the small array.
+
+  **Where the time is now** (4-shot `test_screenshots`, after the prefilter and
+  the zoom pivot): `joint_register` is **40%** of wall, down from 59%, and
+  `_fog_alignment_score` is 88% of it — 35% of the merge. Per level, 0.93s /
+  2.61s / 1.52s at div=4 / 2 / 1 over 1568 / 4459 / 1300 calls. div=2 is still
+  the expensive level for the reason recorded above.
+
+- **The remaining scorer cost is arithmetic, and the obvious cut is not
+  bit-identical.** With the gathers down to 0.086 ms, the per-call breakdown is
+  arithmetic **0.469 ms**, gathers 0.086, top-k sort 0.004. So there is no
+  addressing left to win and no point replacing `np.sort` with `np.partition`
+  (0.004 against 0.005 — the array is ~150 long).
+
+  The real target is that **85% of scored tiles are fully valid at a given pan**,
+  and for those the masked NCC collapses: with `v` all ones, `sum(ac*bc)` is just
+  `sum(a*bc_pre)` because `sum(bc_pre) = 0`, and `sum(ac^2)` is
+  `sum(a^2) - sum(a)^2/n`. The template side (`bc_pre`, `sum(bc_pre^2)`) is
+  invariant per level. That is three reductions over `a` instead of ~ten passes,
+  and it measures **0.159 ms against 0.445** — a 2.8x cut of what is left.
+
+  **It is not free, which is why it is recorded rather than built:** the closed
+  form reaches the same quantity by a different route, so it differs in the last
+  bits (4.9e-3 on a score of 26, ~2e-4 relative), and this file's own history says
+  a perturbation far smaller than that moves `joint_register`'s beam search into
+  a different basin. A hybrid — closed form for the tiles that are valid at
+  *every* pan of the level, masked path for the rest — is the right shape, and it
+  still needs the full 27-set diff and a judgement call about which sets move.
+  Do not land it as a "pure speedup"; it is not one.
+
 - **A coarser pyramid level (div=8) does not help, and the reason generalizes.**
   Never tried before; measured now. Prepending a div=8 level and narrowing div=4
   to match takes a 4-shot merge from **25.5s to 28.3s** with identical fog lock.

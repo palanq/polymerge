@@ -971,8 +971,8 @@ def _tile_sample_grid(origin, u_col, u_row, n, inset, div, max_px=320):
     return X, Y
 
 
-def _fog_alignment_score(img_g, tmpl_vals, vmask, X, Y, dx, dy, top_k,
-                         min_valid):
+def _fog_alignment_score(img_flat, tmpl_vals, vmask_flat, base, shape, off,
+                         top_k, min_valid):
     """Sum of the top_k per-tile correlations with the template's fog art.
 
     Only the most fog-like tiles are counted: explored terrain correlates with
@@ -985,11 +985,22 @@ def _fog_alignment_score(img_g, tmpl_vals, vmask, X, Y, dx, dy, top_k,
     is identical for every call within a pyramid level -- several hundred of
     them -- and hoisting it out drops a third of this function's memory
     traffic. See joint_register, which computes it once per level."""
-    a = img_g[Y + dy, X + dx].astype(np.float32)
+    # Gather through a *flat* take rather than a 2-D fancy index. Same values,
+    # same order, bit-identical result -- but numpy's 2-D fancy indexing builds
+    # the coordinate pair per element, and a 1-D take does not: measured 0.630ms
+    # against 0.086ms for this function's two gathers, which is 7.3x on them and
+    # 1.76x on the whole call. It is what makes the per-pan cost small enough
+    # that the sweep is dominated by the arithmetic rather than by addressing.
+    #
+    # `base` is the flat index at zero pan and is invariant for a whole pyramid
+    # level; a pan of (dx, dy) is the *scalar* `off` = dy*width + dx, so the only
+    # per-call address work is one integer add over the sample grid.
+    idx = base + off
+    a = img_flat.take(idx).astype(np.float32).reshape(shape)
     b = tmpl_vals
-    v = (vmask[Y + dy, X + dx] > 0).astype(np.float32)
+    v = (vmask_flat.take(idx).reshape(shape) > 0).astype(np.float32)
     cnt = v.sum(1)
-    keep = cnt >= min_valid * X.shape[1]
+    keep = cnt >= min_valid * shape[1]
     if not keep.any():
         return -1.0
     a, b, v, cnt = a[keep], b[keep], v[keep], cnt[keep]
@@ -1141,6 +1152,11 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
           # Invariant across every zoom and pan tried at this level; see
           # _fog_alignment_score.
           tvals = tgtp[Yp, Xp].astype(np.float32)
+          # Flat sample addresses for this level; see _fog_alignment_score.
+          # tgtp/wgp/wvp all share this padded width, so one base serves all.
+          pw = tgtp.shape[1]
+          base = (Yp.astype(np.int64) * pw + Xp.astype(np.int64)).astype(np.int32)
+          shape = Xp.shape
           cand = []
           seen = set()
           for _, s_cur, tx0, ty0 in beam:
@@ -1191,10 +1207,13 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
                                            cv2.BORDER_CONSTANT, 0)
                   wvp = cv2.copyMakeBorder(wv, pad, pad, pad, pad,
                                            cv2.BORDER_CONSTANT, 0)
+                  # ravel of a contiguous array is a view, so this is free
+                  wgp_f, wvp_f = wgp.ravel(), wvp.ravel()
                   for dx in range(-p_rad, p_rad + 1, p_step):
                       for dy in range(-p_rad, p_rad + 1, p_step):
-                          sc = _fog_alignment_score(wgp, tvals, wvp, Xp, Yp,
-                                                    dx, dy, top_k, min_valid)
+                          sc = _fog_alignment_score(
+                              wgp_f, tvals, wvp_f, base, shape,
+                              dy * pw + dx, top_k, min_valid)
                           # sampling the image at +dx means the matching content
                           # sits dx to the right, so the image moves by -dx
                           cand.append((sc, float(s),
