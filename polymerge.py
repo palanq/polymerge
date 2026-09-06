@@ -735,6 +735,44 @@ def edge_lines(pts, dir_a, dir_b, windows=(40.0, 15.0, 8.0), tol=3.0):
 PIXEL_FOG_SAT = 110      # 98.8% of the all-fog template's pixels sit below this
 
 
+def fogish_mask(valid, hsv, gray):
+    """Pixels that *could* be fog by colour: bright and unsaturated.
+
+    Deliberately a nominator and never a classifier -- the same distinction that
+    makes RUIN_NOMINATE_SAT acceptable. Mountains, snow, ice and pale sand are
+    exactly as desaturated as the fog cube, so this admits 83.5% of a Polaris
+    player's valid pixels (xizauh/pol.jpg) and 49.2% of a desert board's
+    (badland_test/oum.jpg). It is safe only where a false positive costs work
+    rather than an answer."""
+    return (valid > 0) & (hsv[:, :, 1] < PIXEL_FOG_SAT) & (gray > 140)
+
+
+# joint_register scores a shot's fog against the template's, and sums only the
+# top JOINT_TOP_K tiles -- so a tile that cannot be fog by colour is paid for at
+# every one of the ~2000 candidates and then discarded by the sort. Dropping
+# those from the sample grid is the single largest saving in the program: the
+# gather is 94% of joint_register and ~56% of a merge's wall clock, and its cost
+# is linear in the tile count.
+#
+# The keep-set is chosen ONCE, at full resolution, from the incoming edge prior,
+# and reused at every pyramid level. It has to be fixed rather than decided per
+# candidate -- deciding per candidate means gathering the mask at exactly the
+# coordinates you meant to skip -- and there is nothing to gain from recomputing
+# it per level, since the prior moves by at most a few percent of zoom and ~24px
+# of pan across the whole search. Measured: per-level and once-only give
+# identical cross-check numbers on every set tried.
+#
+# The floor is load-bearing. 30 of the corpus's 74 shots keep fewer than 120
+# tiles on colour alone, and several keep fewer than JOINT_TOP_K -- replay_ss2's
+# two shots keep 5 and 6 of 256, star_change/oum 11 of 324 -- so without it the
+# objective on a fog-poor shot collapses to a sum over almost nothing. Topping
+# up from the ranking costs the fog-heavy shots nothing, because the threshold
+# has already kept more than the floor there.
+JOINT_TOP_K = 60
+JOINT_TILE_FOG_FRAC = 0.50
+JOINT_TILE_FLOOR = 120
+
+
 def _masked_shift_ncc(gray, fogish, dx, dy, min_overlap):
     """NCC between the image and itself shifted by (dx, dy), over pixels that
     are fog-ish at both ends of the shift."""
@@ -810,7 +848,7 @@ def fog_period_scale(gray, valid, hsv, dir_a, tile_px,
     Only needed by a shot with no opposite pair of board edges; an edge pair is
     a cheaper prior of similar quality. Returns (s_it, period_px, ncc) or
     None if no periodic fog is found."""
-    fogish = (valid > 0) & (hsv[:, :, 1] < PIXEL_FOG_SAT) & (gray > 140)
+    fogish = fogish_mask(valid, hsv, gray)
     q = 4
     gq = cv2.resize(gray, (gray.shape[1] // q, gray.shape[0] // q),
                     interpolation=cv2.INTER_AREA)
@@ -1027,8 +1065,40 @@ def _prune_beam(cand, width, min_sep):
     return kept or [max(cand)]
 
 
+def _fogish_tiles(img, valid, gray, origin, u_col, u_row, n, Wt, Ht,
+                  scale0, trans0):
+    """Which of the n*n tiles joint_register should bother scoring.
+
+    A tile is kept if at least JOINT_TILE_FOG_FRAC of its samples could be fog
+    by colour under the edge-derived prior, with JOINT_TILE_FLOOR tiles kept
+    regardless (topped up from the ranking) so a fog-poor shot still has an
+    objective. See the constants for why each half is there.
+
+    Measured at the prior across all 74 corpus shots, this excludes no tile that
+    goes on to lock fog at the final anchor on 71 of them; the three exceptions
+    (goon_test2/imp 11 of 58, control_c 5 of 76, control_d 1 of 88) lose
+    accuracy rather than truth, since the tile is still merged and only its vote
+    on the anchor is dropped. The floor recovers most of that in practice."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    fogish = fogish_mask(valid, hsv, gray).astype(np.uint8)
+    M = np.array([[scale0, 0.0, trans0[0]], [0.0, scale0, trans0[1]]])
+    warped = cv2.warpAffine(fogish, M, (Wt, Ht), flags=cv2.INTER_NEAREST)
+    pad = 16
+    warped = cv2.copyMakeBorder(warped, pad, pad, pad, pad,
+                                cv2.BORDER_CONSTANT, 0)
+    X, Y = _tile_sample_grid(origin, u_col, u_row, n, 0.25, 1)
+    Xc = np.clip(X + pad, 0, warped.shape[1] - 1)
+    Yc = np.clip(Y + pad, 0, warped.shape[0] - 1)
+    frac = warped[Yc, Xc].mean(1)
+    keep = frac >= JOINT_TILE_FOG_FRAC
+    if keep.sum() < JOINT_TILE_FLOOR:
+        keep = np.zeros(frac.size, bool)
+        keep[np.argsort(frac)[-min(JOINT_TILE_FLOOR, frac.size):]] = True
+    return keep
+
+
 def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
-                   scale0, trans0, top_k=60, min_valid=0.5):
+                   scale0, trans0, top_k=JOINT_TOP_K, min_valid=0.5):
     """Refine zoom and pan *together*, coarse to fine, against the fog artwork.
 
     Jointly, not one after the other, because they are not independent: a zoom
@@ -1040,6 +1110,8 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
     Returns the image -> template affine."""
     Ht, Wt = tmpl_gray.shape
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    keep = _fogish_tiles(img, valid, gray, origin, u_col, u_row, n, Wt, Ht,
+                         scale0, trans0)
     beam = [(-2.0, float(scale0), float(trans0[0]), float(trans0[1]))]
     for div, s_span, s_step, p_rad, p_step, emit in JOINT_LEVELS:
       # Timed per pyramid level: this loop is ~70% of the program's runtime, and
@@ -1057,6 +1129,9 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
               valid, (valid.shape[1] // div, valid.shape[0] // div),
               interpolation=cv2.INTER_NEAREST)
           X, Y = _tile_sample_grid(origin, u_col, u_row, n, 0.25, div)
+          # Same (i, j) row order at every div, so one boolean selects the same
+          # tiles throughout.
+          X, Y = X[keep], Y[keep]
           pad = p_rad + 4
           tgtp = cv2.copyMakeBorder(tgt, pad, pad, pad, pad, cv2.BORDER_CONSTANT, 0)
           Xp, Yp = X + pad, Y + pad

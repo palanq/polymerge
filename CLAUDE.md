@@ -533,12 +533,13 @@ per-file rects, key them on something unambiguous.
   reporting a single ruin. It has five.
 - Current `--cross-check` baselines, worst disagreement: **test_screenshots
   0.020, ss2 0.023, ss3 0.020, goon2 0.032, ss5 0.050, archers_test2 0.046,
-  beautiful_test3 0.029, goon_test 0.013, badland_test 0.027,
+  beautiful_test3 0.020, goon_test 0.013, badland_test 0.027,
   badland_test3 0.028,
-  pol_archi_test 0.031, star_change 0.162, badland_test2 0.011,
+  pol_archi_test 0.020, star_change 0.044, badland_test2 0.011,
   perilous_test 0.014, missized_test 0.022, xizauh 0.028, u_forest 0.049,
   vengir_cultist 0.071, scorched_earth 0.007 tiles**. These moved on the
-  fixed-angle basis (see that standing decision); `vengir_cultist` is the one
+  fixed-angle basis (see that standing decision) and then on the fog-colour
+  tile prefilter, which improved four of them; `vengir_cultist` is the one
   set now past the 0.05 bar, on a set whose merge output did not change at all. Compare
   against these after touching anything in the registration path. Cross-check
   is *deterministic* (verified: repeated runs give identical numbers), so a
@@ -592,10 +593,21 @@ per-file rects, key them on something unambiguous.
   change of measurement, and it recovered fog lock the old code was silently
   losing — `badland_test2`'s `cym.png` locked 124 tiles and now locks 150.
 
-  `star_change` is the one set above the ~0.05 healthy bar, and its number
-  does not measure what the merge does. Its `oum.png` has ~7 fog tiles in
-  frame and locks **zero**, so the merge discards that anchor entirely and
-  borrows one by SIFT — which cross-check deliberately does not reproduce (see
+  **`star_change` used to head this list at 0.162 and no longer does** — the
+  fog-colour tile prefilter took it to **0.044**, and `oum.png` from a zero fog
+  lock to **6**. That is the largest single move any change has produced here,
+  and the mechanism is the one the prefilter was built on: `oum.png` has ~7 fog
+  tiles in frame, so under the old grid 393 of its 324 sampled tiles were
+  terrain and `top_k`'s quota was filled almost entirely with noise. Note the
+  consequence for coverage — a shot locking 6 rather than 0 is no longer
+  eligible for the anchor borrow, so **the corpus now exercises no set's borrow
+  path at all**. Keep the reasoning in the misanchor-guard section; it is no
+  longer regression-tested. The paragraph below describes the old behavior:
+
+  `star_change` was the one set above the ~0.05 healthy bar, and its number
+  did not measure what the merge does. Its `oum.png` has ~7 fog tiles in
+  frame and locked **zero**, so the merge discarded that anchor entirely and
+  borrowed one by SIFT — which cross-check deliberately does not reproduce (see
   the misanchor guard section). What cross-check reports is therefore the
   quality of an anchor nothing uses. Judge that set on its union (290) and
   conflicts (27) instead, both of which are stable. The number is also
@@ -609,7 +621,7 @@ per-file rects, key them on something unambiguous.
   371/400, 260/400, 238/324, 202/400, 190/400, 278/400, 361/400, 237/324,
   90/400, 295/400, 330/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
   247/400, 50/324, 78/324, 256/256, 256/256, 224/324, 233/324**; conflicts
-  **15, 19, 3, 4, 0, 0, 14, 23, 2, 0, 0, 27, 3, 27, 9, 1, 4, 0, 14, 0, 0, 0, 0, 1,
+  **15, 19, 3, 4, 0, 0, 14, 23, 2, 0, 0, 27, 3, 29, 9, 1, 4, 0, 14, 0, 0, 0, 0, 1,
   10**; city population bars found (`--city-bars`) **16, 17, 18, 8, 9, 7, 16, 15,
   9, 3, 7, 15, 7, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10**; ruins found
   (`--ruin-vision`, after adjacency clustering) **3, 3, 0, 0, 0, 0, 0, 3, 0, 11,
@@ -1645,9 +1657,7 @@ Facts about these files worth knowing before touching them:
   and `dir_b` = **149.0953°** (`BOARD_EDGE_SLOPE`); atan(3/5) would be 30.9638°
   / 149.0362°, which is **0.059° away** and is what this bullet used to assert.
   See the standing decision on `edge_lines`, where four independent routes
-  settle it and the code takes its basis from it. Note the squash bullet below
-  is the same fact stated as a shape and agrees exactly: 0.6 x its measured
-  `k` of 0.9976 is 0.59856.
+  settle it and the code takes its basis from it.
 
   **What survives here is the agreement, not the absolute value**, and the
   distinction is the one this bullet's own caution below already draws. Measured
@@ -1742,8 +1752,7 @@ Facts about these files worth knowing before touching them:
 
   Degrees from exact atan(3/5); `k = |tan(measured)| / 0.6`. That is a reference
   datum here, not a claim — the whole point of the table is that the edges do
-  *not* sit at atan(3/5), and `k` x 0.6 is the shipped `BOARD_EDGE_SLOPE`.
-  **Opposite edges
+  *not* sit at atan(3/5). **Opposite edges
   are parallel to ≤ 0.013°** on every render but `small` (0.046° on its
   a-pair), so the premise holds and the silhouette really is a clean
   parallelogram. The two families then sit off atan(3/5) with *opposite* signs
@@ -3690,8 +3699,7 @@ template location.
   off. `--cross-check` (SIFT-based, independent of any single anchor) is the
   real correctness signal; don't reintroduce residual-based self-checks as
   evidence of anything.
-- **There is no cheap speedup left in the `joint_register` pyramid — don't
-  drop or narrow the div=1 level.** It is 58% of runtime, so it is the
+- **Don't drop or narrow the div=1 level.** It is 58% of runtime, so it is the
   standing temptation whenever a merge feels slow, and the obvious cuts were
   all measured across the full 13-set corpus (worst `--cross-check`, explored
   union, conflicts, bar count, wall time) against a base run that reproduced
@@ -3719,7 +3727,15 @@ template location.
   `star_change`, whose `oum.png` has ~7 fog tiles in frame. Trading the most
   fragile shot in the corpus for 1.5s is the wrong direction here.
 
-  **Two updates since this was written**, both consistent with it. First, the
+  **This entry used to open "there is no cheap speedup left in the
+  `joint_register` pyramid", and that is now false** — see the fog-colour tile
+  prefilter below, which took the corpus 25% faster with the explored union,
+  the bar count and the ruin count identical on all 27 sets. Everything in the
+  table above still stands. What all those variants have in common, and what
+  the prefilter does not, is that they bought speed by evaluating **fewer
+  hypotheses**. The prefilter evaluates every hypothesis and pays less per one.
+
+  **Three updates since this was written**, all consistent with it. First, the
   phase got *more* expensive on purpose: the beam widths in `JOINT_LEVELS` now
   carry 3/2/1 zoom candidates between levels, roughly +30% wall, because
   single-candidate selection was picking the wrong branch (see the anchoring
@@ -3730,9 +3746,129 @@ template location.
   `_fog_alignment_score` was re-gathering the template at (Y, X) on every call
   even though that gather depends on neither the zoom nor the pan, so it is
   identical for all several hundred calls in a level. Hoisting it out of the
-  loop cut a 4-shot merge from 22.0s to 18.4s with byte-identical output. If
-  you go looking for more, look for that shape — invariants recomputed in the
-  inner loop — not for coverage to cut.
+  loop cut a 4-shot merge from 22.0s to 18.4s with byte-identical output.
+
+  Third, the **fog-colour tile prefilter** below — the same shape again and
+  much the largest, since it is work whose result was computed at every
+  candidate and then thrown away by the sort. If you go looking for more, look
+  for those two shapes — an invariant recomputed in the inner loop, and work
+  whose result is discarded — not for coverage to cut.
+- **`joint_register` scores only the tiles that could be fog, and the keep-set
+  is chosen once** (`_fogish_tiles`, `JOINT_TILE_FOG_FRAC`, `JOINT_TILE_FLOOR`).
+  This is the largest speedup in the program's history and the reasoning is
+  worth keeping in full, because most of it is about what makes a colour test
+  admissible here at all.
+
+  **Where the time is.** Profiled on a 4-shot `test_screenshots` merge:
+  `joint_register` is 59% of wall, and `_fog_alignment_score` is **94% of
+  that** — 56% of the whole merge. Warps and borders are 5%. Per level:
+
+  | level | score time | calls | tiles x px |
+  |---|---|---|---|
+  | div=4 | 2.54s | 1568 | 400 x 160 |
+  | **div=2** | **8.06s** | **4900** | 400 x 160 |
+  | div=1 | 5.23s | 1400 | 400 x 320 |
+
+  Note div=2 samples the *same* 160 px per tile as div=4, because
+  `_tile_sample_grid`'s cap is `max(max_px // div, 160)` and the floor binds at
+  both. It is not a cheaper level, only a more heavily visited one.
+
+  **The observation.** The score sums only the top `JOINT_TOP_K` (60) per-tile
+  correlations, so on a 400-tile board 340 tiles are gathered, correlated and
+  then discarded by the sort — at every one of ~2000 candidates. A tile that
+  cannot be fog by colour is never going to survive that sort, so it need not be
+  sampled. Cost is linear in the tile count, so the saving is proportional.
+
+  **Why a colour test is allowed here**, given the standing decision against
+  identifying fog by colour: it is a *nominator*, not a classifier. It never
+  decides what a tile is — it decides whether the tile gets a vote on the
+  anchor. Every tile is still classified, merged and reported exactly as before.
+  Same distinction as `RUIN_NOMINATE_SAT` and the SIFT terrain-inlier mask, and
+  the same one that makes the city-bar modal-colour test acceptable.
+
+  **Measured headroom**, over all 74 shots in the 27 sets, at the prior: the
+  existing `fogish_mask` at a 50% per-tile threshold keeps **37.7%** of tiles
+  (range 2%-75%), and 42.6% with the floor.
+
+  **Safety, measured the only way that matters** — does it exclude a tile that
+  goes on to *lock fog* at the final anchor? On 71 of 74 shots, no. Three lose
+  some: `goon_test2/imp` 11 of 58, `control_c` 5 of 76, `control_d` 1 of 88.
+  Those cost accuracy rather than truth (the tile is still merged; only its vote
+  is dropped), and the corpus result below says the cost did not materialize.
+
+  **Three things about the design are load-bearing:**
+  - **The keep-set is fixed, not decided per candidate.** Deciding per candidate
+    means gathering the fog-ish mask at exactly the coordinates you were trying
+    to skip, which pays the gather you meant to save.
+  - **It is computed once, at full resolution, from the incoming edge prior** —
+    not per pyramid level. There is nothing to gain from recomputing it, since
+    the prior moves by at most a few percent of zoom and ~24px of pan across the
+    entire search, and a per-level version has to rescale the mask by `div`,
+    which is one more thing to get wrong. Measured: once-only and per-level give
+    **identical** cross-check numbers on every set tried.
+  - **The floor is not optional.** 30 of the 74 shots keep fewer than 120 tiles
+    on colour alone and several keep fewer than `JOINT_TOP_K` — `replay_ss2`'s
+    two shots keep **5 and 6 of 256**, `star_change/oum` 11 of 324,
+    `test_ss_2/cym1` 46 — so without it a fog-poor shot's objective collapses to
+    a sum over almost nothing. Topping up from the ranking costs the fog-heavy
+    shots nothing, since the threshold already keeps more than the floor there.
+
+  **Thresholding, not ranking.** Taking the top N tiles by fog-ish fraction
+  instead looks equivalent and is worse: the ordering *within* fog is arbitrary,
+  so on a fog-heavy shot a cut at N discards real fog at random. Even top-200-of-400
+  still drops final-top-60 tiles on 18 shots, where the threshold drops none.
+
+  **Corpus effect, 27 sets:**
+
+  | | before | after |
+  |---|---|---|
+  | explored union | 6296 | **6296** (identical on every set) |
+  | city bars | 237 | **237** (identical on every set) |
+  | ruins | 37 | **37** (identical on every set) |
+  | conflicts | 180 | 182 (+2, all on `star_change`) |
+  | corpus wall | 529s | **398s (-25%)** |
+
+  Cross-check moved on five sets, **four of them better**: `star_change` 0.162
+  -> **0.044**, `fogless` 0.511 -> 0.253, `pol_archi_test` 0.031 -> 0.020,
+  `beautiful_test3` 0.029 -> 0.020. The one regression is `replay_ss2`
+  0.056 -> 0.259, on a board with **no fog at all**, where both shots keep an
+  unrefined edge anchor under the zero-lock rule — so cross-check is again
+  reporting the quality of an anchor the merge discards. Its union stayed
+  256/256 and its one real bar (Bergo) survived.
+
+  Per-set saving run serially is **20-50%** (`badland_test3` -29%,
+  `basin_treaties` -20%, `fogless` -33%, `pol_archi_test` -33%); the -25% corpus
+  figure is measured under `--jobs 4` and is understated by contention. Three
+  sets appeared *slower* in the parallel run and are not — that was scheduling.
+
+  **The one coverage loss.** `star_change/oum.png` now locks 6 fog tiles rather
+  than 0, so it is no longer eligible for the SIFT anchor borrow, and **no set
+  in the corpus exercises that path any more.** The reasoning in the
+  misanchor-guard section still stands; it is simply no longer regression-tested.
+
+- **A coarser pyramid level (div=8) does not help, and the reason generalizes.**
+  Never tried before; measured now. Prepending a div=8 level and narrowing div=4
+  to match takes a 4-shot merge from **25.5s to 28.3s** with identical fog lock.
+  A coarse level cannot *choose* — that is the entire reason the beam exists —
+  so it must hand several candidates forward, and those multiply the next
+  level's work: div=4 went 1568 to 3724 calls, costing more than the 1.35s div=8
+  saved. Adding levels at the top can only pay if the level below them gets
+  narrower, and narrowing is what the table above says breaks. The coarse level
+  was never where the money was anyway: div=4 is 16% of the scoring cost against
+  div=2's 51%.
+
+  Two things tried at div=2, where the money actually is:
+  - **pan radius 3 -> 2** (25 pans instead of 49): saves 3-5s and takes
+    `test_screenshots` from 0.020 to **0.081**. Same verdict as narrowing div=1.
+  - **emitting 1 candidate instead of 2**: `test_screenshots` 0.020 -> 0.020,
+    `archers_test2` 0.046 -> 0.046, `star_change` 0.162 -> 0.118, and ~10%
+    faster (div=1's calls halve). The table above records this as measured and
+    bad — *"pruning to 1 before the full-resolution level puts three sets back
+    above the 0.05 bar"* — but that measurement predates the beam-width taper,
+    both sweep-range moves, the fixed-angle basis and the tile prefilter, and
+    three sets do not reproduce it. **Untested corpus-wide**; it is the cheapest
+    remaining candidate and the claim blocking it may simply be stale.
+
 - **A "fast mode" skipping badge, ruin and city-bar detection is not worth
   having.** Measured with the bot's own flags: city bars 0.46s, ruin vision
   0.41s (0.67s on the fog-heaviest set — the "~2s" figure elsewhere in this
