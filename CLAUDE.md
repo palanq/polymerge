@@ -532,15 +532,17 @@ per-file rects, key them on something unambiguous.
   not mention and which nothing in the corpus made obvious while it was
   reporting a single ruin. It has five.
 - Current `--cross-check` baselines, worst disagreement: **test_screenshots
-  0.020, ss2 0.023, ss3 0.020, goon2 0.032, ss5 0.050, archers_test2 0.046,
-  beautiful_test3 0.020, goon_test 0.013, badland_test 0.027,
-  badland_test3 0.028,
-  pol_archi_test 0.020, star_change 0.044, badland_test2 0.011,
-  perilous_test 0.014, missized_test 0.022, xizauh 0.028, u_forest 0.049,
-  vengir_cultist 0.071, scorched_earth 0.007 tiles**. These moved on the
-  fixed-angle basis (see that standing decision) and then on the fog-colour
-  tile prefilter, which improved four of them; `vengir_cultist` is the one
-  set now past the 0.05 bar, on a set whose merge output did not change at all. Compare
+  0.031, ss2 0.028, ss3 0.032, goon2 0.031, ss5 0.021, archers_test2 0.034,
+  beautiful_test3 0.024, goon_test 0.019, badland_test 0.011,
+  badland_test3 0.022,
+  pol_archi_test 0.033, star_change 0.112, badland_test2 0.019,
+  perilous_test 0.011, missized_test 0.026, xizauh 0.020, u_forest 0.018,
+  vengir_cultist 0.029, scorched_earth 0.013 tiles**. These moved on the
+  fixed-angle basis (see that standing decision), then on the fog-colour tile
+  prefilter, and then on the zoom-pivot fix — which is why `star_change` and
+  `vengir_cultist` have swapped places, the latter coming back under the bar
+  while the former went past it. `star_change` is the one set now past the 0.05
+  bar, on a set whose merge output did not change at all. Compare
   against these after touching anything in the registration path. Cross-check
   is *deterministic* (verified: repeated runs give identical numbers), so a
   change in these is real and not RANSAC noise.
@@ -617,13 +619,13 @@ per-file rects, key them on something unambiguous.
   left the merge output identical. Read a change here against the companion
   baselines before treating it as a registration regression.
 - Companion baselines worth checking alongside, since cross-check is a proxy
-  and these are the actual output. In table order — explored union **370/400,
-  371/400, 260/400, 238/324, 202/400, 190/400, 278/400, 361/400, 237/324,
+  and these are the actual output. In table order — explored union **371/400,
+  371/400, 261/400, 238/324, 202/400, 190/400, 278/400, 361/400, 237/324,
   90/400, 295/400, 330/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
   247/400, 50/324, 78/324, 256/256, 256/256, 224/324, 233/324**; conflicts
-  **15, 19, 3, 4, 0, 0, 14, 23, 2, 0, 0, 27, 3, 29, 9, 1, 4, 0, 14, 0, 0, 0, 0, 1,
-  10**; city population bars found (`--city-bars`) **16, 17, 18, 8, 9, 7, 16, 15,
-  9, 3, 7, 15, 7, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10**; ruins found
+  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 27, 3, 29, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1,
+  10**; city population bars found (`--city-bars`) **17, 17, 16, 8, 9, 7, 17, 15,
+  9, 3, 7, 16, 7, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10**; ruins found
   (`--ruin-vision`, after adjacency clustering) **3, 3, 0, 0, 0, 0, 0, 3, 0, 11,
   0, 0, 0, 0, 0, 0, 0, 5, 0, 9, 3, 0, 0, 0, 0** — 37 in total, on the seven sets
   with an Elyrion player and zero everywhere else.
@@ -1949,6 +1951,11 @@ full-resolution pass with parabolic sub-pixel refinement; ~0.2% accurate
 against the ±3% window `joint_register` explores, and it costs ~0.2s per shot
 against the old ~1.3s. On `hood.png` it reads 149.3px at ncc 0.92 and the
 refinement then moves the prior by +0.00% and 1px, with 95 fog tiles locked.
+
+**"Jointly" means the search evaluates the whole (zoom, dx, dy) product rather
+than optimizing one then the other — but the *parameterization* still couples
+them, and that had to be fixed separately; see the zoom-pivot standing
+decision.**
 
 `anchor_to_template` builds an edge-derived prior for both zoom and pan when
 an opposite edge pair is available (falling back to `fog_period_scale` only
@@ -3845,6 +3852,77 @@ template location.
   than 0, so it is no longer eligible for the SIFT anchor borrow, and **no set
   in the corpus exercises that path any more.** The reasoning in the
   misanchor-guard section still stands; it is simply no longer regression-tested.
+
+- **The zoom sweep pivots about the board centre, because `s * p_image + t`
+  scales about the image corner** (`board_c` in `joint_register`). The search
+  was always *joint* in the sense that it evaluates the whole (zoom, dx, dy)
+  product rather than zoom-then-pan — that part of the docstring was right —
+  but the two axes of that product were not independent, and the pan sweep was
+  too small to absorb the difference.
+
+  **The measurement.** `p_template = s * p_image + t` scales about the image
+  origin, i.e. the top-left pixel of the screenshot. So holding `t` fixed and
+  changing `s` does not rescale the board in place; it swings it by `(s_cur - s)`
+  times the board's distance from that corner, which is most of a screenshot.
+  On `test_screenshots`, whose board centres sit 371-1012 px from the origin:
+
+  | level | zoom span | pan reach | swing at the board centre | covered? |
+  |---|---|---|---|---|
+  | div=4 | +-3.0% | +-24 px | +-26 to +-39 px | **no, 1.1-1.6x short** |
+  | div=2 | +-1.0% | +-6 px | +-8.8 to +-13.0 px | **no, 1.5-2.2x** |
+  | div=1 | +-0.3% | +-2 px | +-2.7 to +-3.9 px | **no, 1.4-1.9x** |
+
+  Every level, every shot. So the ends of the zoom sweep were scored while
+  *guaranteed* misregistered by 10-15 px, for a reason that says nothing about
+  whether the zoom is right, and the score surface was pulled back toward the
+  prior. That is plausibly part of the "coarse optimum is not reliably near the
+  true one" behavior recorded above, and it means the effective zoom range was
+  narrower than `JOINT_LEVELS` claims.
+
+  **The fix is one line of arithmetic**: carry the translation that holds the
+  board centre still, `t = t0 + (s_cur - s) * piv`, so each zoom is scored at
+  its own best centring and `dx`/`dy` then search genuine pan.
+
+  **Corpus, 27 sets:**
+
+  | | before | after |
+  |---|---|---|
+  | explored union | 6296 | **6300** (+4) |
+  | ruins | 37 | 37 |
+  | conflicts | 182 | 182 |
+  | real bars vs the six labeled sets | — | **net zero** |
+  | false positives on those sets | 31 | 31 |
+  | runtime, run serially | — | **~10% faster** |
+  | cross-check, 21 reliable sets — mean | 0.0279 | 0.0274 |
+  | " median | 0.0220 | 0.0240 |
+  | " max | 0.0710 | **0.1120** |
+
+  **Read the bar column as a swap, not a gain**: it loses `test_ss_3` (10,9)
+  (Ichphy) and gains `badland_test3` (9,15), both confirmed real, with no false
+  positive added. That is the column with a known answer, and it says the change
+  is neutral there rather than positive.
+
+  **`star_change` replaces `vengir_cultist` as the only set over the 0.05 bar**
+  (0.044 -> 0.112 while vengir goes 0.071 -> 0.029), and the mechanism is
+  consistent: pivoting genuinely *widens* the zoom range explored, which helps
+  every shot with fog to score against (`u_forest` 0.049 -> 0.018, `test_ss_5`
+  0.050 -> 0.021, `badland_test` 0.027 -> 0.011) and hurts the one shot in the
+  corpus with almost none — `star_change/oum.png` and its ~7 fog tiles, whose
+  score surface is close to noise. That set's merge output is unchanged.
+
+  **Pivoting about the centroid of the *scored* tiles instead is worse — tried
+  and reverted.** The theory was that the score only reads the fog-ish tiles
+  `keep` selected, which on a partly-explored board sit well off centre, so
+  `star_change/oum.png`'s cornered seven tiles would still swing. It does not
+  work: star_change reads **0.123** (no better than the board centre's 0.112)
+  and `test_ss_3` 0.032 -> 0.046 and `xizauh` 0.020 -> 0.033 both regress. The
+  board centre is the pivot to keep.
+
+  **Note the corpus `seconds` column said this was 30% *slower* and that was
+  wrong** — `tools/baseline.py` runs `--jobs 4`, so its wall figures are
+  contention, not measurement. Timed serially the same three sets run 17.8 ->
+  15.9, 21.9 -> 19.6 and 7.2 -> 7.3. This is the second change in a row where
+  that column misled; time a change serially before believing it.
 
 - **A coarser pyramid level (div=8) does not help, and the reason generalizes.**
   Never tried before; measured now. Prepending a div=8 level and narrowing div=4

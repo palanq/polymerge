@@ -1112,6 +1112,9 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     keep = _fogish_tiles(img, valid, gray, origin, u_col, u_row, n, Wt, Ht,
                          scale0, trans0)
+    # The board's centre in template space. The zoom sweep below pivots about
+    # it; see the note at the sweep for why that is not the same search.
+    board_c = origin + (n / 2.0) * u_col + (n / 2.0) * u_row
     beam = [(-2.0, float(scale0), float(trans0[0]), float(trans0[1]))]
     for div, s_span, s_step, p_rad, p_step, emit in JOINT_LEVELS:
       # Timed per pyramid level: this loop is ~70% of the program's runtime, and
@@ -1140,7 +1143,11 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
           tvals = tgtp[Yp, Xp].astype(np.float32)
           cand = []
           seen = set()
-          for _, s_cur, tx, ty in beam:
+          for _, s_cur, tx0, ty0 in beam:
+              # Where this beam entry thinks the board's centre sits in the
+              # shot's own pixels. Holding that point still is what makes the
+              # zoom sweep and the pan sweep independent -- see below.
+              piv = (board_c - np.array([tx0, ty0])) / s_cur
               # Snap the sweep to a grid shared by every beam candidate rather
               # than one centered on each. Beam entries sit only s_step apart
               # (that is _prune_beam's separation rule), so their +-s_span
@@ -1152,6 +1159,24 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
               hi = int(np.ceil((s_cur + s_span) / s_step))
               for q in range(lo, hi + 1):
                   s = q * s_step
+                  # p_template = s * p_image + t scales about the image ORIGIN,
+                  # so holding t fixed and changing s does not rescale the board
+                  # in place -- it swings it across the frame by (s_cur - s)
+                  # times the board's distance from that origin, which is most
+                  # of a screenshot. Measured on the corpus, the sweep's ends
+                  # displace the board centre by 1.1x to 2.2x further than the
+                  # pan sweep at that level can pull it back, at *every* level:
+                  # +-39px against a +-24px reach at div=4, +-13 against +-6 at
+                  # div=2, +-3.9 against +-2.0 at div=1. So the extreme zooms
+                  # were being scored while guaranteed to be misregistered, for
+                  # a reason that says nothing about whether the zoom is right,
+                  # and the score surface was biased back toward the prior.
+                  #
+                  # Carrying the translation that holds the board centre fixed
+                  # removes the coupling: each zoom is scored at its own best
+                  # centring, and dx/dy below then search genuine pan.
+                  tx = tx0 + (s_cur - s) * piv[0]
+                  ty = ty0 + (s_cur - s) * piv[1]
                   # Same zoom *and* same pan origin means the identical set of
                   # (dx, dy) probes -- nothing new to learn from repeating it.
                   key = (q, round(tx, 3), round(ty, 3))
