@@ -532,18 +532,20 @@ per-file rects, key them on something unambiguous.
   not mention and which nothing in the corpus made obvious while it was
   reporting a single ruin. It has five.
 - Current `--cross-check` baselines, worst disagreement: **test_screenshots
-  0.031, ss2 0.027, ss3 0.032, goon2 0.031, ss5 0.021, archers_test2 0.034,
+  0.031, ss2 0.027, ss3 0.032, goon2 0.037, ss5 0.021, archers_test2 0.034,
   beautiful_test3 0.024, goon_test 0.019, badland_test 0.011,
   badland_test3 0.022,
-  pol_archi_test 0.033, star_change 0.112, badland_test2 0.019,
+  pol_archi_test 0.012, star_change 0.050, badland_test2 0.019,
   perilous_test 0.011, missized_test 0.026, xizauh 0.020, u_forest 0.018,
   vengir_cultist 0.029, scorched_earth 0.013 tiles**. These moved on the
   fixed-angle basis (see that standing decision), then on the fog-colour tile
-  prefilter, and then on the zoom-pivot fix — which is why `star_change` and
-  `vengir_cultist` have swapped places, the latter coming back under the bar
-  while the former went past it. `star_change` is the one set now past the 0.05
-  bar, on a set whose merge output did not change at all. Compare
-  against these after touching anything in the registration path. Cross-check
+  prefilter, then on the zoom-pivot fix — which is why `star_change` and
+  `vengir_cultist` swapped places, the latter coming back under the bar while
+  the former went past it — and then on the fog-ish `top_k` cap, which brought
+  `star_change` back to **0.050**. **No set in the corpus is now above the 0.05
+  healthy bar**, which has not been true at any earlier point in this file's
+  history. Compare against these after touching anything in the registration
+  path. Cross-check
   is *deterministic* (verified: repeated runs give identical numbers), so a
   change in these is real and not RANSAC noise.
   **`badland_test3`'s 0.027 is only partly independent**: `cym.png` takes one
@@ -578,7 +580,7 @@ per-file rects, key them on something unambiguous.
   `SIFT_ZOOM_MIN_INLIERS` and nowhere near a genuine terrain match. Judge it on
   its fog lock (86/142) and its zero conflicts, and note its ruin at (10,7)
   lands on a tile the *other* shot independently explored — which two anchors
-  6 tiles apart could not do. **`fogless` reports 0.524 and is unreliable for a
+  6 tiles apart could not do. **`fogless` reports 0.035 and is unreliable for a
   different reason from all of those** — not a fog mismatch but a measurement of
   the wrong thing. (It read 16.6 before SIFT was confined to the board, which is
   the figure this entry used to carry; the board-region table below records the
@@ -587,7 +589,10 @@ per-file rects, key them on something unambiguous.
   favor of each shot's own unrefined edge anchor (see the zero-lock block in
   `main`). Those agree to **0.023 tiles**. Same shape as `star_change` below:
   the number is the quality of an anchor nothing uses. Judge the set on its
-  union (256/256) and conflicts (0).
+  union (256/256) and conflicts (0). It has read 16.6, 13.5, 0.511, 0.253, 0.378
+  and 0.035 across changes that left that union and those conflicts untouched,
+  which is the clearest demonstration in the file that the number measures
+  nothing here. `replay_ss2`'s 0.808 is the same, for the same reason.
 
   Every set except `star_change` now sits at or below **0.039**, where this
   list previously ran to 0.078. That is the beam search plus the tile-sample
@@ -623,9 +628,7 @@ per-file rects, key them on something unambiguous.
   371/400, 261/400, 238/324, 202/400, 190/400, 278/400, 361/400, 237/324,
   90/400, 295/400, 330/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
   247/400, 50/324, 78/324, 256/256, 256/256, 224/324, 233/324**; conflicts
-  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 27, 3, 29, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1,
-  10**; city population bars found (`--city-bars`) **17, 17, 16, 8, 9, 7, 17, 15,
-  9, 3, 7, 16, 7, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10**; ruins found
+  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 27, 2, 27, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1, 10**; city population bars found (`--city-bars`) **16, 17, 16, 8, 9, 7, 17, 15, 9, 3, 7, 16, 7, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10**; ruins found
   (`--ruin-vision`, after adjacency clustering) **3, 3, 0, 0, 0, 0, 0, 3, 0, 11,
   0, 0, 0, 0, 0, 0, 0, 5, 0, 9, 3, 0, 0, 0, 0** — 37 in total, on the seven sets
   with an Elyrion player and zero everywhere else.
@@ -4069,6 +4072,86 @@ template location.
   a 10s merge, so extending the fast path to it is the next ~6% — but it is the
   level this file says does the discriminating, and keeping it exact is the most
   likely reason the corpus came back this clean.
+
+- **`top_k` is capped at the number of tiles that could be fog, and `60` was
+  never derived.** `JOINT_TOP_K = 60` entered as a bare `top_k=60` default in the
+  initial commit with no recorded provenance, and it is the *only* number in the
+  scoring path that was never measured. It is also the wrong shape: the score
+  sums the best `k` per-tile correlations against fog art, so `k` is a claim
+  about how much fog evidence a shot has, and that is a property of the shot.
+
+  **What a fixed 60 does to a fog-poor shot.** `star_change/oum.png` has ~7 fog
+  tiles in frame and 11 that pass the colour test. Summing 60 terms there adds
+  its 7 signals to ~49 correlations of *terrain* against fog art — and those are
+  not zero, they move with the candidate, for reasons that say nothing about
+  alignment. The noise term's swing across candidates is comparable to the whole
+  signal. That is the same mechanism the fog-colour prefilter was built on,
+  stopped one step short: the prefilter fixed *which tiles are sampled* and left
+  *how many are summed* alone.
+
+  `top_k = min(JOINT_TOP_K, n_fogish)`, where `n_fogish` is the count passing
+  `JOINT_TILE_FOG_FRAC` **before** the floor tops the keep-set up. Two properties
+  make that the right quantity to cap by:
+  - It is a *generous upper bound* on the fog — the colour test admits 83.5% of a
+    Polaris shot's pixels — so it errs toward leaving `k` alone. Only **14 of 77
+    shots** see a smaller `k`, and the list is a roll-call of this file's fragile
+    cases: `fogless` 4 and 6, `replay_ss2` 5, `star_change/oum` 11 and `oum2` 28,
+    `vengir_cultist/v1` 42, `pol_archi_test/kick` 43,
+    `test_screenshots/Screenshot_...349217` 46, `test_ss_2/cym1` 46,
+    `goon_test2/imp` 53, `basin_treaties/q` 57. The median shot reads 142.
+  - It is fixed per shot, not per candidate, so every candidate in a level still
+    sums the same number of terms — the comparability property the level-fixed
+    fully-valid set exists to protect.
+
+  **Corpus, 27 sets. Union and ruins identical everywhere, and all six labeled
+  sets' bar counts identical:**
+
+  | set | before | after |
+  |---|---|---|
+  | `star_change` cross-check | 0.112 | **0.050** |
+  | `star_change` `oum.png` fog lock | 4 | **7** |
+  | `star_change` conflicts | 29 | **27** |
+  | `pol_archi_test` cross-check | 0.033 | **0.012** |
+  | `pol_archi_test` conflicts | 3 | **2** |
+  | `fogless` cross-check | 0.378 | 0.035 |
+  | `goon_test2` cross-check | 0.031 | 0.037 |
+  | `replay_ss2` cross-check | 0.657 | 0.808 |
+  | `test_screenshots` bars | 17 | 16 |
+
+  **`star_change/oum.png` now locks 7 fog tiles, which is every fog tile it
+  has**, and that set comes off the 0.05 bar it has been over for this file's
+  whole history. The two moves in the wrong column are both on sets whose
+  cross-check this file already records as measuring nothing — `replay_ss2` and
+  `fogless` have no fog at all, so the merge discards the refined anchors the
+  number reports (union 256/256 and 0 conflicts on both, unchanged).
+
+  **The lost bar is a false positive, and the corpus proves it rather than
+  arguing it.** `test_screenshots` drops (13,17), a *complete* bar seen only by
+  `Screenshot_...349217`. That board is photographed by three sets, and every
+  other city `test_screenshots` reports — (14,6) (15,3) (18,1) (18,4) (18,7)
+  (2,13) (6,12) (7,16) (9,12) (12,11) (12,14) (15,9) (18,10) (18,13) — is also
+  reported by `test_ss_2` or `beautiful_test3`. **(13,17) is the only one that is
+  not**, and neither of the other two sets finds a bar there in any shot. It was
+  also expensive: it promoted a 9-tile block ((12..14, 16..18)) to that shot for
+  a bar that is not there, and the promotion drops from 22 tiles to 13.
+
+  Note what that means for reading this column in future: **a bar count going
+  down is not evidence of a loss**, and on this board the three-set overlap is
+  the check that settles it. Use it.
+
+  **The fast-path floor was deliberately left on the constant** rather than
+  following the new per-shot `top_k`. They were the same number until this
+  landed, and tying them would have put every fog-poor shot onto the closed-form
+  path as a side effect of shrinking its `k` — two changes wearing one constant's
+  name. The floor asks how much evidence a level needs before approximating is
+  worth it; `top_k` asks how much of that evidence the score sums. Tying them is
+  a reasonable *separate* change and is untested.
+
+  **What is not settled: whether 60 is right for the shots it still binds on.**
+  This caps a number that was never derived; it does not derive it. The median
+  shot reads 142 fog-ish tiles and sums 60 of them, and nothing here says 60
+  rather than 100 or 40 is the correct answer there. A sweep over the fog-heavy
+  half of the corpus is the missing measurement.
 
 - **A coarser pyramid level (div=8) does not help, and the reason generalizes.**
   Never tried before; measured now. Prepending a div=8 level and narrowing div=4

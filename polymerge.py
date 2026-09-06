@@ -1131,10 +1131,11 @@ def _fogish_tiles(img, valid, gray, origin, u_col, u_row, n, Wt, Ht,
     Yc = np.clip(Y + pad, 0, warped.shape[0] - 1)
     frac = warped[Yc, Xc].mean(1)
     keep = frac >= JOINT_TILE_FOG_FRAC
-    if keep.sum() < JOINT_TILE_FLOOR:
+    n_fogish = int(keep.sum())
+    if n_fogish < JOINT_TILE_FLOOR:
         keep = np.zeros(frac.size, bool)
         keep[np.argsort(frac)[-min(JOINT_TILE_FLOOR, frac.size):]] = True
-    return keep
+    return keep, n_fogish
 
 
 def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
@@ -1150,8 +1151,18 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
     Returns the image -> template affine."""
     Ht, Wt = tmpl_gray.shape
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    keep = _fogish_tiles(img, valid, gray, origin, u_col, u_row, n, Wt, Ht,
-                         scale0, trans0)
+    keep, n_fogish = _fogish_tiles(img, valid, gray, origin, u_col, u_row, n,
+                                   Wt, Ht, scale0, trans0)
+    # Sum the best `top_k` per-tile correlations, but never more of them than
+    # there are tiles that could be fog at all. The score's job is to add up the
+    # evidence, and a tile that is not fog still contributes a correlation
+    # against fog art that moves with the candidate for reasons unrelated to
+    # alignment -- so on a shot with 11 fog-ish tiles a fixed k of 60 sums 11
+    # signals and 49 noise terms, and the noise wins. The colour count is a
+    # generous upper bound on the fog (it admits 83.5% of a Polaris shot's
+    # pixels), which is exactly what makes it safe to cap by: it errs toward
+    # leaving k alone. 14 of the corpus's 77 shots see a smaller k.
+    top_k = min(top_k, max(n_fogish, 1))
     # The board's centre in template space. The zoom sweep below pivots about
     # it; see the note at the sweep for why that is not the same search.
     board_c = origin + (n / 2.0) * u_col + (n / 2.0) * u_row
@@ -1281,16 +1292,24 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
                   # short of top_k cannot recover -- stop rather than warping
                   # the rest for an answer that is settled. This is what keeps
                   # the pre-pass from costing the fog-poor shots anything.
-                  if int(sel.sum()) < top_k:
+                  if int(sel.sum()) < JOINT_TOP_K:
                       sel = None
                       break
           if sel is not None:
               # A fog-poor shot keeps almost nothing here (star_change/oum holds
-              # 25 of 120 tiles at div=4), and below top_k the objective would be
-              # a sum over fewer terms than it is meant to select from. Such a
+              # 25 of 120 tiles at div=4), and below this bar the objective would
+              # be a sum over fewer terms than it is meant to select from. Such a
               # level falls back to the exact masked score in full -- never a
               # mix, since the two forms agree only to ~1e-5 and the beam
               # compares candidates within a level against each other.
+              #
+              # The bar is the CONSTANT, not the per-shot `top_k` above. Those
+              # were the same number until the fog-ish cap landed, and keeping
+              # them tied would put every fog-poor shot onto the fast path as a
+              # side effect of shrinking its k -- two changes wearing one
+              # constant's name. Read it as a floor on how much evidence a level
+              # must hold before approximating is worth it, which is a different
+              # question from how much of that evidence the score sums.
               bcp_s, bden_s = bc_pre[sel], bden[sel]
               base_s, shape_s = base[sel], (int(sel.sum()), shape[1])
 
