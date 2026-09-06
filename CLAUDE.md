@@ -3968,21 +3968,36 @@ template location.
   addressing left to win and no point replacing `np.sort` with `np.partition`
   (0.004 against 0.005 — the array is ~150 long).
 
-  The real target is that **85% of scored tiles are fully valid at a given pan**,
-  and for those the masked NCC collapses: with `v` all ones, `sum(ac*bc)` is just
-  `sum(a*bc_pre)` because `sum(bc_pre) = 0`, and `sum(ac^2)` is
-  `sum(a^2) - sum(a)^2/n`. The template side (`bc_pre`, `sum(bc_pre^2)`) is
-  invariant per level. That is three reductions over `a` instead of ~ten passes,
-  and it measures **0.159 ms against 0.445** — a 2.8x cut of what is left.
+  The real target is that **most scored tiles have no invalid sample at all**, and
+  for those the masked NCC collapses. `v` all ones makes `bc = b - mean(b)`
+  independent of the pan, so it precomputes per level along with `sum(bc^2)`;
+  `sum(ac*bc)` is then just `sum(a*bc_pre)` because `sum(bc_pre) = 0`, and
+  `sum(ac^2)` is `sum(a^2) - sum(a)^2/n`. Three reductions over `a` instead of
+  the ~ten passes the masked form needs, and it measures **0.12 ms against
+  0.57** on a captured div=2 call.
 
-  **It is not free, which is why it is recorded rather than built:** the closed
-  form reaches the same quantity by a different route, so it differs in the last
-  bits (4.9e-3 on a score of 26, ~2e-4 relative), and this file's own history says
-  a perturbation far smaller than that moves `joint_register`'s beam search into
-  a different basin. A hybrid — closed form for the tiles that are valid at
-  *every* pan of the level, masked path for the rest — is the right shape, and it
-  still needs the full 27-set diff and a judgement call about which sets move.
-  Do not land it as a "pure speedup"; it is not one.
+  **Read the fraction per zoom candidate, not per pan** — the fast path needs a
+  tile valid at *every* pan of the level, since the keep-set has to be
+  precomputed once per warp. Measured over 16 shots in four sets, single-pan
+  full validity averages **0.84** but the all-pan figure is **0.78** (median
+  0.82, and 0.22 on `test_screenshots/Screenshot_...349217.jpg`, a zoomed-in
+  shot much of whose frame is off the board).
+
+  **The hybrid's saving is a function of that fraction, and it goes negative**
+  — the slow path still runs over the remainder, and splitting by boolean mask
+  costs an index on both halves. On the same captured call: 0.24 ms at a 0.85
+  fast-path share, 0.25 at 0.78, **0.50 at 0.50** and **0.58 at 0.22**, against
+  the masked form's 0.57. So it is ~2.3x on a typical shot and *worse than what
+  it replaces* on the fog-poor ones — which are the shots this file's history
+  says are the fragile ones.
+
+  **And it is not bit-identical**, which is why it is recorded rather than
+  built: the closed form reaches the same quantity by a different route, so it
+  differs in the last bits (measured 4.9e-3 on a score of 26 and 3.6e-5 on one
+  of -7.07, ~2e-4 and ~5e-6 relative), and this file's own history says a
+  perturbation far smaller than that moves `joint_register`'s beam search into
+  a different basin. It still needs the full 27-set diff and a judgement call
+  about which sets move. Do not land it as a "pure speedup"; it is not one.
 
 - **A coarser pyramid level (div=8) does not help, and the reason generalizes.**
   Never tried before; measured now. Prepending a div=8 level and narrowing div=4
