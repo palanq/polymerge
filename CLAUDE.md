@@ -4147,11 +4147,41 @@ template location.
   worth it; `top_k` asks how much of that evidence the score sums. Tying them is
   a reasonable *separate* change and is untested.
 
-  **What is not settled: whether 60 is right for the shots it still binds on.**
-  This caps a number that was never derived; it does not derive it. The median
-  shot reads 142 fog-ish tiles and sums 60 of them, and nothing here says 60
-  rather than 100 or 40 is the correct answer there. A sweep over the fog-heavy
-  half of the corpus is the missing measurement.
+  **60 is now measured, and it is right — swept at 40 and 80 over all 27 sets**
+  (scoring `k` only; the fast-path floor held at the constant, per the note
+  above, so this measures the objective width and nothing else). **Both ends
+  lose a confirmed real bar**, and 60 is the only one of the three that loses
+  nothing:
+
+  | | k=40 | **k=60** | k=80 |
+  |---|---|---|---|
+  | explored union | **6297** | 6300 | 6300 |
+  | cross-check mean, 21 reliable sets | 0.0261 | 0.0237 | **0.0216** |
+  | " median | 0.0260 | 0.0220 | **0.0190** |
+  | " sets over the 0.05 bar | 0 | 0 | 0 |
+  | real bars lost | **1** | — | **2** |
+
+  - **k=40** drops `badland_test3` **(15,16)** — which is in that set's labeled
+    real-bar list — and loses three union tiles on `control_c` (240 → 237). Union
+    is the strongest signal in the corpus and 40 is the only value that moves it.
+  - **k=80** drops `goon_test2` **(6,2)** and **(6,5)**, both complete bars seen
+    by `q.jpg`. `goon_test` is *the same board at a different turn* and reports
+    both, from its own `q.jpg` — the same three-way corroboration that settled
+    (13,17), and the reason those two sets are worth keeping.
+
+  **Read the aggregate cross-check column and then distrust it**, because this is
+  the cleanest demonstration in the file of why it is a proxy. It improves
+  *monotonically* with `k` — 0.0261 → 0.0237 → 0.0216 — while bar recall degrades
+  at **both** ends. Optimising on it alone picks 80 and quietly costs two real
+  bars. The metric order this file keeps asserting (union, then the labeled bar
+  counts, then cross-check) is not a stylistic preference; here it is the
+  difference between the right answer and a wrong one that looks better.
+
+  Mechanism, for anyone re-running this: at k=80 `goon_test2/q.jpg` has enough
+  fog-ish tiles that its `k` really does rise to 80, its anchor shifts, and that
+  set's cross-check *improves* to 0.010 while two bars sitting near a band edge
+  fall out — exactly the ~2px bar sensitivity recorded in its own standing
+  decision below. `imp.jpg` is capped at 53 either way and does not move.
 
 - **A coarser pyramid level (div=8) does not help, and the reason generalizes.**
   Never tried before; measured now. Prepending a div=8 level and narrowing div=4
