@@ -1839,7 +1839,9 @@ omitted.** The same measurement answers the stronger question: instead of
 checking a supplied N, just report the one measured. Nothing about it is
 circular — the board span and the fog period are both in the shot's *own*
 pixels, and the template contributes only `dir_a` (the fixed projection angle,
-identical at every N) and the center of `fog_period_scale`'s 5x-wide sweep.
+identical at every N) and the center of `fog_period_scale`'s 12x-wide sweep
+(`lo=0.30` to `hi=3.75`; this file said 5x, from before the floor and ceiling
+moved).
 Verified directly: `goon_test2` reads 17.93/17.87 with the 18 template loaded
 and 17.96/17.99 with the 20.
 
@@ -1948,18 +1950,52 @@ reproducible on demand by forcing `fog_period_scale(lo=0.45)`, which puts
 `z2.png` back to 8.60; the expected result is the measurement named and
 discarded, size detected as 18, and **all three shots merged**.
 
-It costs **0.81s on a 4-shot merge** (~6%), because it deliberately duplicates
-the edge fit and fog period that `anchor_to_template` will compute again. That
-was the explicit choice: caching the measurements and feeding them into the
-anchor would make it free, but it means changing how the registration path gets
-its inputs — the half of the pipeline where mistakes are silent — to save a
-second nobody can perceive against the bot's ~20s round trip. If that is ever
-revisited, note the two obstacles: `sky_rebuild` re-fits the boundary on
-failure, so the pre-pass would have to own that fallback; and the anchor would
-then consume a period measured under a slightly different sweep window, which
-moves numbers slightly and so needs the full-corpus re-run. That second
-obstacle is now measured rather than suspected — a different sweep window
-moves the period by up to 0.9%; see the deferred item on it.
+**It used to cost ~0.22s per shot in duplicated work** — an edge fit and a fog
+period `anchor_to_template` would compute again, 0.81s on a 4-shot merge. This
+file recorded that duplication as a deliberate choice, on the grounds that
+sharing the measurements "means changing how the registration path gets its
+inputs — the half of the pipeline where mistakes are silent." That reasoning was
+right about the risk and wrong about it being unavoidable.
+
+**What makes sharing safe is that the cache key carries every input that can
+change the answer** (`ShotCache`), so a hit is by construction the same
+computation and returns the same bits, and a miss recomputes exactly what the
+old code did. Nothing is approximated and no number is permitted to drift. The
+key is the shot, a mask *generation counter*, the projection basis (which
+reaches `_board_component`'s angle test), and — for the period — the tile step,
+because that sets the phase of the coarse sweep grid and a different phase moves
+the answer by up to 0.9% (see the deferred item on it).
+
+That last term is what turns the second of the two obstacles this file used to
+name into a non-issue rather than a hazard: the pre-pass has to choose a
+template before it knows the board size, so its basis and tile step are only
+*sometimes* the ones the anchor will use — and when they are not, the key simply
+misses. **`_probe_basis` therefore iterates 20, 18, 16, 14, 11** rather than
+ascending, which is what makes it hit: on a 20x20 board the pre-pass's
+parameters are the anchor's, every key hits, and the pre-pass becomes free. On
+any other size nothing hits and behavior is bit-identical to not having the
+cache, at the cost of loading the larger render first (+213ms on an 18x18 board
+against ~960ms saved on a 20x20 one, counting `template_geometry`'s dedup of the
+load and corner fit — 294ms at 20x20).
+
+The first obstacle, `sky_rebuild` re-fitting the boundary, is handled by putting
+`cache.invalidate` in `anchor_to_template` immediately after `mask, valid =
+sky_rebuild()` rather than inside `sky_rebuild_for`. That keeps the obligation
+next to the reassignment that creates it, and it holds for a caller that passed
+no cache at all — which matters because `shoreline/polyshore.py` calls both
+`detect_map_size` and `anchor_to_template` directly. Both default to a private
+cache, so they work unchanged and still dedup a single call's own repeats (the
+sky re-fit, and `anchor_all`'s second pass re-anchoring a shot).
+
+**Verified on both paths against the pre-change code, because they are different
+paths and only one of them is covered by `tools/baseline.py`:** that harness
+passes `--map-size` for every set, so it never populates the shared cache at all
+— it proves nothing was broken and cannot prove the dedup works. Stated size
+came back *identical on every set and every tracked field*; a separate run of
+every set with **no** `--map-size`, old code against new, came back **0 of 27
+differing**, refusal text included (`fogless`, `pol_archi_test` and `replay_ss2`
+still refuse identically). An empty diff is the *expected* result here rather
+than a happy one — any movement would have meant a broken key.
 
 An explicit `--map-size` skips all of it, so nothing here can override a size
 someone actually meant.
@@ -3732,7 +3768,7 @@ either**; the third is what shipped, as a warning:
 
 - **`fog_period_scale` returning None on every shot.** This looks like the
   discriminator, and nearly is: it never consults `--map-size` (it takes
-  `tile_px` only to center a 5x-wide sweep, and the answer is invariant to which
+  `tile_px` only to center a 12x-wide sweep, and the answer is invariant to which
   template supplies it — `test_ss_3/yad1.png` reads 80.2/80.3/79.8/79.9/79.9px
   across all five), it returns None on both `fogless` shots, and it finds a
   period on every board in the corpus that has fog, including the cases built to

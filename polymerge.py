@@ -1282,7 +1282,7 @@ LONE_PAIR_EXTENT_HI = 1.15
 def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
                        origin, u_col, u_row, n_tiles, min_support, label,
                        refine=True, min_scale_support=30, zoom_hint=None,
-                       sky_rebuild=None, pan_hint=None):
+                       sky_rebuild=None, pan_hint=None, cache=None):
     """Map one image onto the template.
 
     The board edges supply the starting estimate for both zoom and pan, and
@@ -1345,11 +1345,17 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
     # cancel exactly (see the edge bullet in the module docstring).
     span = [t_off[1] - t_off[0], t_off[3] - t_off[2]]
 
+    # A private cache still dedups this call's own repeats (the sky rebuild
+    # re-fits, and anchor_all can re-anchor a shot in its second pass); a shared
+    # one additionally reuses whatever the size pre-pass already measured. See
+    # ShotCache for why sharing is only ever a hit when the parameters match.
+    cache = cache if cache is not None else ShotCache()
+
     tags = ["a-min", "a-max", "b-min", "b-max"]
 
     def fit_edges(m):
         with PHASES("anchor: board outline + edge fit"):
-            pts = board_boundary(m, (dir_a, dir_b))
+            pts = cache.boundary(label, m, (dir_a, dir_b))
             if len(pts) < 100:
                 return pts, None, None, False
             off, support = edge_lines(pts, dir_a, dir_b)
@@ -1380,6 +1386,11 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
         print(f"  no usable board edge from brightness alone -- retrying with "
               f"the sunrise-sky test")
         mask, valid = sky_rebuild()
+        # The masks this shot is measured from have just been replaced, so
+        # anything already measured from the old ones is stale. Invalidating
+        # here rather than inside sky_rebuild keeps that obligation next to the
+        # reassignment it belongs to, and covers a caller that passed no cache.
+        cache.invalidate(label)
         pts, off, support, pan_ok = fit_edges(mask)
     if off is None:
         raise SystemExit(f"{label}: no board outline found (only {len(pts)} "
@@ -1481,8 +1492,8 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
         # its own pixels and divide. Costs one extra fog_period_scale (~0.2s)
         # and is what catches a wrong --map-size (see main).
         with PHASES("anchor: board-size check"):
-            got = fog_period_scale(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY),
-                                   valid, hsv, dir_a, np.linalg.norm(u_col))
+            got = cache.period(label, img, valid, hsv, dir_a,
+                               np.linalg.norm(u_col))
         if got is not None:
             spans = [off[hi] - off[lo] for k, (lo, hi) in enumerate([(0, 1), (2, 3)])
                      if have_scale[lo] and have_scale[hi]]
@@ -1500,8 +1511,8 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
     else:
         zoom_source = "fog-period"
         with PHASES("anchor: fog-period zoom fallback"):
-            got = fog_period_scale(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY),
-                                   valid, hsv, dir_a, np.linalg.norm(u_col))
+            got = cache.period(label, img, valid, hsv, dir_a,
+                               np.linalg.norm(u_col))
         if got is None:
             raise SystemExit(f"{label}: no opposite edge pair, and no periodic "
                              f"fog found to read the zoom off -- pale terrain "
@@ -2949,7 +2960,105 @@ def load_template(path, dark_thresh, erode_px):
     return bgr, valid_t, edge_t
 
 
-def _probe_basis(dark_thresh):
+_template_cache = {}
+
+
+def template_geometry(path, dark_thresh, erode_px):
+    """One render's pixels plus everything geometric derived from them, once.
+
+    Every consumer of a board render wants the same six things off it, and a
+    run has two consumers: the size pre-pass (_probe_basis) and the merge
+    itself. They ask at different times and used to each pay in full -- a load,
+    a corner fit, an outline and an edge fit, which is 294ms at 20x20 (164 load,
+    42 corners, 72 outline, 17 edge fit).
+
+    Keyed on (path, dark_thresh, erode_px), so a hit is by construction the same
+    computation on the same file and returns the same object. `erode_px` reaches
+    only `valid_t`; `edge_t` is always built un-eroded, which is why the pre-pass
+    can pass the caller's erode_px rather than 0 and share this entry without
+    changing anything it reads.
+
+    Returns None for a render that is not on disk, exactly as load_template
+    does, so the caller still owns the refusal."""
+    key = (path, dark_thresh, erode_px)
+    if key not in _template_cache:
+        bgr, valid_t, edge_t = load_template(path, dark_thresh, erode_px)
+        if bgr is None:
+            _template_cache[key] = None
+        else:
+            corners = detect_corners(edge_t)
+            dirs = edge_directions(corners[0], corners[1], corners[3])
+            _template_cache[key] = {
+                "bgr": bgr, "valid": valid_t, "edge": edge_t,
+                "corners": corners, "dirs": dirs,
+                "edges": edge_lines(board_boundary(edge_t), *dirs),
+            }
+    return _template_cache[key]
+
+
+class ShotCache:
+    """Per-shot measurements several parts of a run all want: the board
+    outline, and the fog's repeat period.
+
+    Both are computed twice today -- once by `detect_map_size` before the board
+    size is known, and again by `anchor_to_template` afterwards -- at ~85-250ms
+    a shot (outline 18-68ms, period 66-186ms). They are the same measurement
+    only when they are made under the same *parameters*, and that is the whole
+    design of this class: **the key carries every input that can change the
+    answer**, so a hit returns the same bits and a miss recomputes exactly what
+    the old code did.
+
+    - the outline depends on the mask and on the projection basis (which reaches
+      `_board_component`'s angle test);
+    - the period depends on the mask, on `dir_a` (the shift direction) and on
+      `tile_px` (which sets the phase of the coarse sweep grid -- see the
+      deferred item on that sensitivity, where a different sweep window moves
+      the answer by up to 0.9%).
+
+    The pre-pass has to pick a template before it knows the size, so it takes
+    those from whichever render `_probe_basis` finds first. That is why the
+    probe order is 20, 18, 16, 14, 11 rather than ascending: on a 20x20 board --
+    the commonest size, and the one this program is most often asked for -- the
+    probe's basis and tile step *are* the ones the anchor will use, every key
+    hits, and the pre-pass becomes free. On any other size nothing hits and the
+    behavior is bit-identical to not having this class at all. It buys the
+    common case and cannot cost the rest.
+
+    A mask is not hashable and identity is not enough (`sky_rebuild` writes new
+    masks into main's dicts in place), so a generation counter per shot stands
+    in for it and `invalidate` bumps it. Getting that wrong would be the one way
+    this could return a stale answer, so it is the caller's single obligation:
+    anything that replaces a shot's masks must invalidate."""
+
+    def __init__(self):
+        self._gen, self._boundary, self._period = {}, {}, {}
+
+    def invalidate(self, name):
+        """Call after replacing a shot's masks; see anchor_to_template."""
+        self._gen[name] = self._gen.get(name, 0) + 1
+
+    def boundary(self, name, mask, dirs):
+        key = (name, self._gen.get(name, 0), dirs[0].tobytes(), dirs[1].tobytes())
+        if key not in self._boundary:
+            self._boundary[key] = board_boundary(mask, dirs)
+        return self._boundary[key]
+
+    def period(self, name, img, valid, hsv, dir_a, tile_px):
+        """(s_it, period_px, ncc) or None -- fog_period_scale's own answer.
+
+        Takes the image rather than its gray conversion so that a hit skips
+        that too -- an argument would be evaluated before the call could return
+        the cached value. The conversion is deliberately not *retained*: one
+        gray frame per shot is ~5.6MB on a large capture and would buy only a
+        ~5ms recompute on the at most two misses a shot can have."""
+        key = (name, self._gen.get(name, 0), dir_a.tobytes(), float(tile_px))
+        if key not in self._period:
+            self._period[key] = fog_period_scale(
+                cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), valid, hsv, dir_a, tile_px)
+        return self._period[key]
+
+
+def _probe_basis(dark_thresh, erode_px=0):
     """The board's projection directions, tile step and per-direction span,
     from any template.
 
@@ -2964,14 +3073,20 @@ def _probe_basis(dark_thresh):
     which is small against EDGE_PAIR_MAX_SPREAD's 3% but not against the
     0.00-1.24% that healthy pairs actually report. Returns None when no
     standard template is on disk."""
-    for n in MAP_SIZE_CHOICES:
-        t, _, edge_t = load_template(template_path_for(n), dark_thresh, 0)
-        if t is None:
+    # Largest first, and this ordering is load-bearing rather than tidy: the
+    # basis and tile step taken here are what ShotCache keys on, so probing the
+    # size a board is most likely to be means the pre-pass's measurements are
+    # the ones the anchor wants and are reused instead of repeated. Descending
+    # from MAP_SIZE_CHOICES rather than a literal list, so a new size cannot
+    # fall out of step with it.
+    for n in sorted(MAP_SIZE_CHOICES, reverse=True):
+        g = template_geometry(template_path_for(n), dark_thresh, erode_px)
+        if g is None:
             continue
-        t_top, t_right, _, t_left, _ = detect_corners(edge_t)
-        dir_a, dir_b = edge_directions(t_top, t_right, t_left)
+        t_top, t_right, _, t_left, _ = g["corners"]
+        dir_a, dir_b = g["dirs"]
         _, u_col, _ = build_lattice(t_top, t_right, t_left, n)
-        t_off, _ = edge_lines(board_boundary(edge_t), dir_a, dir_b)
+        t_off, _ = g["edges"]
         span = [t_off[1] - t_off[0], t_off[3] - t_off[2]]
         return dir_a, dir_b, float(np.linalg.norm(u_col)), span
     return None
@@ -3023,7 +3138,7 @@ def _no_measurement_reason(why):
 
 
 def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
-                    min_support, min_scale_support):
+                    min_support, min_scale_support, erode_px=0, cache=None):
     """Measure the board's size off the screenshots themselves.
 
     This is the same quantity the board-size check already computes against a
@@ -3051,10 +3166,13 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     which is why this raises rather than falling back to a default. A guessed
     size is the most destructive mistake available in this program.
 
-    Costs one edge fit and one fog_period_scale per shot (~0.22s), duplicating
-    work anchor_to_template will do again later. Deliberate: it keeps the
-    registration path untouched. Only ever runs when --map-size is omitted."""
-    basis = _probe_basis(dark_thresh)
+    Costs one edge fit and one fog_period_scale per shot (~0.22s). That used to
+    be duplicated work -- anchor_to_template measures both again -- and `cache`
+    is what reclaims it, on the sizes where the two agree about the parameters
+    they measure under. See ShotCache. Only ever runs when --map-size is
+    omitted."""
+    cache = cache if cache is not None else ShotCache()
+    basis = _probe_basis(dark_thresh, erode_px)
     if basis is None:
         # An install fault, not anything the player did, so the headline says
         # so plainly and the path that identifies it goes on the second line
@@ -3077,7 +3195,7 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     why = {}
     with PHASES("detect map size"):
         for n in names:
-            pts = board_boundary(edge_mask[n], (dir_a, dir_b))
+            pts = cache.boundary(n, edge_mask[n], (dir_a, dir_b))
             if len(pts) < 100:
                 print(f"  {n}: no board outline -- no size measurement")
                 why[n] = "no-outline"
@@ -3105,8 +3223,7 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
                       f"not span the board, so it cannot count its tiles")
                 why[n] = "no-span"
                 continue
-            got = fog_period_scale(cv2.cvtColor(imgs[n], cv2.COLOR_BGR2GRAY),
-                                   valid[n], hsv[n], dir_a, tile_px)
+            got = cache.period(n, imgs[n], valid[n], hsv[n], dir_a, tile_px)
             if got is None:
                 print(f"  {n}: no periodic fog to measure the tile step "
                       f"against -- no size measurement")
@@ -3364,14 +3481,19 @@ def main():
     # Only when the caller omitted it: an explicit --map-size is always obeyed,
     # so this can never override a size someone actually meant.
     size_was_detected = args.map_size is None
+    # One cache for the whole run, so whatever the size pre-pass measures below
+    # is available to the anchor rather than measured again. See ShotCache.
+    shot_cache = ShotCache()
     if size_was_detected:
         args.map_size = detect_map_size(names, imgs, edge_mask, valid, hsv,
                                         args.dark_thresh, args.min_edge_support,
-                                        args.min_scale_support)
+                                        args.min_scale_support,
+                                        erode_px=args.erode_px,
+                                        cache=shot_cache)
 
     template_path = args.template or template_path_for(args.map_size)
-    template, valid_t, edge_t = load_template(template_path, args.dark_thresh,
-                                              args.erode_px)
+    tgeom = template_geometry(template_path, args.dark_thresh, args.erode_px)
+    template = tgeom["bgr"] if tgeom else None
     if template is None:
         # Install fault, like the missing-Overlays refusal in detect_map_size:
         # nothing the player did, so the path goes below the headline.
@@ -3381,14 +3503,14 @@ def main():
     tmpl_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
     print(f"template: {template_path}")
 
-    t_top, t_right, t_bottom, t_left, t_residual = detect_corners(edge_t)
+    t_top, t_right, t_bottom, t_left, t_residual = tgeom["corners"]
     print(f"template corners: top={tuple(t_top.round(0))} right={tuple(t_right.round(0))} "
           f"bottom={tuple(t_bottom.round(0))} left={tuple(t_left.round(0))} "
           f"(residual {t_residual:.1f}px, should be tiny)")
-    dir_a, dir_b = edge_directions(t_top, t_right, t_left)
+    dir_a, dir_b = tgeom["dirs"]
     origin, u_col, u_row = build_lattice(t_top, t_right, t_left, args.map_size)
     t_corners = (t_top, t_right, t_bottom, t_left)
-    t_edge_off, t_edge_sup = edge_lines(board_boundary(edge_t), dir_a, dir_b)
+    t_edge_off, t_edge_sup = tgeom["edges"]
     tile_px = float(np.linalg.norm(u_col))
     print(f"tile step: {tile_px:.2f}px")
 
@@ -3477,7 +3599,7 @@ def main():
                     dir_a, dir_b, origin, u_col, u_row, args.map_size,
                     args.min_edge_support, n, refine=not args.no_refine,
                     min_scale_support=args.min_scale_support,
-                    sky_rebuild=sky_rebuild_for(n))
+                    sky_rebuild=sky_rebuild_for(n), cache=shot_cache)
                 M_of[n] = M
                 scale_of[n] = float(np.hypot(M[0, 0], M[1, 0]))
                 if implied is not None:
@@ -3538,7 +3660,7 @@ def main():
                         # and m's own anchor converts those to template px
                         zoom_hint=scale_of[m] * k,
                         sky_rebuild=sky_rebuild_for(n),
-                        pan_hint=borrowed)
+                        pan_hint=borrowed, cache=shot_cache)
                     M_of[n] = M
                     scale_of[n] = float(np.hypot(M[0, 0], M[1, 0]))
                     if implied is not None:
