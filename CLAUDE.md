@@ -532,11 +532,14 @@ per-file rects, key them on something unambiguous.
   not mention and which nothing in the corpus made obvious while it was
   reporting a single ruin. It has five.
 - Current `--cross-check` baselines, worst disagreement: **test_screenshots
-  0.034, ss2 0.028, ss3 0.045, goon2 0.035, ss5 0.021, archers_test2 0.038,
-  beautiful_test3 0.024, goon_test 0.006, badland_test 0.013,
-  badland_test3 0.027,
-  pol_archi_test 0.044, star_change 0.141, badland_test2 0.011,
-  perilous_test 0.020, missized_test 0.004, xizauh 0.035 tiles**. Compare
+  0.020, ss2 0.023, ss3 0.020, goon2 0.032, ss5 0.050, archers_test2 0.046,
+  beautiful_test3 0.029, goon_test 0.013, badland_test 0.027,
+  badland_test3 0.028,
+  pol_archi_test 0.031, star_change 0.162, badland_test2 0.011,
+  perilous_test 0.014, missized_test 0.022, xizauh 0.028, u_forest 0.049,
+  vengir_cultist 0.071, scorched_earth 0.007 tiles**. These moved on the
+  fixed-angle basis (see that standing decision); `vengir_cultist` is the one
+  set now past the 0.05 bar, on a set whose merge output did not change at all. Compare
   against these after touching anything in the registration path. Cross-check
   is *deterministic* (verified: repeated runs give identical numbers), so a
   change in these is real and not RANSAC noise.
@@ -602,13 +605,13 @@ per-file rects, key them on something unambiguous.
   left the merge output identical. Read a change here against the companion
   baselines before treating it as a registration regression.
 - Companion baselines worth checking alongside, since cross-check is a proxy
-  and these are the actual output. In table order — explored union **371/400,
-  371/400, 260/400, 238/324, 201/400, 191/400, 278/400, 361/400, 237/324,
-  90/400, 295/400, 331/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
+  and these are the actual output. In table order — explored union **370/400,
+  371/400, 260/400, 238/324, 202/400, 190/400, 278/400, 361/400, 237/324,
+  90/400, 295/400, 330/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
   247/400, 50/324, 78/324, 256/256, 256/256, 224/324, 233/324**; conflicts
-  **14, 20, 3, 4, 0, 0, 14, 25, 2, 0, 0, 25, 2, 27, 7, 1, 4, 0, 14, 0, 0, 0, 0, 1,
-  10**; city population bars found (`--city-bars`) **16, 17, 17, 8, 9, 7, 16, 15,
-  8, 3, 7, 15, 7, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10**; ruins found
+  **15, 19, 3, 4, 0, 0, 14, 23, 2, 0, 0, 27, 3, 27, 9, 1, 4, 0, 14, 0, 0, 0, 0, 1,
+  10**; city population bars found (`--city-bars`) **16, 17, 18, 8, 9, 7, 16, 15,
+  9, 3, 7, 15, 7, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10**; ruins found
   (`--ruin-vision`, after adjacency clustering) **3, 3, 0, 0, 0, 0, 0, 3, 0, 11,
   0, 0, 0, 0, 0, 0, 0, 5, 0, 9, 3, 0, 0, 0, 0** — 37 in total, on the seven sets
   with an Elyrion player and zero everywhere else.
@@ -1368,7 +1371,10 @@ exploits it has to change with it.
 - **A tile's footprint is constant but its height is not.** The width:depth
   ratio of a tile's top face is a fixed constant of the projection, but every
   tile is a 3D box whose *height* depends on its content: a fog cube stands
-  taller than a plains tile, which stands taller than water. Three consequences
+  taller than a plains tile, which stands taller than water — and **shorter
+  than a mountain or a large city**, so fog sits in the middle of the height
+  range rather than at the top. That ordering matters wherever a rim tile's
+  top face is the evidence; see the edge bullet below. Three consequences
   run all through this codebase — a board silhouette includes a side wall and
   so overstates the board's extent; tall content is drawn extending toward the
   viewer, so mountains slightly occlude and large cities can wholly occlude the
@@ -1388,11 +1394,68 @@ exploits it has to change with it.
   bottom lip is drawn with an uneven, scalloped silhouette where explored
   terrain has a clean straight one. The template is all fog, so a bottom edge
   matches it almost perfectly when that shot's rim is also fog, and is offset
-  when the rim is explored: mean error -0.8px (std 0.9) for rims that are
-  >=75% fog, versus +7.0px (std 2.6) for rims that are <=25% fog, correlation
-  -0.80 between rim fog fraction and edge error. The offset is large and
-  systematic but not yet demonstrably a single constant — six of the eight
-  explored-rim samples sit at +7.0..+9.4px and two at +2.4/+2.8px.
+  when the rim is explored.
+
+  **That offset was once recorded here as one pooled number (-0.8px for fog
+  rims against +7.0px for explored ones, correlation -0.80, "not yet
+  demonstrably a single constant"). It is not one number, and it is not one
+  mechanism** — the pooled figure was averaging four edges of two different
+  kinds with *opposite signs*. Measured per edge over 210 well-supported edge
+  observations across 24 sets (residual against each shot's own fog-refined
+  anchor, restricted to shots locking >= 20 fog tiles so the reference means
+  something):
+
+  | edge | corr(rim fog, error) | fog rim | explored rim | slope per unit rim fog |
+  |---|---|---|---|---|
+  | SE `a-max` (bottom) | **+0.88** | +0.43 ± 0.59 | -2.11 ± 0.60 | **+3.02 px** |
+  | SW `b-max` (bottom) | **+0.92** | +0.87 ± 0.97 | -6.55 ± 0.86 | **+8.11 px** |
+  | NW `a-min` (top) | -0.81 | +1.06 ± 1.14 | +13.32 ± 3.97 | -12.08 px |
+  | NE `b-min` (top) | -0.55 | -0.84 ± 0.65 | +6.74 ± 0.88 | -7.03 px |
+
+  **Only the bottom pair is a function of the rim's fog fraction.** They show
+  the common base plane, so tile *height* cannot reach them and the only
+  fog-vs-terrain difference is the scalloped lip — a shape term. Their residual
+  after a linear fit is **0.56px (SE) and 1.38px (SW)**, and the spread *within*
+  narrow fog-fraction bins is 0.49-0.70 on SE at every bin, which is the real
+  test: the fraction determines the offset.
+
+  **The top pair is not a function of it, and cannot be made into one.** Their
+  within-bin spread runs to **8.30px (NW) and 6.48px (NE)** — at the same rim
+  fog fraction. The worked cases: `goon_test2/imp` NE at 0.36 reads **+14.11**
+  while `badland_test2/yad` NE at 0.29 reads **+0.64**; `control_d/one` NE at
+  0.62 reads **+15.20** while `archers_test2/yad` NE at 0.62 reads **-4.28**.
+  Same fraction, opposite signs.
+
+  The reason is a height fact this file states but which is easy to over-read:
+  fog is taller than plains and water, and **shorter than mountains and large
+  cities** — it sits in the *middle* of the height range, not at the top (which
+  is why tall content occludes the tile north of its own at all). A top edge
+  shows the rim tiles' top faces, so an explored rim can sit either below fog
+  (plains, water → positive error) or above it (mountains, cities → negative),
+  and "how much of this rim is fog" cannot tell you which. Distinguishing them
+  needs terrain classification, which is the one thing this codebase has a
+  standing decision against. So the top edges are not correctable by this route,
+  and this is *why* they are the bad edges rather than merely that they are.
+
+  **A correction was fitted and withdrawn; don't rebuild it.** The obvious
+  payoff is the board-size measurement, since `implied_n = span/period - 0.78`
+  pairs a top edge with a bottom edge whose errors have opposite signs and so
+  *add*. Fitting all four edges takes the span error from mean -0.040 tiles
+  (sd 0.062, worst 0.250) to mean -0.001 (sd 0.040, worst 0.172), which looks
+  decisive. It is not: correcting only the half that is genuinely modellable
+  gives mean -0.026, **sd 0.061, worst 0.257** — a third of the bias, none of
+  the spread, and a slightly worse maximum. The entire apparent gain was the
+  top-edge terms fitting a confound.
+
+  Two things survive it. The bottom-edge model is real, and it explains the
+  per-edge error stats above mechanistically rather than descriptively. And the
+  documented "18-boards all read slightly low, so `BOARD_SPAN_WALL_TILES` is a
+  touch large there" is at least partly *not* the wall constant: the raw span
+  error has a real -0.040-tile mean, and the worst contributors are
+  `goon_test`/`goon_test2` `q.jpg` at -0.22/-0.24, both 18-boards with a 0%-fog
+  NW rim against a 100%-fog SE rim. Unexplained and worth knowing: SW's slope is
+  2.7x SE's despite both being base edges, and the slopes are well determined
+  (within-bin sd 0.15-0.97), so the asymmetry is real rather than sampling.
   All of this also biases the *zoom*, since a span always pairs a top edge with
   a bottom one — the likely cause of the systematically positive zoom
   correction (mean +0.28%, 10 of 12 shots positive).
@@ -1572,9 +1635,159 @@ Facts about these files worth knowing before touching them:
   against black), so a plain `cv2.imread` yields exactly the black-sky image the
   pipeline expects. `normal-*.png` are **16-bit** and are normalized on load.
 - **Every layer shares its blank's exact pixel frame.** Verified per size: same
-  canvas, and the grid lines land exactly on the blank's fog tile boundaries.
-  So overlays need **no warping or registration at all** — `main` builds the
-  composite in template space and the layers alpha-blend straight on.
+  canvas. So overlays need **no warping or registration at all** — `main`
+  builds the composite in template space and the layers alpha-blend straight
+  on. (This bullet used to add "and the grid lines land exactly on the blank's
+  fog tile boundaries"; that is false for two files — see the two bullets
+  below.)
+- **The board's edge slope is one constant of the projection rather than a
+  property of any render — but it is 0.5986, not 3:5.** `dir_a` = **30.9047°**
+  and `dir_b` = **149.0953°** (`BOARD_EDGE_SLOPE`); atan(3/5) would be 30.9638°
+  / 149.0362°, which is **0.059° away** and is what this bullet used to assert.
+  See the standing decision on `edge_lines`, where four independent routes
+  settle it and the code takes its basis from it. Note the squash bullet below
+  is the same fact stated as a shape and agrees exactly: 0.6 x its measured
+  `k` of 0.9976 is 0.59856.
+
+  **What survives here is the agreement, not the absolute value**, and the
+  distinction is the one this bullet's own caution below already draws. Measured
+  on the fog-tile lattice *inside* each blank — gradient energy over the eroded interior, so
+  neither the rim nor the slab's side wall votes — by maximizing the sharpness
+  of the projected point profile, an estimator calibrated to **±0.001°**
+  against synthetic antialiased grids. All five blanks agree to **0.0008°** in
+  both families: 30.9645 / 30.9644 / 30.9643 / 30.9640 / 30.9641 for huge /
+  large / normal / small / tiny. That agreement is real and is a *within-file
+  relative* measurement; the ~0.06° by which those absolute numbers sit above
+  the shipped constant is this estimator's own bias, which is exactly the size
+  the caution below gives it. The two families meet at 118.07°, not 90 —
+  never orthonormalize the basis.
+- **`large-gridded.png` and `tiny-gridded.png` have one line family uniformly
+  rotated; their blanks are fine.** Same projection-sharpness measurement on the
+  *overlay* files: every render's b-family is right (149.0359–149.0365), but
+  `large` reads **30.8823** in the a-family and `tiny` **30.7468** — one-family
+  rotations of **0.081°** and **0.217°**. Run twice by different routes (a dense
+  global scan over the raw alpha, and again after morphologically isolating each
+  family), agreeing to ~0.001° both times.
+
+  **Fitting each grid line separately is what makes this a diagnosis rather than
+  an observation**, and it is a *within-file relative* measurement, so it
+  survives that estimator's absolute bias: `large`'s 19 a-lines all read
+  30.8825–30.8826 (spread ±0.0002°), and `tiny`'s read 30.7503–30.7508 over the
+  first eleven with the last at 30.6946. So the whole family moved by one amount
+  — not sloppy lines, not a subset redrawn.
+
+  **Only the a-family moved, and that is the useful part.** It rules out the two
+  easy explanations: an anisotropic scale (exported at slightly different x and
+  y) moves *both* families by equal amounts in *opposite* directions, and a
+  rotation of the whole layer moves both the same way. What fixes one family
+  exactly and rotates the other is a **shear along the fixed family's
+  direction** — equivalently, a grid built from two step vectors with one of them
+  slightly wrong. If these files are generated, that a-direction step is the
+  parameter to look at, with `huge`/`normal`/`small` as the working reference.
+
+  Cost is **2.1px at 18x18 and 3.4px at 11x11**, corner to corner, computed from
+  the angle. Nothing in the merge reads the grid, so it is cosmetic; regenerate
+  those two rather than compensating anywhere in code, and never take a
+  *gridded* file as the reference for the projection angle. The blanks are the
+  reference.
+
+  **Two estimators were tried here and are wrong; don't repeat either.**
+  - **A comb-vs-comb phase drift test** — overlay the gridded file on its own
+    blank, and compare the grid/tile phase in the near half of the board against
+    the far half. It looks like the ideal check, because it measures the thing
+    that actually matters, and it produced a confident table (huge −0.01px,
+    large +2.74, tiny +12.01) that was written into this file as independent
+    confirmation. **It is an artifact.** A comb correlated against a comb has
+    near-equal peaks at *every* repeat, so which one wins is decided by noise and
+    by where the correlation search is clipped: widening the window from 15px to
+    a full period turns that same table into large **−38.76**, normal **+2.74**,
+    tiny **0.00**. The 12.01px that made `tiny` look like it also had a
+    line-spacing error was the search hitting its own limit. There is no evidence
+    of a spacing error in any of these files.
+  - **Local gradient orientation** reads all five *blanks* at −4.38° ± 0.006, an
+    obvious constant bias from 3x3 Sobel orientation quantization. It reproduces
+    the rank order and nothing else.
+
+  **And read the 3:5 constant's precision accordingly.** The five blanks agreeing
+  to 0.0008° is agreement *with each other under one estimator*, which is strong;
+  the absolute tie to atan(3/5) runs through that same estimator, calibrated on
+  *synthetic* grids where it recovers a known angle to ±0.001°. Real renders are
+  not synthetic, and the per-line fit — differently biased — puts `huge`'s
+  families 0.012° and 0.062° elsewhere. A third estimator — plain TLS on each
+  grid line isolated by an oriented open — puts them at −0.016° and +0.061°,
+  and reads `small`'s b-family at +0.016° where the projection-sharpness one
+  read it exact. So **treat the absolute value as good to ~0.06°, not 0.01°**:
+  the estimators disagree with each other by as much as the offsets anyone would
+  want to measure. Only *within-file relative* comparisons under one estimator
+  are trustworthy at this scale — which is what the `large`/`tiny` skew above
+  rests on, and why it survives. Nothing in the code depends on the absolute
+  value (see the standing decision against feeding it to `edge_lines`), so this
+  costs nothing operationally; it is a caution against building a precision
+  claim on it later.
+- **The silhouette is a 3:5 diamond squashed vertically by ~0.23%, and one
+  constant describes all four of its edges.** This was measured to test whether
+  the *screenshots'* board edges could supply a cleaner "true" angle than the
+  gridded overlays do — the idea being that the two bottom edges are the clean
+  base plane (see the game-facts edge bullet) and each must be parallel to the
+  top edge opposite it. Fitting each silhouette edge as a free-angle TLS
+  (iterative outlier trim, ends trimmed 10%) on the blanks:
+
+  | render | NW | SE | NE | SW | implied squash `k` |
+  |---|---|---|---|---|---|
+  | `huge` | +0.064 | +0.070 | −0.055 | −0.054 | 0.9976 (spread 0.0006) |
+  | `large` | +0.049 | +0.041 | −0.049 | −0.062 | 0.9980 (0.0008) |
+  | `normal` | +0.056 | +0.052 | −0.057 | −0.061 | 0.9978 (0.0004) |
+  | `small` | +0.047 | +0.093 | −0.060 | −0.068 | 0.9974 (0.0018) |
+  | `tiny` | −0.077 | −0.081 | −0.196 | −0.199 | — (0.0111) |
+
+  Degrees from exact atan(3/5); `k = |tan(measured)| / 0.6`. That is a reference
+  datum here, not a claim — the whole point of the table is that the edges do
+  *not* sit at atan(3/5), and `k` x 0.6 is the shipped `BOARD_EDGE_SLOPE`.
+  **Opposite edges
+  are parallel to ≤ 0.013°** on every render but `small` (0.046° on its
+  a-pair), so the premise holds and the silhouette really is a clean
+  parallelogram. The two families then sit off atan(3/5) with *opposite* signs
+  and near-equal magnitude, which is the signature of a vertical scale rather
+  than a rotation, and one `k` per render reproduces all four edges to
+  0.0004–0.0018.
+
+  **`tiny` is the exception and is a second anomaly in that size.** All four of
+  its edges deviate the *same* way, which no squash can produce — it is a
+  squash plus a ~−0.14° rotation. `tiny-gridded` separately carries the
+  largest one-family shear (0.217°, above). Nothing tests 11x11 — the corpus
+  has no set at that size — so treat both as provisional and worth a look if
+  11x11 is ever exercised for real.
+- **A real screenshot's bottom edge reproduces its blank's silhouette to
+  ~0.003°, and that is the operationally important number.** The replay sets
+  are the cleanest lines available anywhere, because an explored rim has none of
+  the fog cube's scalloped lip: `fogless/s1` SW fits at 30.9068° and
+  `fogless/s2` SE at 149.0953° (rms **0.36 px**, ~1210 boundary points each),
+  and `replay_ss2` gives 149.0927° / 30.9031° on an independent board. Against
+  an all-fog rim the same fit reads rms 0.71 on `missized_test/z2.png`, and
+  corpus-wide over long edges the bottom pair scatters at sd **0.12°** against
+  the top pair's **0.21°** — so the bottom edges are the better ruler, by about
+  1.7x, exactly as the game facts predict.
+
+  Those four screenshot edges imply `k` = **0.99771**, against **0.99776** for
+  `normal-blank`, which is the render both replay boards (16x16) are matched to.
+  They agree to 0.00005, i.e. **0.0013°**. That is the whole point: `edge_lines`
+  compares a screenshot's silhouette against a template's silhouette, and the
+  two are the same shape to a thousandth of a degree — which is what matters
+  operationally, since `edge_lines` compares the two against each other.
+
+  **This paragraph used to end "whether that shared shape is *really* atan(3/5)
+  is unresolvable with these estimators and does not matter", and both halves
+  are now stale.** It was resolved — the harmonic trend fit on the silhouette
+  and the phase-drift fit on the interior lattice agree to 0.005°, both landing
+  ~0.058° off atan(3/5) — and there is no longer a standing decision against
+  feeding a fixed angle into `edge_lines`, because the code now does exactly
+  that. Note the four screenshot fits above already read 30.90 / 149.09, i.e.
+  they sat on the answer all along.
+
+  The parallelism self-check cannot be run *within* a replay shot, incidentally:
+  each has only one long edge per family (the opposite corner is out of frame),
+  so the pair has to be assembled across shots. That is not the crop's doing —
+  the same fits come back identical at `--top-crop`/`--bottom-crop` 0.00.
 - **Straight, not premultiplied, alpha.** `*-push` and `*-Nspawns` carry pixels
   whose color exceeds their alpha, which only makes sense unpremultiplied; the
   dark layers composite identically either way.
@@ -3602,6 +3815,214 @@ template location.
   over an individually accurate one. The bottom-lip fact is still the right
   lever for *narrowing the search window* (a runtime win, see timing above);
   it is simply not an accuracy fix. Don't re-land it as one.
+- **Don't feed the exact 3:5 angle into `edge_lines` — but the reason is that
+  3:5 is the wrong constant, not that a constant is wrong.** This entry
+  previously argued the opposite and was wrong; the correction is below and the
+  open item is at the end.
+
+  Forcing `atan(3/5)` was built and measured over the whole corpus twice and
+  reverted both times (numbers below). The explanation recorded here was that
+  `edge_lines` fits the *silhouette* while 3:5 describes the *lattice*, so the
+  per-template corner estimate was the right frame. **That does not survive
+  measurement.** The board's silhouette edges do not sit at atan(3/5), and three
+  independent routes agree on where they do sit:
+
+  | evidence | implied slope `k`·0.6 |
+  |---|---|
+  | the four blanks' own silhouettes (huge/large/normal/small) | 0.9974–0.9980 |
+  | the two replay sets' bottom edges (explored rim, rms 0.36px) | 0.99771 |
+  | 30 clean bottom edges, extent > 700px, across **21 sets** | median 0.99798 |
+
+  So the edges run at about **30.91° / 149.09°**, a slope of 0.5986 — **0.058°
+  off** atan(3/5), consistently, at every board size and on real captures from
+  different devices. It is one fixed number, exactly as the projection being
+  fixed requires; it is simply not the number this file assumed.
+
+  **The estimator was checked twice, and the second check is the one that
+  matters.** A diamond rasterized at exactly atan(3/5), antialiased, thresholded
+  at `--dark-thresh` and pushed through `board_boundary` plus a robust TLS fit
+  comes back at **0.0001°**, with and without a synthetic side wall. **That
+  control is insufficient on its own**, because it has a *straight* edge and
+  every edge of an all-fog blank is scalloped — the fog cube's lip repeats once
+  per tile — and fitting the outer envelope of a scallop is not the same as
+  fitting the line the cubes stand on. Measured on a synthetic scallop whose true
+  tilt is **exactly zero**, that envelope fit reads:
+
+  | scallop shape (amplitude) | envelope TLS |
+  |---|---|
+  | none, flat | +0.0001 |
+  | symmetric cosine, 8px | **−0.0405** |
+  | asymmetric sawtooth, 8px | **−0.0523** |
+  | asymmetric, 16px | **−0.1694** |
+  | clipped cosine ("lip"), 12px | **+0.0338** |
+
+  So a selection window around the extreme really can manufacture a tenth of a
+  degree out of nothing. **Use a harmonic trend fit instead**: model the edge
+  profile as `perp(s) = c + m·s + Σ cos/sin at the tile period`, ordinary linear
+  least squares over every profile point with no selection window. It is exactly
+  the "there is a line that follows the cube, and the lattice runs along it"
+  statement, made estimable — the periodic term absorbs whatever shape the cube's
+  lip has, and `m` is the trend through it. It returns **0.000** on every zero-tilt
+  scallop above and recovers a *known* tilt to 0.0003° (+0.05 → +0.0499, −0.05 →
+  −0.0502, +0.20 → +0.1997).
+
+  **It gives the same answer on the real renders**, which is what makes the
+  0.058° survive:
+
+  | render | NW | SE | NE | SW | profile residual |
+  |---|---|---|---|---|---|
+  | `huge` | +0.055 | +0.067 | −0.051 | −0.065 | 0.42–0.45 px |
+  | `large` | +0.055 | +0.056 | −0.055 | −0.058 | 0.48–0.51 |
+  | `normal` | +0.060 | +0.058 | −0.055 | −0.059 | 0.40–0.43 |
+  | `small` | +0.058 | +0.089 | −0.057 | −0.055 | 0.39–0.43 |
+
+  A sub-pixel residual means the periodic model explains the edge essentially
+  completely, so the leftover trend is not unmodelled lip shape. Scaling the
+  assumed period by ±1% moves each figure by at most ±0.01°. **`tiny`'s two
+  b-edges do not fit the model at all** (residual 17.7 and 18.6 px) and its
+  a-edges read −0.10/−0.10, which is a third independent oddity in that size.
+
+  **What this does weaken is the screenshot leg of the evidence.** The clean
+  estimator needs the whole edge profile, and in the oblique basis that works
+  only when the board is a complete rectangle in frame — on a partial capture the
+  per-bin extreme picks up the image frame instead (residuals of 14–261 px on all
+  four replay shots). So "the screenshots agree with their blank to 0.0013°" rests
+  on the *envelope* fit and is now provisional. An explored rim has no fog lip, so
+  the bias there should be small, but that is an argument rather than a
+  measurement.
+
+  **What is actually wrong today is the opposite of what this entry claimed: the
+  code's basis is not a constant at all.** `edge_directions` derives it from
+  three corner *pixels* per render, and across the five blanks `dir_a` scatters
+  **0.24°** — 30.7247 / 30.9593 / 30.9098 / 30.8824 / 30.9699 for tiny / small /
+  normal / large / huge. A fixed projection cannot do that. On `huge` the
+  three-pixel estimate sits **0.061°** from a 2400-point fit of that same file's
+  own edges, so it is noise rather than a per-render property — and `normal`
+  landing 0.004° from the measured constant is luck, not measurement.
+
+  **`tiny` is the exception and may be a genuinely bad file**, not just noise:
+  its corner basis is 0.24° out *and* all four of its silhouette edges deviate
+  the same way (a rotation, which no squash produces), *and* `tiny-gridded`
+  carries the largest one-family shear. Three independent oddities in one size.
+  Nothing tests 11x11.
+
+  Corpus effect of forcing the exact angle on the edge fit (27 sets, against a
+  captured baseline): **25 sets moved, in both directions.** It bought
+  `pol_archi_test` 0.044 → 0.015, `xizauh` 0.035 → 0.009, `goon_test2` 0.035 →
+  0.016, `test_ss_3` union 260 → 263 and `control_c` union 237 → 242; it cost
+  `archers_test2` 0.038 → **0.072**, `badland_test` 0.013 → **0.055**,
+  `vengir_cultist` 0.023 → **0.065**, and `replay_ss2`'s **only real bar**
+  (Bergo at (4,3), the ground truth for that set) — 1 → 0. Snapping
+  `build_lattice`'s step directions as well, instead of only the edge basis,
+  changes the mix but not the verdict, and loses the same bar.
+
+  **Read the size of the perturbation before reading the table**: on a 20x20
+  board this moves `dir_a` by 0.006° and `dir_b` by 0.062°, about **1px at the
+  board corner**. That cannot mechanically swing a fog lock by 13%, so most of
+  what moved is `joint_register`'s beam search landing in a different basin —
+  the same sensitivity already recorded above, where a 0.045% change to the
+  template's tile step alone took `archers_test2` from 0.028 to 0.097. A
+  perturbation this small is *below the corpus's resolving power*: the corpus
+  can veto it, and did, but it could not have endorsed it either. **Read that
+  the other way round too** — it means the corpus never actually tested the
+  angle, so "it made things worse" is not evidence that a constant is wrong.
+  What the run really established is that `joint_register`'s beam search is
+  chaotic under a 1px perturbation.
+
+  **The interior lattice sits at the same angle as the rim, so there is one
+  number and not two** (stated by the project owner; corroborated on `huge`).
+  Measure it by **phase drift**, not by a sharpness optimum: if the assumed
+  direction is off by δ, the lattice's periodic signal along the normal advances
+  in phase as you move along it, `φ(s) = 2πδs/P`. Take the Fourier coefficient at
+  the tile frequency in each strip and fit `arg(Z)` against strip position. Two
+  properties are what make it trustworthy where the projection-sharpness
+  estimator is not: it is a *relative* measurement, so a constant bias in the
+  estimator cancels; and a wrong `P` cannot tilt it, provided every strip covers
+  the same normal-range — a wrong period shifts all strips equally. It recovers a
+  known tilt on a synthetic lattice to **~1%** (0.058 → 0.0575, 0.200 → 0.198),
+  i.e. 0.0006° on the effect being measured.
+
+  On `huge` — the largest interior, and much the cleanest fit (phase residual
+  **0.02–0.10 rad**, stable across gray/gradient signals and 8/20 strips):
+
+  | | a-family | b-family |
+  |---|---|---|
+  | interior fog lattice | **−0.060** | **+0.056** |
+  | silhouette edges (harmonic trend, above) | −0.058 | +0.061 |
+
+  **They agree to ~0.005°**, and both sit ~0.058° off atan(3/5). Two independent
+  structures — the tile art inside the board and the line the rim cubes stand on —
+  measured by two independent estimators, landing on the same angle.
+
+  `large` and `normal` **cannot corroborate or refute it**: their interiors are
+  smaller, the residual runs 3–10x higher, and the a-family swings 0.28° across
+  estimator variants (−0.23 to +0.05 on `normal`). Read them as no evidence
+  rather than as disagreement. If this is ever revisited, more interior area is
+  what the estimator needs, so `massive` is the render to try.
+
+  **Built** — `BOARD_EDGE_SLOPE` = 0.5986, with `BOARD_DIR_A`/`BOARD_DIR_B`
+  derived from it. `edge_directions` returns them and ignores the corners;
+  `build_lattice` takes the two step *directions* from them and only the step
+  *lengths* from the corners, which are genuinely per-render. Under one angle
+  that is the coherent edit — the earlier worry about "changing two things at
+  once" applied only while the lattice angle was unknown, and it is the *split*
+  that would now be wrong, since it would deliberately put the edge basis and the
+  tile grid at different angles.
+
+  **Corpus effect, and read the bars first because they are the part with a
+  known answer:**
+
+  | | before | after |
+  |---|---|---|
+  | city bars | 235 | **237** (+2, **none lost**) |
+  | explored union | 6297 | 6296 (−1; five sets moved by ±1) |
+  | conflicts | 176 | 180 (+4) |
+  | ruins | 37 | 37 |
+  | cross-check, 20 reliable sets — mean | 0.0237 | 0.0281 |
+  | " median | 0.0230 | 0.0250 |
+  | " max | 0.0450 | **0.0710** |
+  | " sets over the 0.05 bar | 0 | **1** |
+
+  **Both replay ground truths survive at the right tiles** — `replay_ss2` Bergo
+  (4,3) and `fogless` Tetesum (12,4), each a full bar. That is the result worth
+  having: the atan(3/5) attempt *lost* Bergo, and this one keeps it and adds two
+  detections elsewhere.
+
+  **The corpus does not endorse the change, and should not be reported as
+  though it did.** Cross-check moved on 22 sets — 11 better, 11 worse — with the
+  aggregate modestly worse and `vengir_cultist` crossing the healthy bar (0.023 →
+  **0.071**). That is exactly the both-directions movement predicted above, and
+  the reason it is not evidence *against* the constant either.
+
+  One observation makes the cross-check column easier to read, and it is the
+  useful part: **the four largest regressions are on sets whose merge output is
+  completely unchanged.** `vengir_cultist` (0.023 → 0.071), `u_forest` (0.016 →
+  0.049), `missized_test` (0.004 → 0.022) and `badland_test` (0.013 → 0.027) have
+  identical union, conflicts, bars and ruins before and after — what moved is how
+  well two anchors agree with each other, not the composite. The largest
+  improvements are the same shape in reverse: `test_ss_3` 0.045 → 0.020,
+  `test_screenshots` 0.034 → 0.020, `pol_archi_test` 0.044 → 0.031,
+  `replay_ss2` 0.229 → 0.056.
+
+  So the case for keeping it rests on the physical argument — four independent
+  routes agree on the angle, and a 0.24° per-render scatter has no cause — rather
+  than on the corpus, which cannot resolve the perturbation. If it is ever
+  reverted, revert `BOARD_EDGE_SLOPE` and both consumers together; a half-revert
+  reintroduces exactly the edge/lattice split this replaced.
+- **Bar detection tolerates about 2px of anchor error, and that is worth
+  knowing.** `detect_population_bars` probes fixed bands around each tile's
+  south vertex in template space, and those bands are small: `BAR_TOP_BAND` is
+  0.110 tile widths tall and `BAR_BOT_BAND` 0.100, i.e. **~8px each** at an 80px
+  tile. So a shot whose anchor moves a couple of px drops a bar that was sitting
+  near a band edge, with nothing else in the run changing. `replay_ss2` is the
+  worked example and the most exposed set in the corpus: it has **no fog at
+  all**, so both shots keep an unrefined edge anchor (the zero-lock rule) with
+  nothing to pull them back, and its one real bar is the corpus's most marginal
+  detection — Bergo's two segments fuse into a single blob. Moving `s1`'s prior
+  scale by **0.09%** was enough to lose it. Read this two ways: it is why any
+  change to the edge basis must be checked against the bar counts and not only
+  against `--cross-check`, and it means anchor accuracy is a real ceiling on bar
+  recall.
 - **Never trust a plausible-looking composite as evidence the geometry is
   right.** The `test_ss_3`-at-18 merge rendered a perfectly coherent board
   with sharp tile boundaries and correctly-placed cities for one player; the

@@ -455,15 +455,38 @@ def detect_corners(mask):
     return top, right, bottom, left, residual
 
 
+# The projection is fixed, so the two edge families have one angle at every
+# board size and on every device -- this is a constant, not something to
+# re-estimate per render.  It is NOT atan(3/5) = 30.9638; that was measured by
+# an estimator that turned out to be the odd one out.  What the renders and the
+# captures actually show is a slope of 0.5986, which four independent routes
+# agree on (see CLAUDE.md, "Don't feed the exact 3:5 angle into edge_lines"):
+# the blanks' silhouettes, 30 clean screenshot bottom edges across 21 sets, a
+# harmonic trend fit that projects out the fog cube's scalloped lip, and -- on
+# huge, to 0.005 degrees -- the interior fog lattice measured by phase drift.
+#
+# Deriving it per render from three corner *pixels* is what this replaced, and
+# that scattered 0.24 degrees across the five blanks (30.7247 to 30.9699) for a
+# quantity that cannot vary.  On huge the corner estimate sat 0.061 degrees from
+# a 2400-point fit of that same file's own edges: noise, not a property of the
+# file.
+BOARD_EDGE_SLOPE = 0.5986            # rise/run of the dir_a family
+BOARD_DIR_A = np.array([1.0, BOARD_EDGE_SLOPE]) / np.hypot(1.0, BOARD_EDGE_SLOPE)
+BOARD_DIR_B = np.array([-BOARD_DIR_A[0], BOARD_DIR_A[1]])
+
+
 def edge_directions(top, right, left):
-    """Unit vectors along the two board-edge families, from a complete
-    (template) corner fit. NOT forced perpendicular: Polytopia's isometric
-    board is a rotated rhombus, not a rotated square (the two edge families
-    meet at ~116/64 degrees, not 90), so treating them as an orthonormal
-    basis would silently rotate dir_b away from its true direction."""
-    dir_a = (right - top) / np.linalg.norm(right - top)
-    dir_b = (left - top) / np.linalg.norm(left - top)
-    return dir_a, dir_b
+    """Unit vectors along the two board-edge families.
+
+    Fixed, for the reason above; the corners are still accepted so callers do
+    not have to know that, and because they remain the source of the two step
+    *lengths* (see build_lattice), which are genuinely per-render.
+
+    NOT forced perpendicular: Polytopia's isometric board is a rotated rhombus,
+    not a rotated square (the two families meet at ~118 degrees, not 90), so
+    treating this as an orthonormal basis would silently rotate dir_b away from
+    its true direction."""
+    return BOARD_DIR_A, BOARD_DIR_B
 
 
 # Chrome is docked to the screen frame and runs horizontally or vertically; a
@@ -1655,8 +1678,16 @@ def cross_check(anchors, sift_edges, t_corners, tile_px):
 
 
 def build_lattice(top, right, left, n):
-    u_col = (right - top) / n
-    u_row = (left - top) / n
+    """The two tile step vectors, and the board's north corner as the origin.
+
+    Direction comes from the fixed basis and only the *length* from the corners.
+    The lattice and the silhouette are at the same angle -- confirmed with the
+    project owner, and measured to 0.005 degrees on huge (see the note above
+    BOARD_EDGE_SLOPE) -- so taking the direction from three corner pixels here
+    would put the tile grid at a slightly different angle from the edge fit for
+    no reason, which is the one thing that is certainly wrong."""
+    u_col = BOARD_DIR_A * (np.linalg.norm(right - top) / n)
+    u_row = BOARD_DIR_B * (np.linalg.norm(left - top) / n)
     return top, u_col, u_row
 
 
