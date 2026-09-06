@@ -532,7 +532,7 @@ per-file rects, key them on something unambiguous.
   not mention and which nothing in the corpus made obvious while it was
   reporting a single ruin. It has five.
 - Current `--cross-check` baselines, worst disagreement: **test_screenshots
-  0.031, ss2 0.028, ss3 0.032, goon2 0.031, ss5 0.021, archers_test2 0.034,
+  0.031, ss2 0.027, ss3 0.032, goon2 0.031, ss5 0.021, archers_test2 0.034,
   beautiful_test3 0.024, goon_test 0.019, badland_test 0.011,
   badland_test3 0.022,
   pol_archi_test 0.033, star_change 0.112, badland_test2 0.019,
@@ -3757,9 +3757,12 @@ template location.
 
   Third, the **fog-colour tile prefilter** below — the same shape again and
   much the largest, since it is work whose result was computed at every
-  candidate and then thrown away by the sort. If you go looking for more, look
-  for those two shapes — an invariant recomputed in the inner loop, and work
-  whose result is discarded — not for coverage to cut.
+  candidate and then thrown away by the sort. Fourth, the **closed-form coarse
+  scorer**, also below, which is a third shape: machinery only a minority of
+  rows need, paid for on all of them. If you go looking for more, look for those
+  three shapes — an invariant recomputed in the inner loop, work whose result is
+  discarded, and a general case charged to the common one — not for coverage to
+  cut.
 - **`joint_register` scores only the tiles that could be fog, and the keep-set
   is chosen once** (`_fogish_tiles`, `JOINT_TILE_FOG_FRAC`, `JOINT_TILE_FLOOR`).
   This is the largest speedup in the program's history and the reasoning is
@@ -3962,42 +3965,110 @@ template location.
   2.61s / 1.52s at div=4 / 2 / 1 over 1568 / 4459 / 1300 calls. div=2 is still
   the expensive level for the reason recorded above.
 
-- **The remaining scorer cost is arithmetic, and the obvious cut is not
-  bit-identical.** With the gathers down to 0.086 ms, the per-call breakdown is
-  arithmetic **0.469 ms**, gathers 0.086, top-k sort 0.004. So there is no
-  addressing left to win and no point replacing `np.sort` with `np.partition`
-  (0.004 against 0.005 — the array is ~150 long).
+- **The coarse levels score only the tiles with no invalid sample, in closed
+  form** (`_fog_full_score`, `fast` in `joint_register`). With the gathers down
+  to 0.086 ms the per-call breakdown was arithmetic **0.469 ms**, gathers 0.086,
+  top-k sort 0.004 — so there was no addressing left to win, and no point
+  replacing `np.sort` with `np.partition` (0.004 against 0.005 — the array is
+  ~150 long). What was left was the masked centring, and most tiles do not need
+  it.
 
-  The real target is that **most scored tiles have no invalid sample at all**, and
-  for those the masked NCC collapses. `v` all ones makes `bc = b - mean(b)`
-  independent of the pan, so it precomputes per level along with `sum(bc^2)`;
-  `sum(ac*bc)` is then just `sum(a*bc_pre)` because `sum(bc_pre) = 0`, and
-  `sum(ac^2)` is `sum(a^2) - sum(a)^2/n`. Three reductions over `a` instead of
-  the ~ten passes the masked form needs, and it measures **0.12 ms against
-  0.57** on a captured div=2 call.
+  **Why a tile's validity moves with the pan at all**, since this is the part
+  that reads wrong: it does not. `valid` is a property of a screenshot pixel and
+  never changes. The shot and its mask are warped into *template* space, where
+  `warpAffine`'s `BORDER_CONSTANT` makes every position the shot does not reach
+  read 0; the tile sample grid is fixed; and the pan is applied to the **sample
+  coordinates**, not to the image. So the pan chooses which pixels a tile reads,
+  and a tile at the edge of what this shot photographed has all 160 samples on
+  real pixels at one offset and three on the zero border at the next. What
+  depends on the pan is the *count of valid samples in a tile*, and that is
+  exactly what the masked correlation keys on — `b - mean(b over valid)` is a
+  different vector at every offset, which is why the template side cannot be
+  hoisted out of the loop the way `tmpl_vals` is.
 
-  **Read the fraction per zoom candidate, not per pan** — the fast path needs a
-  tile valid at *every* pan of the level, since the keep-set has to be
-  precomputed once per warp. Measured over 16 shots in four sets, single-pan
-  full validity averages **0.84** but the all-pan figure is **0.78** (median
-  0.82, and 0.22 on `test_screenshots/Screenshot_...349217.jpg`, a zoomed-in
-  shot much of whose frame is off the board).
+  For a tile with **no** invalid sample it can be: `bc_pre = b - mean(b)` and
+  `|bc_pre|` precompute per level, `sum(ac*bc)` collapses to `sum(a*bc_pre)`
+  because `sum(bc_pre) = 0`, and `sum(ac^2)` to `sum(a^2) - sum(a)^2/n`. Three
+  reductions over the shot's samples instead of ~ten passes, and no validity
+  gather at all: **0.079 ms against 0.534** on a captured div=2 call.
 
-  **The hybrid's saving is a function of that fraction, and it goes negative**
-  — the slow path still runs over the remainder, and splitting by boolean mask
-  costs an index on both halves. On the same captured call: 0.24 ms at a 0.85
-  fast-path share, 0.25 at 0.78, **0.50 at 0.50** and **0.58 at 0.22**, against
-  the masked form's 0.57. So it is ~2.3x on a typical shot and *worse than what
-  it replaces* on the fog-poor ones — which are the shots this file's history
-  says are the fragile ones.
+  **The set is settled once per *level*, as the intersection over that level's
+  zoom candidates.** Two things force it up to that scope, and they are
+  different:
+  - *Not per pan*, because deciding per pan means gathering the validity mask at
+    exactly the coordinates you were trying to skip. So a tile qualifies only if
+    it is valid at every pan, which `cv2.erode` with the level's own pan grid as
+    the structuring element answers in one pass (`borderValue=0`, or the border
+    reads as no constraint rather than as invalid). It costs **0.057s over 128
+    calls** on a 4-shot merge, i.e. nothing.
+  - *Not per candidate*, because a different zoom warps the shot differently, so
+    its coverage boundary in template space moves and the boundary tiles flip —
+    **151 to 171 tiles across div=4's eight candidates** on
+    `test_screenshots/IMG_3061`, 29 of them unstable. The score is a sum over the
+    top `JOINT_TOP_K` per-tile correlations, so a candidate whose set happened to
+    be larger would draw its top-k from more tiles and win for a reason that says
+    nothing about alignment. Intersecting makes every candidate in a level answer
+    the same question — a *stronger* property than the masked path has ever had,
+    since its own `min_valid` gate varies per pan.
 
-  **And it is not bit-identical**, which is why it is recorded rather than
-  built: the closed form reaches the same quantity by a different route, so it
-  differs in the last bits (measured 4.9e-3 on a score of 26 and 3.6e-5 on one
-  of -7.07, ~2e-4 and ~5e-6 relative), and this file's own history says a
-  perturbation far smaller than that moves `joint_register`'s beam search into
-  a different basin. It still needs the full 27-set diff and a judgement call
-  about which sets move. Do not land it as a "pure speedup"; it is not one.
+  **Per-candidate was built first and the corpus caught it**, which is the reason
+  to record it: it moved four cross-check numbers (`goon_test` 0.019 → **0.033**,
+  `test_ss_2`, `pol_archi_test`, `scorched_earth`) where the level-fixed version
+  moves one. Same speed to within this machine's noise, measured three times.
+  The intersection only shrinks, so the pre-pass stops the moment it drops below
+  `top_k` rather than warping the rest for an answer already settled — which is
+  what keeps it from costing the fog-poor shots anything.
+
+  **The coarse levels are the *worst* fit for this and are taken anyway.** Pan
+  radius is in each level's own pixels, so div=4 slides the sample grid ±24
+  template px against div=1's ±2, and erodes four times as much boundary.
+  Measured over 21 shots, the mean fully-valid share is **0.631 / 0.736 / 0.795**
+  at div=4 / 2 / 1 — the opposite order to where it would help most. They are
+  simply where the time is (~69% of scoring), and **div=1 stays on the exact
+  masked score**, so the final answer is still chosen at full fidelity and the
+  coarse levels only nominate branches. That is the same nominator-not-classifier
+  split as the fog-colour tile prefilter, `RUIN_NOMINATE_SAT` and the SIFT
+  terrain-inlier mask.
+
+  **The floor is what makes it safe, and it is `top_k`.** A fog-poor shot keeps
+  almost nothing — `star_change/oum` holds 25 of 120 tiles at div=4,
+  `test_screenshots/Screenshot_...349217` 12 of 120 — and below `JOINT_TOP_K` the
+  objective would be a sum over fewer terms than it is meant to select from. Such
+  a level falls back to the exact masked score **in full, never a mix**: the two
+  forms agree only to ~1e-5 relative, and the beam compares candidates within a
+  level against each other, so one fast candidate scored against one slow one is
+  the same comparability bug in miniature. Same reasoning as `JOINT_TILE_FLOOR`,
+  and it lands on the same shots — the call split is **4116 fast / 2917 slow** on
+  a 4-shot `test_screenshots` merge (the slow ones being all of div=1 plus that
+  one zoomed-in shot's coarse levels) against **980 / 4431** on `star_change`,
+  where all three shots fall back.
+
+  **Corpus, 27 sets: one number moved.** Explored union, conflicts, city bars,
+  ruins, every per-shot fog lock and `--cross-check` on 26 of 27 sets are
+  identical; `test_ss_2` reads 0.028 → 0.027. That is a far better result than
+  this file expected for a change that is *not* bit-identical (the closed form
+  reaches the same quantity by a different route and agrees to ~1e-5 relative),
+  given the recorded chaos of the beam search under 1px perturbations — and it
+  is the level-fixed set that buys it, since the per-candidate version moved four.
+
+  **Timed serially, back to back** — the harness's `seconds` column is `--jobs 4`
+  contention, as two earlier entries record, and this machine drifts ~30% between
+  runs, so before and after must be measured in one sitting:
+  `test_screenshots` 11.35 → 10.07s, `archers_test2` 21.34 → 19.09,
+  `goon_test2` 5.22 → 3.93, `xizauh` 10.76 → 8.94, `badland_test2` 6.24 → 5.08,
+  `star_change` 6.98 → 6.59. **5-25%, about 15% typical**, and `star_change`'s
+  5.6% is the floor firing on all three of its shots. Per level on
+  `test_screenshots`, div=4 **0.57 → 0.23s** and div=2 **1.81 → 0.78**, both down
+  ~58%, with div=1 flat at 1.4 → 1.3.
+
+  **Why 15% and not the ~6x the per-call figure implies:** the fallback shots run
+  at full masked cost, and the pyramid phase also carries the warps, resizes and
+  borders, which are now a much larger share of it than they were.
+
+  **What is left.** div=1 has the *best* fully-valid share (0.795) and is ~1.3s of
+  a 10s merge, so extending the fast path to it is the next ~6% — but it is the
+  level this file says does the discriminating, and keeping it exact is the most
+  likely reason the corpus came back this clean.
 
 - **A coarser pyramid level (div=8) does not help, and the reason generalizes.**
   Never tried before; measured now. Prepending a div=8 level and narrowing div=4

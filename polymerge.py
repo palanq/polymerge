@@ -1012,6 +1012,35 @@ def _fog_alignment_score(img_flat, tmpl_vals, vmask_flat, base, shape, off,
     return float(np.sort(ncc)[-k:].sum())
 
 
+def _fog_full_score(img_flat, bc_pre, bden, base, shape, off, top_k):
+    """`_fog_alignment_score` for tiles with no invalid sample, in closed form.
+
+    The masked correlation has to centre *both* sides over whichever samples are
+    valid, and which samples those are depends on the pan -- a pan slides the
+    sample grid, so a tile at the edge of what this shot photographed reads real
+    pixels at one offset and the warp's zero border at another. That is why the
+    template side cannot simply be hoisted out of the loop the way `tmpl_vals`
+    is: `b - mean(b over valid)` is a different vector at every pan.
+
+    For a tile whose samples are *all* valid the mean is over all of them, so it
+    is pan-independent and `bc_pre = b - mean(b)` and `bden = |bc_pre|` come from
+    the caller, computed once per pyramid level. Then sum(ac*bc) collapses to
+    sum(a*bc_pre) because sum(bc_pre) = 0, and sum(ac^2) to
+    sum(a^2) - sum(a)^2/n. Three reductions over the shot's samples instead of
+    the ~ten passes the masked form needs, and no validity gather at all --
+    measured 0.079ms against 0.534ms on a div=2 call.
+
+    It reaches the same quantity by a different route, so it agrees with the
+    masked form to ~1e-5 relative rather than bit-for-bit. See joint_register for
+    where it is used and why not at div=1."""
+    a = img_flat.take(base + off).astype(np.float32).reshape(shape)
+    sa = a.sum(1)
+    den = np.sqrt(np.maximum((a * a).sum(1) - sa * sa / shape[1], 0.0)) * bden
+    ncc = np.where(den > 1e-6, (a * bc_pre).sum(1) / np.maximum(den, 1e-6), 0.0)
+    k = min(top_k, ncc.size)
+    return float(np.sort(ncc)[-k:].sum())
+
+
 # (div, zoom half-span, zoom step, pan radius in div-px, pan step in div-px,
 #  how many zoom candidates this level hands to the next).
 # The coarse level explores the whole plausible range around the edge-derived
@@ -1157,7 +1186,22 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
           pw = tgtp.shape[1]
           base = (Yp.astype(np.int64) * pw + Xp.astype(np.int64)).astype(np.int32)
           shape = Xp.shape
-          cand = []
+          # Most scored tiles have no invalid sample anywhere in this level's
+          # search, and those are far cheaper to score (_fog_full_score). Only
+          # the coarse levels take it. Not because they are the best fit -- they
+          # are the worst, since pan radius is in each level's own pixels so
+          # div=4 slides +-24 template px against div=1's +-2, and erodes four
+          # times as much boundary (mean fully-valid share 0.63 / 0.74 / 0.80
+          # over 21 shots). They are simply where the time is: div=4 and div=2
+          # are ~69% of the scoring cost, and div=1 stays on the exact masked
+          # score so the final answer is still chosen at full fidelity.
+          fast = div > 1
+          if fast:
+              bc_pre = tvals - tvals.mean(1)[:, None]
+              bden = np.sqrt((bc_pre * bc_pre).sum(1))
+              pan_se = np.zeros((2 * p_rad + 1, 2 * p_rad + 1), np.uint8)
+              pan_se[::p_step, ::p_step] = 1
+          zooms = []
           seen = set()
           for _, s_cur, tx0, ty0 in beam:
               # Where this beam entry thinks the board's centre sits in the
@@ -1199,25 +1243,84 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
                   if key in seen:
                       continue
                   seen.add(key)
-                  # p_template = s * p_image + t, for div-downscaled inputs
-                  M = np.array([[s, 0.0, tx / div], [0.0, s, ty / div]])
-                  wg = cv2.warpAffine(small, M, (tw, th), flags=cv2.INTER_LINEAR)
-                  wv = cv2.warpAffine(small_v, M, (tw, th), flags=cv2.INTER_NEAREST)
-                  wgp = cv2.copyMakeBorder(wg, pad, pad, pad, pad,
-                                           cv2.BORDER_CONSTANT, 0)
-                  wvp = cv2.copyMakeBorder(wv, pad, pad, pad, pad,
-                                           cv2.BORDER_CONSTANT, 0)
-                  # ravel of a contiguous array is a view, so this is free
-                  wgp_f, wvp_f = wgp.ravel(), wvp.ravel()
-                  for dx in range(-p_rad, p_rad + 1, p_step):
-                      for dy in range(-p_rad, p_rad + 1, p_step):
-                          sc = _fog_alignment_score(
-                              wgp_f, tvals, wvp_f, base, shape,
-                              dy * pw + dx, top_k, min_valid)
-                          # sampling the image at +dx means the matching content
-                          # sits dx to the right, so the image moves by -dx
-                          cand.append((sc, float(s),
-                                       tx - dx * div, ty - dy * div))
+                  zooms.append((s, tx, ty))
+
+          def _warp_valid(s, tx, ty):
+              """This candidate's validity mask, in padded template space."""
+              M = np.array([[s, 0.0, tx / div], [0.0, s, ty / div]])
+              wv = cv2.warpAffine(small_v, M, (tw, th), flags=cv2.INTER_NEAREST)
+              return cv2.copyMakeBorder(wv, pad, pad, pad, pad,
+                                        cv2.BORDER_CONSTANT, 0)
+
+          # The fast path's tile set is settled ONCE for the whole level, as the
+          # intersection over every zoom candidate in it. Per candidate looks
+          # equivalent and is not: a different zoom warps the shot differently,
+          # so its coverage boundary moves and the boundary tiles flip -- 151 to
+          # 171 tiles across div=4's eight candidates on
+          # test_screenshots/IMG_3061, 29 of them unstable. The score is a sum
+          # over the top JOINT_TOP_K per-tile correlations, so a candidate whose
+          # set happened to be larger would draw its top-k from more tiles and
+          # win for a reason that has nothing to do with alignment. Fixing the
+          # set makes every candidate in a level answer the same question, which
+          # is a stronger property than the masked path has ever had (its own
+          # min_valid gate varies per pan).
+          #
+          # A tile qualifies only if it is valid at every *pan* too, which is
+          # what the erosion by the level's pan grid answers in one pass.
+          # borderValue 0 so anything the erosion reads off the padded canvas
+          # counts as invalid, rather than as no constraint, which is what
+          # cv2.erode assumes by default.
+          sel = None
+          if fast:
+              for s, tx, ty in zooms:
+                  full = (cv2.erode(_warp_valid(s, tx, ty), pan_se,
+                                    borderType=cv2.BORDER_CONSTANT, borderValue=0)
+                          .ravel().take(base).reshape(shape) > 0).all(1)
+                  sel = full if sel is None else (sel & full)
+                  # The intersection only shrinks, so a level that is already
+                  # short of top_k cannot recover -- stop rather than warping
+                  # the rest for an answer that is settled. This is what keeps
+                  # the pre-pass from costing the fog-poor shots anything.
+                  if int(sel.sum()) < top_k:
+                      sel = None
+                      break
+          if sel is not None:
+              # A fog-poor shot keeps almost nothing here (star_change/oum holds
+              # 25 of 120 tiles at div=4), and below top_k the objective would be
+              # a sum over fewer terms than it is meant to select from. Such a
+              # level falls back to the exact masked score in full -- never a
+              # mix, since the two forms agree only to ~1e-5 and the beam
+              # compares candidates within a level against each other.
+              bcp_s, bden_s = bc_pre[sel], bden[sel]
+              base_s, shape_s = base[sel], (int(sel.sum()), shape[1])
+
+          cand = []
+          for s, tx, ty in zooms:
+              # p_template = s * p_image + t, for div-downscaled inputs
+              M = np.array([[s, 0.0, tx / div], [0.0, s, ty / div]])
+              wg = cv2.warpAffine(small, M, (tw, th), flags=cv2.INTER_LINEAR)
+              wgp = cv2.copyMakeBorder(wg, pad, pad, pad, pad,
+                                       cv2.BORDER_CONSTANT, 0)
+              # ravel of a contiguous array is a view, so this is free
+              wgp_f = wgp.ravel()
+              # Only the exact path reads validity, and it re-warps rather than
+              # keeping every candidate's mask alive from the pre-pass: this
+              # branch is the rare one, and holding ~20 padded masks costs more
+              # than the warp it saves.
+              wvp_f = None if sel is not None else _warp_valid(s, tx, ty).ravel()
+              for dx in range(-p_rad, p_rad + 1, p_step):
+                  for dy in range(-p_rad, p_rad + 1, p_step):
+                      off = dy * pw + dx
+                      sc = (_fog_alignment_score(
+                                wgp_f, tvals, wvp_f, base, shape,
+                                off, top_k, min_valid)
+                            if sel is None else
+                            _fog_full_score(wgp_f, bcp_s, bden_s, base_s,
+                                            shape_s, off, top_k))
+                      # sampling the image at +dx means the matching content
+                      # sits dx to the right, so the image moves by -dx
+                      cand.append((sc, float(s),
+                                   tx - dx * div, ty - dy * div))
           beam = _prune_beam(cand, emit, s_step)
     return np.array([[beam[0][1], 0.0, beam[0][2]],
                      [0.0, beam[0][1], beam[0][3]]])
