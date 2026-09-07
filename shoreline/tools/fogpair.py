@@ -68,7 +68,7 @@ def anchor_pair(tag, size):
     t, _, edge_t = pm.load_template(pm.template_path_for(size), DARK, 0)
     top, right, bottom, left, _ = pm.detect_corners(edge_t)
     origin, u_col, u_row = pm.build_lattice(top, right, left, size)
-    dir_a, dir_b = pm.edge_directions(top, right, left)
+    dir_a, dir_b = pm.BOARD_DIR_A, pm.BOARD_DIR_B
     t_off, _ = pm.edge_lines(pm.board_boundary(edge_t), dir_a, dir_b)
 
     mask = _mask(fog)
