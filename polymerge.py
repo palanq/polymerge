@@ -3834,6 +3834,13 @@ def main():
     ap.add_argument("--reproj", type=float, default=6.0)
     ap.add_argument("--nfeatures", type=int, default=20000)
     ap.add_argument("--contrast", type=float, default=0.02)
+    ap.add_argument("--max-shots", type=int,
+                    help="refuse the run if more than this many inputs survive "
+                         "the menu prefilter. Counted *after* it deliberately: "
+                         "the limit exists to bound the cost and the quality of "
+                         "a merge, and a menu screenshot contributes to "
+                         "neither, so spending the budget on one would refuse "
+                         "merges that are well inside it. No limit by default.")
     ap.add_argument("--debug-dir")
     args = ap.parse_args()
 
@@ -3919,6 +3926,18 @@ def main():
         raise SystemExit("these look like score screens or menus rather than "
                          "the map itself. Please retry with in-game "
                          "screenshots of the map.")
+
+    # Counted here rather than by the caller, and that is the whole point of the
+    # option: the menu prefilter is the only thing that knows which inputs are
+    # map screenshots, it needs the pixels to know it, and polybot has them only
+    # as undownloaded attachments at the point where it would otherwise check.
+    # Charging a score screen against the budget refuses merges that are well
+    # inside it -- a 3v3 where everyone posts a map and a score screen is 12
+    # images and 6 shots.
+    if args.max_shots is not None and len(names) > args.max_shots:
+        raise SystemExit(f"too many screenshots: {len(names)} of these show the "
+                         f"map, and the limit is {args.max_shots}. Please retry "
+                         f"with fewer.")
 
     # Only when the caller omitted it: an explicit --map-size is always obeyed,
     # so this can never override a size someone actually meant.

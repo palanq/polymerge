@@ -1205,6 +1205,31 @@ replies used to name `huge-blank.png`; polymerge's two now say only that it is
 not installed correctly. `--single`'s message still names its
 flag, correctly: nothing but a command line can reach it.
 
+**`MAX_SHOTS` and `MAX_ATTACHMENTS` answer different questions, and conflating
+them refused merges that were well inside the limit.** The check was `len(shots)
+> MAX_SHOTS` over the raw attachments, and the normal gesture is to react a
+whole post — which carries the player's menu screenshots along with their map
+ones. A 3v3 where everyone posts a map and a score screen is **12 images and 6
+shots**, and it was refused outright with *"Found 12 screenshots, limit is 8"*.
+
+- `MAX_SHOTS` (8) bounds **the merge**: its cost, and how many views of one
+  board are worth compositing. A score screen contributes to neither, so it must
+  not spend that budget.
+- `MAX_ATTACHMENTS` (3x that) bounds **the download**, and nothing else.
+
+**The 8 is enforced by polymerge, not polybot** (`--max-shots`), and that split
+is forced rather than chosen: only the menu prefilter knows which inputs are map
+screenshots, telling them apart needs the *pixels*, and at the point polybot
+checks they are still undownloaded attachments. polymerge applies it
+immediately after the prefilter — before size detection and before any
+anchoring — so a refused run costs about a second, and its text reaches the
+channel through the ordinary passthrough. `--max-shots` has no default on the
+CLI; a CLI user has no reason for one.
+
+Do not "simplify" this by moving the count back into polybot. The only way to do
+it there is to download first, which is what the limit exists to avoid, and the
+refusal would then land *after* the player had queued and waited.
+
 **Oversized composites are re-encoded, not refused** (`shrink_for_upload`).
 The composite is a little under the template's own size (2880x1800 at 20x20)
 and a densely-explored board makes a big one — the largest in the corpus is
