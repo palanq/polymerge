@@ -4510,8 +4510,8 @@ template location.
   measurement.
 
   **What is actually wrong today is the opposite of what this entry claimed: the
-  code's basis is not a constant at all.** `edge_directions` derives it from
-  three corner *pixels* per render, and across the five blanks `dir_a` scatters
+  code's basis is not a constant at all.** The since-deleted `edge_directions`
+  derived it from three corner *pixels* per render, and across the five blanks `dir_a` scatters
   **0.24°** — 30.7247 / 30.9593 / 30.9098 / 30.8824 / 30.9699 for tiny / small /
   normal / large / huge. A fixed projection cannot do that. On `huge` the
   three-pixel estimate sits **0.061°** from a 2400-point fit of that same file's
@@ -4579,9 +4579,13 @@ template location.
   what the estimator needs, so `massive` is the render to try.
 
   **Built** — `BOARD_EDGE_SLOPE` = 0.5986, with `BOARD_DIR_A`/`BOARD_DIR_B`
-  derived from it. `edge_directions` returns them and ignores the corners;
-  `build_lattice` takes the two step *directions* from them and only the step
-  *lengths* from the corners, which are genuinely per-render. Under one angle
+  derived from it. Callers read those two constants directly; `build_lattice`
+  takes the two step *directions* from them and only the step *lengths* from the
+  corners, which are genuinely per-render. (`edge_directions` survived the change
+  for a while as a function that accepted three corners and ignored all of them,
+  and has since been deleted — a pass-through whose arguments are dead reads as
+  though the basis were still per-render, which is exactly the thing this entry
+  establishes it is not.) Under one angle
   that is the coherent edit — the earlier worry about "changing two things at
   once" applied only while the lattice angle was unknown, and it is the *split*
   that would now be wrong, since it would deliberately put the edge basis and the

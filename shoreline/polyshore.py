@@ -888,7 +888,7 @@ def main():
     tmpl_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
     print(f"template: {template_path}")
     t_top, t_right, _, t_left, _ = pm.detect_corners(edge_t)
-    dir_a, dir_b = pm.edge_directions(t_top, t_right, t_left)
+    dir_a, dir_b = pm.BOARD_DIR_A, pm.BOARD_DIR_B
     origin, u_col, u_row = pm.build_lattice(t_top, t_right, t_left, N)
     t_edge_off, _ = pm.edge_lines(pm.board_boundary(edge_t), dir_a, dir_b)
 
