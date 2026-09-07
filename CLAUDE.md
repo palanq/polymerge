@@ -2587,6 +2587,93 @@ while `fogless` goes from refusing outright to merging and `replay_ss2` recovers
 both shots' edges (that set still cannot derive a *zoom* — see the deferred item
 on a shot with no opposite pair and no fog).
 
+**A menu screenshot is rejected by that same angle test, asked of the whole
+frame** (`board_angle_fraction`, `MENU_BOARD_ANGLE_FRAC`). Players sometimes
+🗺️-react a **score screen** — the scoreboard the game draws full-screen over a
+*dimmed copy of the map*. It is board-ish enough to anchor, and merging one is
+silently destructive in the way this file warns about throughout: measured with
+`tests/score screens/ss1.jpg` added to `goon_test2`, it found three board edges,
+anchored, **locked 63 fog tiles**, won 50 tiles, and took that merge's union from
+238 to 269 and its conflicts from 4 to 84 — on a board it does not even belong
+to. The composite still looked like a board.
+
+**Neither existing guard can see it, and one of them cannot in principle.**
+`--min-fog-lock` fails because the fog test is NCC and NCC is
+illumination-invariant *by design* — that is the whole reason it is used — so a
+fog cube under a dimming scrim correlates at 0.95 and locks like any other. Nor
+is this fixable by looking at brightness, which was measured and does not
+separate at all: mean V reads 35.3/35.6/47.8 on the score screens against a
+darkest real shot of **48.6**, and the fraction of frame above V=200 reads
+0.062/0.073/0.083 against a real minimum of **0.084**. Both populations
+interleave, because a zoomed-in shot of a dark board is just as dim. Do not
+retry a brightness test here.
+
+What separates them is the projection, which is a game fact rather than an
+appearance: the camera is fixed orthographic isometric, so every edge on the
+board runs at `dir_a` or `dir_b` and **nothing on it is horizontal**, while a
+menu is laid out with the screen — text baselines, dot leaders, rules, panel
+edges. Measured over all 80 corpus shots plus the three score screens, as the
+share of strong-edge energy committed to a board angle rather than to the
+screen:
+
+| population | board-angle share |
+|---|---|
+| the three score screens | **0.198, 0.216, 0.236** |
+| worst real shot | **0.460** (`badland_test3/cym.png`, whose "Waiting for yodagem" banner survives the crop) |
+| every other real shot | **> 0.550** |
+
+`MENU_BOARD_ANGLE_FRAC` = 0.35 is mid-gap, 1.48x clear on both sides. Swept over
+probe width (192–512 px), edge percentile (85–96) and tolerance (4–7°) the two
+populations never overlap, at margins of 1.17x to 2.08x. It reuses
+`BOARD_ANGLE_TOL` rather than introducing a number, since it is the same
+physical test.
+
+Four things about it are load-bearing:
+
+- **The `--top-crop`/`--bottom-crop` bands must be applied first.** With them at
+  0 the margin does not merely shrink, it **inverts** — to 0.69x — because a real
+  gameplay shot's score banner and action-button row are horizontal chrome of
+  exactly the kind this keys on. This is the one parameter with no indifference
+  band.
+- **The denominator is screen-aligned energy, not all of it**, which makes the
+  answer a ratio between two families rather than a share of whatever else is in
+  frame — so it does not move with how textured a shot is. The absolute
+  board-angle fraction also separates, but only 1.86x and with a worse gap
+  structure.
+- **It runs before `detect_map_size`**, so a menu cannot contribute a board-size
+  measurement either. A bare `!merge` over two real shots and a score screen
+  reports "measured 17.97 tiles across 2 of 2 shot(s)".
+- **A rejected shot goes out through the existing `DROPPED` line**, so polybot
+  already reports it with no change; the *cause* goes to the console only, like
+  every other diagnostic. A run left with nothing refuses with its own message
+  rather than the generic "no valid images found", since the remedy is
+  different — post the map, not a wider shot.
+
+Cost is **6.7 ms per shot** (10.1 ms worst in the corpus) and nothing per run:
+the projection angles come straight from `BOARD_DIR_A`/`BOARD_DIR_B`, so no
+template is loaded and no basis is probed. The camera is fixed orthographic
+isometric and those are a constant of *it* rather than of any one render, which
+is what makes this test free of the template entirely.
+
+**The evidence base is three score screens, all of the same menu — but the
+other menus are laid out the same way** (confirmed with the project owner), so
+the test generalizes by construction rather than by luck: the tech tree, the
+tribe picker and the rest are all screen-aligned panels of text over a dimmed
+map, which is the only property this keys on. What is measured is still three
+shots of one menu, so read the *margin* as comfortable rather than established
+even though the mechanism is settled.
+
+It fails safe in the direction that matters. A wrongly-rejected real shot is
+named on `DROPPED` and the merge continues without it, whereas a menu that slips
+through is the silent merge above — which is why the bar sits mid-gap rather
+than tight against the score screens.
+
+**`tests/score screens/` is a negative corpus, not a set**, and deliberately not
+in `tools/baseline.py`'s `SETS` — there is no board in those images to merge, so
+there is nothing for the table to track. It is the same treatment
+`tests/sunrise.jpg` gets, and for the same reason. Any change to this test
+should be run against those three plus the full corpus.
+
 **SIFT takes its features from the board, not from whatever else survived the
 crop** (`board_region`, `sift_mask_for`). Every SIFT consumer — the zoom borrow,
 the `pan_hint`, `corroborate_anchor` and `--cross-check` — used to build features
@@ -3581,6 +3668,8 @@ template location.
     nibbling the rim moved their implied zooms from 0.20% apart to 2.22%,
     dragging that set from 0.037 to 0.115 cross-check tiles. A shot with clean
     edges has nothing to gain here and something to lose.
+  - `tests/score screens/` is the equivalent reference for menu screenshots
+    (see `board_angle_fraction`): three score screens, not a mergeable set.
   - `tests/sunrise.jpg` is the reference case, kept as a loose file rather
     than a set because it is a single shot and cannot be merged or
     cross-checked. It is the extreme: sky at **V=254, saturated pink**,
