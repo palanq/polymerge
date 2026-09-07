@@ -2738,8 +2738,24 @@ def plate_edge_run(gray, vx, vy, s):
 #
 # Everything here is in **tile widths**, not template px, so none of it passes
 # through REFERENCE_TILE_PX at all: the geometry is a property of the board.
-BAR_TOP_BAND = (-0.090, 0.020)  # rows the bar's top edge can occupy, from the
-BAR_BOT_BAND = (0.070, 0.170)   # vertex; measured -0.06..-0.01 and +0.09..+0.15
+# The two edges are found as a *pair* whose separation is constrained, not as
+# two independently placed rows. The height is the tight quantity -- 0.138 to
+# 0.213 tile widths over the 49 confirmed bars in the six labeled sets, against
+# the 0.050 to 0.260 the bands alone admit -- so it is what should discriminate,
+# and the bands only have to keep the pair off the name plate above.
+#
+# Placing each row absolutely made the detector as accurate as the anchor: the
+# bands are ~9 and ~8 px at an 80px tile, and 12 of those 49 bars sat within
+# 0.02 tile widths of a band's outer wall, both replay ground truths exactly on
+# it. A ~2px anchor shift then dropped a bar with nothing else in the run
+# changing (goon_test2 loses (6,2) and (6,5) at JOINT_TOP_K 80). Constraining
+# the pair instead buys 0.04 tile widths of slack in each direction -- about
+# 3px -- for a constraint that is *stronger*, not weaker.
+BAR_TOP_BAND = (-0.130, 0.020)  # rows the bar's top edge can occupy, from the
+BAR_BOT_BAND = (0.030, 0.210)   # vertex; measured -0.093..-0.020 and +0.070..
+                                # +0.149, each widened by 0.04 for anchor slack
+BAR_HEIGHT = (0.125, 0.225)     # the pair's separation. Confirmed static
+                                # relative to the tile; measured 0.138..0.213
 BAR_HALVES = (0.482, 0.720)     # the only two legal half-widths: a short bar
                                 # spans 0.965 tiles and a capped one 1.44, a
                                 # clean 3:2 with nothing in between
@@ -2773,11 +2789,19 @@ BAR_BLUE_S = 180                # a filled segment is vividly blue. Water reads
                                 # cannot separate them -- the polarity rule in
                                 # detect_population_bars is what does.
 BAR_RED_S = 150                 # scorched_earth's Icalus reads S=255
-# The color box, one preset per legal width. The short bar's footprint is a
+# The *prefilter* color box -- the only one still preset, because it runs before
+# any geometry exists. That is what lets the color test reject a tile before the
+# row search happens; the second, post-geometry call takes its rows from the bar
+# it just measured (see detect_population_bars). The short bar's footprint is a
 # subset of the capped one, so the small box is inside the bar whichever length
-# this one turns out to be -- which is what lets the color test run *first*,
-# independently of the geometry, and reject a tile before any of it happens.
-BAR_BOX_ROWS = (0.010, 0.115)
+# this one turns out to be.
+#
+# The rows are centred on the median bar interior (-0.047..0.127), which is what
+# keeps the box on the bar under a couple of px of anchor error: it leaves 0.020
+# tile widths of margin against the lowest top edge observed and 0.034 against
+# the second-lowest bottom edge. Swept over five spans, this is the widest
+# minimum margin at both ends.
+BAR_BOX_ROWS = (0.000, 0.080)
 BAR_BOX_HALVES = (0.40, 0.62)
 
 # **No two cities sit within two tiles of each other** -- the placement rule is
@@ -2812,8 +2836,12 @@ def _bar_edges(bgr):
     return sy
 
 
-def _bar_mode(bgr, wmask, origin, u_col, u_row, i, j, half):
-    """Modal color in the preset box at tile (i, j): (bgr, is_bar, is_red).
+def _bar_mode(bgr, wmask, origin, u_col, u_row, i, j, half, rows=None):
+    """Modal color in a box at tile (i, j)'s south vertex: (bgr, is_bar, is_red).
+
+    `rows` is an absolute (y0, y1) span when the caller has already measured the
+    bar; otherwise the preset band is used. Only the first, prefiltering call
+    has no geometry to work from -- see detect_population_bars.
 
     `wmask` is this shot's `valid` mask, which is exactly the right filter --
     it drops UI chrome, out-of-frame pixels, and pixels too dark to judge color
@@ -2824,8 +2852,11 @@ def _bar_mode(bgr, wmask, origin, u_col, u_row, i, j, half):
     """
     tile = float(np.linalg.norm(u_col))
     vx, vy = origin + (i + 1) * u_col + (j + 1) * u_row
-    y0 = int(round(vy + BAR_BOX_ROWS[0] * tile))
-    y1 = int(round(vy + BAR_BOX_ROWS[1] * tile))
+    if rows is None:
+        y0 = int(round(vy + BAR_BOX_ROWS[0] * tile))
+        y1 = int(round(vy + BAR_BOX_ROWS[1] * tile))
+    else:
+        y0, y1 = rows
     x0, x1 = int(round(vx - half * tile)), int(round(vx + half * tile))
     if (y1 <= y0 or x1 <= x0 or y0 < 0 or x0 < 0
             or y1 >= bgr.shape[0] or x1 >= bgr.shape[1]):
@@ -2886,15 +2917,19 @@ def _bar_at(sy, origin, u_col, u_row, i, j, dark):
     # gradient suppresses the horizontal one; and the name plate directly above
     # is also a bright horizontal rectangle, so an unconstrained search returns
     # the plate's edges instead -- which reads as a bottom edge *above* the
-    # vertex, something no bar can have. The fixed bands are what prevent that.
+    # vertex, something no bar can have. The bands are what prevent that; the
+    # height constraint is what lets them be loose enough to survive a couple
+    # of px of anchor error (see BAR_HEIGHT).
     t0, t1 = band(*BAR_TOP_BAND)
     b0, b1 = band(*BAR_BOT_BAND)
+    hlo = max(2, int(round(BAR_HEIGHT[0] * tile)))
+    hhi = int(round(BAR_HEIGHT[1] * tile))
     floor = BAR_MIN_EDGE_COLS * 2 * BAR_HALVES[0] * tile
     best = None
     for yt in range(t0, t1 + 1):
         if npos[yt] < floor:
             continue
-        for yb in range(max(b0, yt + 2), b1 + 1):
+        for yb in range(max(b0, yt + hlo), min(b1, yt + hhi) + 1):
             if nneg[yb] >= floor and (best is None
                                       or min(npos[yt], nneg[yb]) > best[0]):
                 best = (min(npos[yt], nneg[yb]), yt, yb)
@@ -2984,13 +3019,24 @@ def detect_population_bars(warped_bgr, wmask, origin, u_col, u_row, n):
                     best = m
             if best is None or best["score"] < BAR_SCORE_MIN:
                 continue
-            # Re-read the color from the preset box matching the width the
-            # geometry just settled on. Still preset -- one of two fixed
-            # rectangles, nothing measured -- but the wider one gives the mode
-            # several times the pixels, and the small box is only ~7 rows tall.
+            # Re-read the color from the bar the geometry just measured, wider
+            # than the prefilter box so the mode gets several times the pixels.
+            # Both halves of that box now come from the detection: the width
+            # class picks the columns, and the measured edges pick the rows.
+            #
+            # The rows are the half that mattered. A preset band's bottom sat a
+            # median 0.012 tile widths inside the bar's bottom edge and *below*
+            # it on four of the 49 labeled bars, so a couple of px of anchor
+            # error walked it onto the white name plate and the mode came back
+            # 252 -- the exact signature this file records for a false
+            # positive. Inset a fifth of the height at each end to stay off the
+            # transition rows.
             wide = BAR_BOX_HALVES[BAR_HALVES.index(best["half"])]
+            by, bh = best["px"][1], best["px"][3]
+            inset = max(1, int(round(0.2 * bh)))
             m2, ok2, _r = _bar_mode(warped_bgr, wmask, origin, u_col, u_row,
-                                    i, j, wide)
+                                    i, j, wide,
+                                    rows=(by + inset, by + bh - inset))
             if m2 is not None and not ok2:
                 continue
             vx, vy = origin + (i + 1) * u_col + (j + 1) * u_row

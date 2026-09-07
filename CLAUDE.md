@@ -628,7 +628,7 @@ per-file rects, key them on something unambiguous.
   371/400, 261/400, 238/324, 202/400, 190/400, 278/400, 361/400, 237/324,
   90/400, 295/400, 330/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
   247/400, 50/324, 78/324, 256/256, 256/256, 224/324, 233/324**; conflicts
-  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 27, 2, 27, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1, 10**; city population bars found (`--city-bars`) **16, 17, 16, 8, 9, 7, 17, 15, 9, 3, 7, 16, 7, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10**; ruins found
+  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 27, 2, 27, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1, 10**; city population bars found (`--city-bars`) **16, 18, 18, 8, 9, 7, 17, 16, 9, 3, 7, 16, 8, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10** (221 here, 242 with `control_c` and `control_d`); ruins found
   (`--ruin-vision`, after adjacency clustering) **3, 3, 0, 0, 0, 0, 0, 3, 0, 11,
   0, 0, 0, 0, 0, 0, 0, 5, 0, 9, 3, 0, 0, 0, 0** — 37 in total, on the seven sets
   with an Elyrion player and zero everywhere else.
@@ -2432,7 +2432,7 @@ deleted: it is a *reference scale*, not a file, and re-basing it means
 re-deriving every constant that depends on it in one go.
 
 **Only `PLATE_BAND`/`PLATE_HALF_W` still need this**, and that is the direction
-of travel. The city-bar geometry is expressed in **tile widths** (`BAR_TOP_BAND`,
+of travel. The city-bar geometry is expressed in **tile widths** (`BAR_HEIGHT`,
 `BAR_HALVES`, …) and so is scale-free by construction, and the ruin detector
 sizes its kernel from `|u_col|` directly. Both are the same idea taken to its
 conclusion, and are the better pattern for anything added here. The constants
@@ -3076,23 +3076,30 @@ section):
 
 | | TP | FP | FN | precision | recall |
 |---|---|---|---|---|---|
-| anchor-first | **49** | **0** | 1 | **1.000** | **0.980** |
+| anchor-first, absolute rows | 49 | **0** | 1 | **1.000** | 0.980 |
+| anchor-first, **relative rows** | **50** | **0** | **0** | **1.000** | **1.000** |
 
 For comparison, on `test_ss_3` the old detector scored 7 of 9 with 3 real bars
 missed.
 
-**The single "miss", `badland_test3` (15,16), is expected behavior and should
-not be chased** (confirmed with the project owner): the `cym` player simply did
-not photograph that city's whole bar, so there is nothing there to match. The
-tile also fails `--min-valid-frac` in that shot for the same underlying reason —
-it is the same shot and the same cause as the (18,7) splice discussed below.
-Recall against detectable bars is therefore **1.000**; the 0.980 above counts a
-bar no detector could find.
+**Every confirmed bar in the six labeled sets is found, and none of the labeled
+false positives is.** That is 50 of 50 with 0 FP — see the relative-geometry
+entry in the standing decisions for what closed the last one (`test_ss_3`
+(10,9), Ichphy).
 
-Corpus-wide the count is **217**, and every other tracked baseline — union,
-conflicts, ruins, fog lock, `--cross-check` — is **identical on all 25 sets**,
-which is what bar promotion is supposed to guarantee: it only reorders sources
-that already witnessed a tile.
+**Two entries this file used to carry here were stale and are gone.** The
+"single miss" was recorded as `badland_test3` (15,16), a bar the `cym` player
+had not wholly photographed; the zoom-pivot change moved the miss to `test_ss_3`
+(10,9) without this section being updated, and (15,16) has been found ever since.
+Read a claim about *which* bar is missing as needing a re-measurement, not as a
+standing fact — `tools/baseline.py` cannot see it, since the bar column counts
+detections and not which ones are right.
+
+Corpus-wide the count is **242 over 27 sets** (221 over the 25 in the table
+above), and every other tracked baseline — union, conflicts, ruins, fog lock,
+`--cross-check` — is **identical on all 27 sets**, which is what bar promotion
+is supposed to guarantee: it only reorders sources that already witnessed a
+tile.
 
 **Runtime is at parity with the old detector** — ~0.46s on a 5-shot merge, 2%
 of it — but only after the modal color was written correctly, and how that went
@@ -3298,8 +3305,9 @@ if in several, compare those tiles between them to see which one holds a bar.
 
 The **city tile comes from where the bar sits**: a bar is centered on its city
 tile's **south vertex**, with its bottom edge ~10px below it (confirmed with the
-project owner; `BAR_BOT_BAND` now states it as 0.070–0.170 tile widths, and
-`BAR_TOP_BAND` the other edge). That vertex is `origin + (i+1)*u_col +
+project owner; measured 0.070–0.149 tile widths over the 49 labeled bars, with
+`BAR_BOT_BAND` bracketing it and `BAR_HEIGHT` constraining its distance from the
+top edge — see the relative-geometry standing decision). That vertex is `origin + (i+1)*u_col +
 (j+1)*u_row`, so inverting the basis at the bar's center names the city
 outright — no dependence on the city sprite's height, which grows with its
 level and so could not have served. Measured over the corpus's 33 complete
@@ -4482,20 +4490,67 @@ template location.
   than on the corpus, which cannot resolve the perturbation. If it is ever
   reverted, revert `BOARD_EDGE_SLOPE` and both consumers together; a half-revert
   reintroduces exactly the edge/lattice split this replaced.
-- **Bar detection tolerates about 2px of anchor error, and that is worth
-  knowing.** `detect_population_bars` probes fixed bands around each tile's
-  south vertex in template space, and those bands are small: `BAR_TOP_BAND` is
-  0.110 tile widths tall and `BAR_BOT_BAND` 0.100, i.e. **~8px each** at an 80px
-  tile. So a shot whose anchor moves a couple of px drops a bar that was sitting
-  near a band edge, with nothing else in the run changing. `replay_ss2` is the
-  worked example and the most exposed set in the corpus: it has **no fog at
-  all**, so both shots keep an unrefined edge anchor (the zero-lock rule) with
-  nothing to pull them back, and its one real bar is the corpus's most marginal
-  detection — Bergo's two segments fuse into a single blob. Moving `s1`'s prior
-  scale by **0.09%** was enough to lose it. Read this two ways: it is why any
-  change to the edge basis must be checked against the bar counts and not only
-  against `--cross-check`, and it means anchor accuracy is a real ceiling on bar
-  recall.
+- **Bar geometry is expressed relative to the bar, not absolutely against the
+  vertex — otherwise the detector is only as accurate as the anchor.** This
+  entry used to read "bar detection tolerates about 2px of anchor error, and
+  that is worth knowing", i.e. it recorded the sensitivity as a property of the
+  problem. Most of it was a property of the *parameterization*, and it is gone.
+
+  **Where the sensitivity was, measured.** Probing every accepted detection in
+  the six labeled sets and recording where each edge landed inside its band, in
+  tile widths:
+
+  | quantity | min | p05 | median | p95 | max |
+  |---|---|---|---|---|---|
+  | bar height (`yb - yt`) | 0.138 | 0.150 | **0.175** | 0.201 | 0.213 |
+  | top edge `yt` | -0.093 | -0.083 | -0.047 | -0.031 | -0.020 |
+  | bottom edge `yb` | 0.070 | 0.114 | 0.127 | 0.144 | 0.149 |
+
+  The two bands were `(-0.090, 0.020)` and `(0.070, 0.170)`, ~9px and ~8px at an
+  80px tile — so **12 of the 49 bars sat within 0.02 tile widths of a band's
+  outer wall and three sat exactly on it**, both replay ground truths among them.
+  Meanwhile the bands *jointly* admit heights from 0.050 to 0.260 against an
+  object that measures 0.138–0.213. The tight quantity was doing no work and the
+  loose one was doing all of it.
+
+  **The fix is to constrain the pair rather than each row** (`BAR_HEIGHT`), which
+  buys 0.04 tile widths of slack in each direction — about 3px — for a constraint
+  that is *stronger*, not weaker. The bands stay only to keep the pair off the
+  name plate above, which is the one thing they were physically for.
+
+  **The color box was the same disease one step worse, and is the half that
+  mattered.** `BAR_BOX_ROWS` was a preset `(0.010, 0.115)`, whose bottom sits a
+  median **0.012 tile widths** inside the bar's bottom edge and *below* it on
+  four of the 49 — so a couple of px walks it onto the white name plate and the
+  mode reads **252**, the exact signature this file records for a false positive.
+  Two changes: the second, post-geometry call now takes its rows from the bar it
+  just measured (its *columns* already followed the detected width class, so this
+  finishes a job half done), and the prefilter box, which by construction has no
+  geometry to lean on, moved to `(0.000, 0.080)` — centred on the median bar
+  interior, with the largest minimum margin at both ends of the five spans swept.
+
+  **Result: 50 of 50 on the labeled sets with 0 false positives**, up from 49/50,
+  and on the whole 27-set corpus union, conflicts, ruins, fog lock and
+  `--cross-check` are **identical everywhere** with only two bar counts moving,
+  both up (`test_ss_2` 17 → 18, `test_ss_3` 16 → 18). It is **strictly additive**
+  — every prior detection on every set survives. The gains are the two the corpus
+  can corroborate: `test_ss_3` (10,9) Ichphy, in the labeled real list, now found
+  by *both* cym shots; and a new tile **(3,16)**, found independently in
+  `test_ss_2` and `beautiful_test3` — different capture files of the same board —
+  and ≥3 tiles from every other detection, as the placement guarantee requires.
+  Runtime is unchanged (0.33s against 0.33s on a 5-shot merge, timed back to
+  back): the height constraint prunes the wider bands' extra row pairs.
+
+  **What does not go away.** Anchor accuracy is still a real ceiling on bar
+  recall, and any change to the edge basis must still be checked against the bar
+  counts and not only against `--cross-check` — the bands are absolute against
+  the template lattice while cross-check is relative between shots, so
+  cross-check structurally cannot see a bar falling out. `replay_ss2` remains the
+  most exposed set (no fog at all, so both shots keep an unrefined edge anchor,
+  and Bergo's two segments fuse into one blob). The worked case is `goon_test2`
+  at `JOINT_TOP_K` 80, where `q.jpg` moves ~2px and used to drop (6,2) and (6,5):
+  it now keeps all eight bars. What changed is the size of the perturbation that
+  costs a bar, not the fact that one can.
 - **Never trust a plausible-looking composite as evidence the geometry is
   right.** The `test_ss_3`-at-18 merge rendered a perfectly coherent board
   with sharp tile boundaries and correctly-placed cities for one player; the
