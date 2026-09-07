@@ -2655,18 +2655,41 @@ template is loaded and no basis is probed. The camera is fixed orthographic
 isometric and those are a constant of *it* rather than of any one render, which
 is what makes this test free of the template entirely.
 
-**The evidence base is three score screens, all of the same menu — but the
-other menus are laid out the same way** (confirmed with the project owner), so
-the test generalizes by construction rather than by luck: the tech tree, the
-tribe picker and the rest are all screen-aligned panels of text over a dimmed
-map, which is the only property this keys on. What is measured is still three
-shots of one menu, so read the *margin* as comfortable rather than established
-even though the mechanism is settled.
+**Menus split into two families, and only one of them is this test's job.**
+That distinction was nearly missed — "the other menus are laid out the same way"
+looks like it makes the test generalize for free, and the measurement says
+otherwise:
 
-It fails safe in the direction that matters. A wrongly-rejected real shot is
-named on `DROPPED` and the merge continues without it, whereas a menu that slips
-through is the silent merge above — which is why the bar sits mid-gap rather
-than tight against the score screens.
+| menu | board-angle share | what actually rejects it |
+|---|---|---|
+| score screen (over a **dimmed map**) | 0.198–0.236 | **this test**, 1.48x clear |
+| tech tree (**no map behind it**) | **0.343** | the anchor path — this test clears it by 2% |
+
+A tech tree is mostly *circles*, and a circle spreads its edge energy over every
+angle equally, so the two families land near parity and the score sits wherever
+the connecting lines and labels happen to drag it. Do not read the 0.343 as
+headroom: another tech-tree capture could as easily land above the bar.
+
+**It does not matter, because a menu with no map behind it cannot anchor at
+all.** Verified by forcing `MENU_BOARD_ANGLE_FRAC` to 0 and merging a tech tree
+into `goon_test2`: it finds one board edge of four (`b-max`=154, the others 60/74/100
+against `--min-edge-support` 150), cannot pan-anchor, scores **0 SIFT inliers on
+terrain**, and is `DROPPED` — the merge returns 238/324 with 4 conflicts, exactly
+its baseline. That is the ordinary path doing its job, not a near miss.
+
+So the division is clean, and it is the *dimmed map* that makes a menu dangerous
+rather than the menu: a score screen anchors happily because there is a real
+board silhouette under the scrim, and nothing but this test stands in its way. A
+mapless menu was never the threat. **Calibrate this test on menus that show the
+map**, and do not tune the bar to catch tech trees — raising it buys nothing and
+spends margin against the worst real shot (0.460).
+
+**The evidence base is three score screens of one menu.** Read the margin as
+comfortable rather than established. It fails safe in the direction that
+matters: a wrongly-rejected real shot is named on `DROPPED` and the merge
+continues without it, whereas a menu over a map that slips through is the silent
+merge above — which is why the bar sits mid-gap rather than tight against the
+score screens.
 
 **`tests/score screens/` is a negative corpus, not a set**, and deliberately not
 in `tools/baseline.py`'s `SETS` — there is no board in those images to merge, so
