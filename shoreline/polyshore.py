@@ -890,7 +890,7 @@ def main():
     t_top, t_right, _, t_left, _ = pm.detect_corners(edge_t)
     dir_a, dir_b = pm.BOARD_DIR_A, pm.BOARD_DIR_B
     origin, u_col, u_row = pm.build_lattice(t_top, t_right, t_left, N)
-    t_edge_off, _ = pm.edge_lines(pm.board_boundary(edge_t), dir_a, dir_b)
+    t_edge_off, _ = pm.edge_lines(pm.board_boundary(edge_t))
 
     print(f"anchoring {name}:")
     M, _, _, _ = pm.anchor_to_template(
