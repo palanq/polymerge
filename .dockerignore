@@ -2,8 +2,8 @@
 tests/
 shoreline/
 # The predecessor bot's source, kept locally as a reference. 33 MB the build
-# context has no use for -- the COPY lines below name everything the image
-# needs, so this only ever cost upload time to the daemon.
+# context has no use for -- the Dockerfile's COPY lines name everything the
+# image needs, so this only ever cost upload time to the daemon.
 old mergebot-main/
 # Source art for the Discord app emoji, uploaded to the bot application by hand
 # rather than read at runtime -- polybot references them by the ID Discord hands
@@ -16,16 +16,27 @@ __pycache__/
 .claude/
 .env
 
+# The repository history, and by a wide margin the largest thing in the
+# context: 119 MB against the 33 MB of `old mergebot-main/` above, which is
+# excluded for exactly this reason. Nothing COPYs it and no build step reads it.
+.git/
+.github/
+# Development-only, and none of it is COPYd: the baseline harness and probes,
+# the design notes, the superseded merge script, a local baseline snapshot, and
+# the public mirror's README.
+tools/
+publish/
+CLAUDE.md
+polymerge_old.py
+before.json
+
 # There is deliberately no `*.png` rule here any more, and it must not come
-# back. It existed to keep the ~100MB of test screenshots out of the build
-# context, but `tests/` and `shoreline/` already do that wholesale -- and it
-# carried `!template_18x18.png` / `!template_20x20.png` exceptions for the two
-# renders the image used to COPY. Those files are deleted, so with the rule in
-# place `COPY Overlays/` and `COPY Assets/` would have matched *nothing* and
-# built an image with no board renders and no ruin sprite.
+# back. It existed to keep the ~100MB of test screenshots out of the context,
+# but `tests/` and `shoreline/` already do that wholesale -- and it carried
+# exceptions for two board renders that have since been deleted, so with the
+# rule in place `COPY Overlays/` and `COPY Assets/` would have matched
+# *nothing* and built an image with no board renders and no ruin sprite. See
+# the Dockerfile's COPY block for what that cost.
 #
-# That failure is now loud rather than silent -- polymerge has no legacy
-# template to fall back on, so the bot refuses at startup instead of merging
-# 18 and 20 against different fog art. It is still a failure worth not
-# shipping. Everything the image needs is named explicitly by COPY, so this
-# file only has to keep the context small.
+# Everything the image needs is named explicitly by COPY, so this file only has
+# to keep the context small.

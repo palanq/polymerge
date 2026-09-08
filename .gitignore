@@ -4,7 +4,7 @@
 # difference between a ~100 MB repo and a 1.1 GB one.
 #
 # The *input* screenshots under tests/ are deliberately NOT ignored. They are the
-# regression corpus: tools/baseline.py runs all 24 sets, and the ground-truth
+# regression corpus: tools/baseline.py runs all 27 sets, and the ground-truth
 # tables in CLAUDE.md key to those exact files. Note they carry player handles in
 # the HUD -- badland_test3/cym.png reads "Waiting for yodagem..." across its top
 # band -- which is why this repo is private. Redacting them is not the

@@ -329,6 +329,34 @@ def shore_predict(basis, hyp, fog_dirs=(), delta=None):
     return pred
 
 
+def _shore_scan_setup(warped_bgr, wmask, u_col, explored, unresolved):
+    """Which tiles have a rim worth reading, and the per-pixel masks to read
+    them against. read_shorelines and read_shorelines_joint share this setup
+    verbatim; only what they do per candidate afterward differs.
+
+    `candidates` is a list of ((i, j), facing) for every explored tile with at
+    least one edge facing `unresolved` -- empty when there is nothing to read,
+    which the caller turns into an early return before paying for the masks
+    below. The masks are full-canvas, so on a board with no fog frontier in
+    this shot they would be the whole cost of the phase."""
+    candidates = []
+    for (i, j) in explored:
+        facing = [d for d, (di, dj) in SHORE_NEIGHBOR.items()
+                  if (i + di, j + dj) in unresolved]
+        if facing:
+            candidates.append(((i, j), facing))
+    if not candidates:
+        return candidates, None, None, None, None, None, None
+
+    H, W = wmask.shape
+    gray = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    water, ocean = water_chroma_masks(warped_bgr)
+    water &= wmask > 0
+    ocean &= wmask > 0
+    drop = SHORE_DROP_FRAC * float(np.linalg.norm(u_col))
+    return candidates, H, W, gray, water, ocean, drop
+
+
 def read_shorelines_joint(warped_bgr, wmask, origin, u_col, u_row, explored,
                           unresolved, basis_pack):
     """The joint counterpart of read_shorelines: same contract, but every edge
@@ -339,21 +367,11 @@ def read_shorelines_joint(warped_bgr, wmask, origin, u_col, u_row, explored,
     """
     basis, delta = basis_pack["basis"], basis_pack["delta"]
     out, ocean_tiles = {}, {}
-    candidates = []
-    for (i, j) in explored:
-        facing = [d for d, (di, dj) in SHORE_NEIGHBOR.items()
-                  if (i + di, j + dj) in unresolved]
-        if facing:
-            candidates.append(((i, j), facing))
+    candidates, H, W, gray, water, ocean, drop = _shore_scan_setup(
+        warped_bgr, wmask, u_col, explored, unresolved)
     if not candidates:
         return out, ocean_tiles
 
-    H, W = wmask.shape
-    gray = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    water, ocean = water_chroma_masks(warped_bgr)
-    water &= wmask > 0
-    ocean &= wmask > 0
-    drop = SHORE_DROP_FRAC * float(np.linalg.norm(u_col))
     k = SHORE_BASIS_K
     core = slice(int(0.35 * k), int(0.65 * k))
     for (i, j), facing in candidates:
@@ -626,24 +644,11 @@ def read_shorelines(warped_bgr, wmask, origin, u_col, u_row, explored,
     water tile sitting well inside explored territory -- the common case on a
     developed board -- is skipped before its statistics are computed at all."""
     out, ocean_tiles = {}, {}
-    # Which tiles are worth looking at, before paying for anything. The masks
-    # below are full-canvas, so on a board with no fog frontier in this shot
-    # they would be the whole cost of the phase.
-    candidates = []
-    for (i, j) in explored:
-        facing = [d for d, (di, dj) in SHORE_NEIGHBOR.items()
-                  if (i + di, j + dj) in unresolved]
-        if facing:
-            candidates.append(((i, j), facing))
+    candidates, H, W, gray, water, ocean, drop = _shore_scan_setup(
+        warped_bgr, wmask, u_col, explored, unresolved)
     if not candidates:
         return out, ocean_tiles
 
-    H, W = wmask.shape
-    gray = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    water, ocean = water_chroma_masks(warped_bgr)
-    water &= wmask > 0
-    ocean &= wmask > 0
-    drop = SHORE_DROP_FRAC * float(np.linalg.norm(u_col))
     for (i, j), facing in candidates:
         core_poly = tile_poly(origin, u_col, u_row, i, j,
                               SHORE_CORE_INSET) + [0, drop]
@@ -744,8 +749,7 @@ def load_shot(path, args):
     if not args.no_badge_filter:
         badge, found = pm.detect_capture_badges(im, S["valid"])
         if found:
-            print(f"excluding {len(found)} capture-badge blob(s) "
-                  f"{[(a, x, y) for a, x, y, w, h in found]}")
+            print(f"excluding {len(found)} capture-badge blob(s) {found}")
             S["badge"] = badge
             S["valid"] = S["valid"] & ~badge
             S["frame"] = S["frame"] & ~badge

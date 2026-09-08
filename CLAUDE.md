@@ -38,7 +38,7 @@ shoreline/              shoreline inference -- a separate program, and
 
 **There is still no automated test runner in the sense of assertions, but
 `tools/baseline.py` is the stand-in and should be used.** It runs polymerge
-over all 24 sets and prints one table of worst `--cross-check`, explored union,
+over all 27 sets and prints one table of worst `--cross-check`, explored union,
 conflicts, city bars, ruins and per-shot fog lock, and
 `--compare` diffs that against a stored JSON run and prints only what moved. Capture a "before" table, make
 the change, compare. It is what caught an "obviously inert" refactor silently
@@ -49,6 +49,39 @@ fixed. It is not shipped code — polymerge and polybot never import it.
 .venv/Scripts/python.exe tools/baseline.py -o before.json
 .venv/Scripts/python.exe tools/baseline.py --compare before.json
 ```
+
+**What it cannot see, which matters as much as what it can.** Every number it
+tracks comes from a merge that *succeeded* on a corpus set, so a path no corpus
+set reaches is invisible to it however badly broken — and the rescue paths tend
+to be exactly that, because they exist for shots the corpus does not contain.
+Measured, rather than assumed:
+
+| path | exercised by |
+|---|---|
+| `pan_hint` pan borrow | **yes** — `badland_test3/cym.png` |
+| zero-lock un-refinement | **yes** — `fogless`, `replay_ss2` |
+| sky rebuild (`sky_rebuild_for`) | **yes** — `pol_archi_test`, both shots |
+| SIFT anchor borrow | **no** — not since the fog-colour tile prefilter |
+| `corroborate_anchor` | **no** — needs a fog-period zoom *and* a zero lock |
+| badge fallback (`badge_fallback`) | **no** — badges are found, but no tile ever lacks a clean witness |
+
+The bottom three were dead ground, and it showed: `corroborate_anchor` was found
+calling a function that does not exist, and polybot's undelivered-composite
+diagnostic referencing an unbound name. Both were reachable in production, both
+were invisible to every number in the table, and each was a `NameError` that
+would have reached a player as a traceback.
+
+So pair the harness with a name check, which costs a second and catches exactly
+the class `--compare` cannot:
+
+```bash
+.venv/Scripts/python.exe -m pyflakes polymerge.py polybot.py tools/*.py shoreline/*.py
+```
+
+It is not in `requirements.txt` and must not be: the image does not need it.
+When a change does touch a rescue path, exercise it deliberately as well —
+forcing `FOG_LOCK_NCC` above 1 makes every shot lock zero and drives the
+corroboration and borrow paths on any set.
 
 `tests/<set>/merged.png` and `tests/<set>/debug/` are regenerable program
 output — safe to delete at any time. There is no `ui.json` any more: the
@@ -204,12 +237,12 @@ per-file rects, key them on something unambiguous.
 - **Test sets live under `tests/<set>/`**, each holding its own screenshots
   plus that set's `merged.png` and `debug/`, so a set is entirely
   self-contained. One PyCharm run configuration per set writes back into its
-  own folder. Validate changes with `tools/baseline.py` (which runs all 24 and
+  own folder. Validate changes with `tools/baseline.py` (which runs all 27 and
   diffs the tracked numbers), then read the console output and debug overlays
-  for anything it flags. **Every set is 18x18 or 20x20** — sizes 11, 14 and 16
-  have no real screenshots at all and are covered only by a synthetic
-  round-trip, so a real set at one of those sizes is the most valuable thing
-  anyone could add to this corpus.
+  for anything it flags. **Every set is 16x16, 18x18 or 20x20** — the two 16s
+  are both replays (`fogless`, `replay_ss2`), and sizes **11 and 14 have no real
+  screenshots at all**, covered only by a synthetic round-trip. A real set at
+  either is the most valuable thing anyone could add to this corpus.
 
   | set | size | shots | notes |
   |---|---|---|---|
@@ -238,6 +271,17 @@ per-file rects, key them on something unambiguous.
   | `replay_ss2` | **16x16** | 2 | replay; no fog; play-button chrome; lone-pair and terrain-inlier regression test |
   | `vengir_cultist` | **18x18** | 2 | Vengir/Cultist; one shot at each zoom extreme; city-name-text false-bar regression test |
   | `scorched_earth` | **18x18** | 2 | the corpus's only **majority-red** population bar (Icalus, (15,6)); city-bar ground truth |
+  | `control_c` | **18x18** | 2 | from the predecessor bot's own control set; blind check; tall content on an explored NW rim |
+  | `control_d` | 20x20 | 3 | from the predecessor bot's own control set; blind check |
+
+  **`control_c` and `control_d` are the two boards kept from the predecessor
+  bot's `Control Screenshots/`**, board size stated in the original filenames.
+  They are the only shots in the corpus this pipeline had never been run
+  against before they were added, which makes them a genuinely blind check
+  rather than a set anything here was tuned to — worth more per shot than
+  anything else in the table for that reason alone. `control_c` was added
+  specifically to test whether tall content on an explored NW rim inflates the
+  board span. It does not.
 
   `star_change` is the regression test for two separate defects, one per shot,
   and both were invisible in a composite that looked fine:
@@ -416,9 +460,10 @@ per-file rects, key them on something unambiguous.
   in the corpus, ~76% fog with two disjoint starting islands and no city
   bars at all (the only set scoring 0 alongside `u_forest`), so it exercises
   the sparse end of everything. And its 48-inlier SIFT pair is the corpus's
-  clearest example of *why* `SIFT_ZOOM_MIN_INLIERS` sits at 150: two shots that
+  clearest example of *why* a SIFT match needs a floor at all: two shots that
   genuinely share no territory still match fog to fog well enough to produce a
-  confident-looking 6.3-tile cross-check number.
+  confident-looking 6.3-tile cross-check number. Only **22** of those inliers
+  sit on terrain, against `SIFT_TERRAIN_MIN_INLIERS` = 60.
 
   **`replay_ss2` is the second replay set, and it exists because `fogless`
   merging did not mean replays worked.** It is the same game mode, the same
@@ -576,8 +621,9 @@ per-file rects, key them on something unambiguous.
   and a SIFT transform and there is nothing to measure. `u_forest2` is the
   in-between case that produces the misleading *number* rather than the honest
   `n/a`: its two turn-1 shots show disjoint starting islands too, but enough
-  fog matches across them to yield **48 inliers**, far under
-  `SIFT_ZOOM_MIN_INLIERS` and nowhere near a genuine terrain match. Judge it on
+  fog matches across them to yield **48 inliers**, of which 22 are on terrain —
+  far under `SIFT_TERRAIN_MIN_INLIERS` and nowhere near a genuine terrain
+  match. Judge it on
   its fog lock (86/142) and its zero conflicts, and note its ruin at (10,7)
   lands on a tile the *other* shot independently explored — which two anchors
   6 tiles apart could not do. **`fogless` reports 0.035 and is unreliable for a
@@ -608,8 +654,9 @@ per-file rects, key them on something unambiguous.
   terrain and `top_k`'s quota was filled almost entirely with noise. Note the
   consequence for coverage — a shot locking 6 rather than 0 is no longer
   eligible for the anchor borrow, so **the corpus now exercises no set's borrow
-  path at all**. Keep the reasoning in the misanchor-guard section; it is no
-  longer regression-tested. The paragraph below describes the old behavior:
+  path at all** — and see the note under `tools/baseline.py` about what that
+  means for verifying a change there. Keep the reasoning in the misanchor-guard
+  section; it is no longer regression-tested. The paragraph below describes the old behavior:
 
   `star_change` was the one set above the ~0.05 healthy bar, and its number
   did not measure what the merge does. Its `oum.png` has ~7 fog tiles in
@@ -627,11 +674,15 @@ per-file rects, key them on something unambiguous.
   and these are the actual output. In table order — explored union **371/400,
   371/400, 261/400, 238/324, 202/400, 190/400, 278/400, 361/400, 237/324,
   90/400, 295/400, 330/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
-  247/400, 50/324, 78/324, 256/256, 256/256, 224/324, 233/324**; conflicts
-  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 27, 2, 27, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1, 10**; city population bars found (`--city-bars`) **16, 18, 18, 8, 9, 7, 17, 16, 9, 3, 7, 16, 8, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10** (221 here, 242 with `control_c` and `control_d`); ruins found
+  247/400, 50/324, 78/324, 256/256, 256/256, 224/324, 233/324, 240/324,
+  240/400**; conflicts
+  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 27, 2, 27, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1, 10, 2, 1**; city population bars found (`--city-bars`) **16, 18, 18, 8, 9, 7, 17, 16, 9, 3, 7, 16, 8, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10, 8, 10** (242 in total); ruins found
   (`--ruin-vision`, after adjacency clustering) **3, 3, 0, 0, 0, 0, 0, 3, 0, 11,
-  0, 0, 0, 0, 0, 0, 0, 5, 0, 9, 3, 0, 0, 0, 0** — 37 in total, on the seven sets
-  with an Elyrion player and zero everywhere else.
+  0, 0, 0, 0, 0, 0, 0, 5, 0, 9, 3, 0, 0, 0, 0, 0, 0** — 37 in total, on the seven
+  sets with an Elyrion player and zero everywhere else.
+  All four lists are **27 long and in the table's order**; they ran 25 long
+  against a 27-set corpus for a while, because `control_c` and `control_d` were
+  added to `tools/baseline.py` without being entered here.
   `fogless` is the only set at a **full** union (256/256), and trivially so: a
   replay shows the whole board, so its union is a check that nothing was *lost*,
   not that anything was explored. Its **0 conflicts** is the number to watch
@@ -1084,10 +1135,11 @@ a bare word switches a layer on (`grid`, `spawns`, `push`, `shade`). **Nothing
 is on by default** — a merge nobody asked a question of hands back the map as
 the game draws it. `shade` was on by default once, and the cost was not the
 shading but the second thing every player then had to learn in order to turn it
-off. `no`-prefixed words (`noshade`) and `plain` still parse, and are
-deliberately no longer named in the help or in the unrecognized-word reply:
-with an empty default they remove nothing, but a player who learned `noshade`
-under the old behavior should get a merge rather than an error. Each layer now
+off. There is no way to turn a layer *off*, because nothing is on: `plain`
+still parses and clears the set, and is deliberately not named in the help or
+in the unrecognized-word reply. A `no`-prefix (`noshade`) parsed too until it
+was removed — with an empty default it could only ever cancel a layer named in
+the same command. Each layer now
 gets a one-line explanation in `!merge help`, built from `OVERLAY_HELP` so the
 help cannot name a layer the parser rejects or miss one it accepts. Three
 details in `parse_overlays` and the command signature:
@@ -2008,7 +2060,7 @@ fog-only zoom fallback.
 only one edge per direction has enough for pan but no opposite pair to size
 itself against, and may have no usable fog either — a zoomed-in view of a
 mostly-explored board is both at once. Rather than drop it, its zoom is
-borrowed from a shot that *did* anchor, via SIFT (`SIFT_ZOOM_MIN_INLIERS`).
+borrowed from a shot that *did* anchor, via SIFT (`SIFT_TERRAIN_MIN_INLIERS`).
 This is **not** a return to the old register-the-group-then-anchor design:
 shots that can self-anchor still do so independently, only an otherwise-dropped
 shot borrows, pan still comes from its own edges, and the borrowed quantity is
@@ -2353,7 +2405,7 @@ The badge-halo history above is the reason to keep the rule regardless.
 **A shot that keeps its own anchor is still corroborated before being dropped**
 (`corroborate_anchor`): SIFT against a shot that anchored on its own, scored by
 exactly `--cross-check`'s measurement. It is kept when some anchored shot gives
->= `SIFT_ZOOM_MIN_INLIERS` inliers *and* puts it within
+>= `SIFT_TERRAIN_MIN_INLIERS` on-terrain inliers *and* puts it within
 `MISANCHOR_CORROBORATE_MAX_TILES` (0.20) of its own anchor. Both bars are
 load-bearing and guard different failures: the inlier floor rejects fog matching
 the wrong repeat of itself (confident, high-scoring, badly wrong), the agreement
@@ -4745,10 +4797,17 @@ anchors itself as far as its own evidence reaches.
 Three properties keep this from sliding back into the old
 register-the-group-then-anchor design: it is reached only by a shot that
 already failed to self-anchor, at least one real board edge is still required,
-and the borrowed quantity is one scalar offset. `SIFT_ZOOM_MIN_INLIERS` (150)
-is the whole gate — deliberately high, because fog matches the wrong repeat of
-itself at 115 inliers on `test_ss_elyruins`, where a genuine terrain match runs
-1000+. There is no second opinion available: a borrowed *zoom* can be checked
+and the borrowed quantity is one scalar offset. `SIFT_TERRAIN_MIN_INLIERS`
+(60) is the whole gate — and it is a count of inliers **on terrain**, not a raw
+one, because a raw count does not separate the populations in either direction:
+fog matches the wrong repeat of itself at 115 raw inliers on
+`test_ss_elyruins` while a genuine match can be as low as 108 (`replay_ss2`).
+On terrain those same two read **0** and **100**.
+
+**A second, raw floor of 150 called `SIFT_ZOOM_MIN_INLIERS` used to sit above
+it and is gone.** It had no code reference left — the terrain count replaced it
+everywhere — so it was documented here as the live gate while gating nothing.
+If you are reading an older note that names it, substitute the terrain floor. There is no second opinion available: a borrowed *zoom* can be checked
 against the shot's own fog, but a borrowed *offset* cannot, since the fog test
 cannot tell one lattice repeat from the next.
 
