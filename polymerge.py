@@ -3889,6 +3889,15 @@ def main():
         unanchorable that the merge handled fine (pol_archi_test)."""
         M_of, src_of, implied_of, scale_of, failed = {}, {}, {}, {}, []
         prior_of = {}
+
+        def _record(n, M, implied):
+            """File one shot's anchor into M_of/scale_of/implied_of. Run once
+            per shot in each of the two passes below."""
+            M_of[n] = M
+            scale_of[n] = float(np.hypot(M[0, 0], M[1, 0]))
+            if implied is not None:
+                implied_of[n] = implied
+
         for n in names:
             print(f"anchoring {n}:")
             try:
@@ -3898,10 +3907,7 @@ def main():
                     args.min_edge_support, n, refine=not args.no_refine,
                     min_scale_support=args.min_scale_support,
                     sky_rebuild=sky_rebuild_for(n), cache=shot_cache)
-                M_of[n] = M
-                scale_of[n] = float(np.hypot(M[0, 0], M[1, 0]))
-                if implied is not None:
-                    implied_of[n] = implied
+                _record(n, M, implied)
             except SystemExit as e:
                 print(f"  no self-anchor: {e}")
                 failed.append(n)
@@ -3959,10 +3965,7 @@ def main():
                         zoom_hint=scale_of[m] * k,
                         sky_rebuild=sky_rebuild_for(n),
                         pan_hint=borrowed, cache=shot_cache)
-                    M_of[n] = M
-                    scale_of[n] = float(np.hypot(M[0, 0], M[1, 0]))
-                    if implied is not None:
-                        implied_of[n] = implied
+                    _record(n, M, implied)
                     failed.remove(n)
                 except SystemExit as e:
                     print(f"  dropped -- {e}")

@@ -1549,13 +1549,14 @@ async def do_merge(caller, map_size, overlays):
     note = (f" ({skipped} non-image attachment{'' if skipped == 1 else 's'} ignored)"
              if skipped else "")
     at = f" at {map_size}x{map_size}" if map_size else ""
+    plural = "" if len(shots) == 1 else "s"
 
-    # Recomputed at each use rather than built once, because the estimate can
-    # move between the ack and the edit below -- most sharply over the bot's
-    # first few merges, while the learned speed factor is still replacing the
-    # seed, which is exactly when a queued player is watching this message.
+    # The estimate inside is recomputed at each call rather than built once,
+    # because it can move between the ack and the edit below -- most sharply
+    # over the bot's first few merges, while the learned speed factor is still
+    # replacing the seed, which is exactly when a queued player is watching
+    # this message.
     def starting_text():
-        plural = "" if len(shots) == 1 else "s"
         return (f"Merging {len(shots)} screenshot{plural}{at}{note} -- "
                 f"{human_wait(merge_estimate(len(shots)))}. {WAIT_EMOJI}")
 
@@ -1729,7 +1730,6 @@ async def do_merge(caller, map_size, overlays):
                        f"screenshot needs two adjoining sides of the board "
                        f"in frame.")
         else:
-            plural = "" if len(shots) == 1 else "s"
             caption = (f"Merged {len(shots)} screenshot{plural} in "
                        f"{elapsed:.0f}s. {HAPPY_EMOJI}")
         if map_size is None and found_size:
