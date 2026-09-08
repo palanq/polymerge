@@ -4514,15 +4514,23 @@ def main():
         """Is n's anchor confirmed by an already-anchored shot's SIFT geometry?
 
         Both bars have to be cleared, and they guard different failures: the
-        inlier floor (inside sift_hop) rejects fog matching the wrong repeat of
-        itself -- the confident, high-scoring, badly wrong match -- and the gap
-        bar rejects a genuine match that simply disagrees. Returns a phrase
-        describing the evidence, or None."""
-        hop = sift_hop(n, witnesses)
-        if hop is None or hop[3] > MISANCHOR_CORROBORATE_MAX_TILES:
-            return None
-        return (f"sits {hop[3]:.3f} tiles from where {hop[1]}'s SIFT geometry "
-                f"puts it, on {hop[0]} inliers")
+        terrain-inlier floor (SIFT_TERRAIN_MIN_INLIERS, applied inside
+        sift_hops) rejects fog matching the wrong repeat of itself -- the
+        confident, high-scoring, badly wrong match -- and the gap bar rejects a
+        genuine match that simply disagrees. Returns a phrase describing the
+        evidence, or None.
+
+        *Some* anchored shot has to agree, not the best-matching one: sift_hops
+        ranks by inlier count, and inlier count is not what decides here (the
+        same reasoning as the anchor borrow above -- a near-identical view of
+        the same player's own board out-matches every other shot whether or not
+        it is anchored well). So every hop that cleared the inlier floor gets
+        to corroborate, and the first that also agrees is enough."""
+        for inl, m, _A, gap in sift_hops(n, witnesses):
+            if gap <= MISANCHOR_CORROBORATE_MAX_TILES:
+                return (f"sits {gap:.3f} tiles from where {m}'s SIFT geometry "
+                        f"puts it, on {inl} inliers")
+        return None
 
     if args.min_fog_lock > 0:
         suspect = [n for n in names

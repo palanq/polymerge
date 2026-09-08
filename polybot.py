@@ -1842,7 +1842,7 @@ async def do_merge(caller, map_size, overlays):
         # ADD_REACTIONS must not fail a merge that did reach the channel.
         if posted is None:
             if source_messages:
-                print(f"#{ctx.channel}: composite was not delivered, so "
+                print(f"#{caller.channel}: composite was not delivered, so "
                       f"{len(source_messages)} source message(s) are left "
                       f"unmarked and can be merged again", file=sys.stderr)
         else:
