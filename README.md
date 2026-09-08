@@ -10,7 +10,10 @@ are in `CLAUDE.md`, and are deliberately not shipped in the image.
 
 ## Running it
 
-The image is published to GHCR on every push to `main`, so a host needs
+The image is published to GHCR whenever a push to `main` touches something the
+image actually contains (the two scripts, `requirements.txt`, `Dockerfile`,
+`.dockerignore`, `Overlays/` or `Assets/`) -- a docs-only push publishes
+nothing. So a host needs
 `compose.yaml` and a `.env` -- **not this repo**. The screenshots under `tests/`
 carry player handles in their HUDs and stay private, which is the whole reason
 distribution goes through an image.
