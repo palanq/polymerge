@@ -744,8 +744,7 @@ def load_shot(path, args):
     if not args.no_badge_filter:
         badge, found = pm.detect_capture_badges(im, S["valid"])
         if found:
-            print(f"excluding {len(found)} capture-badge blob(s) "
-                  f"{[(a, x, y) for a, x, y, w, h in found]}")
+            print(f"excluding {len(found)} capture-badge blob(s) {found}")
             S["badge"] = badge
             S["valid"] = S["valid"] & ~badge
             S["frame"] = S["frame"] & ~badge

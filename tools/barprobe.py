@@ -178,30 +178,6 @@ def _band_rows(lo, hi, tile, vy, ry0, rows):
     return a, b
 
 
-def probe(sy, origin, u_col, u_row, i, j):
-    """Test the bar hypotheses at tile (i, j)'s south vertex, both polarities.
-
-    **A bar is not always brighter than what is behind it.** The obvious
-    reading of the silhouette -- a rising luminance step along the top and a
-    falling one along the bottom -- holds for the off-white and blue bars, and
-    fails outright for a red one: pure red converts to a gray of about 76 while
-    grass sits near 130, so a red bar is a *darker* oblong on brighter ground
-    and both its steps run the other way. scorched_earth's Icalus at (15,6) is
-    six red segments with no white at all, and a bright-on-dark test finds no
-    row pair there whatsoever.
-
-    So try both polarities and keep the better. What the bar actually
-    guarantees is a step *in* and a step *out* at fixed rows -- not which way
-    the luminance happens to go.
-    """
-    best_r = None
-    for flip in (False, True):
-        r = _probe_polarity(sy, origin, u_col, u_row, i, j, flip)
-        if r and (best_r is None or r["score"] > best_r["score"]):
-            best_r = r
-    return best_r
-
-
 def _probe_polarity(sy, origin, u_col, u_row, i, j, flip):
     tile = float(np.linalg.norm(u_col))
     vx, vy = origin + (i + 1) * u_col + (j + 1) * u_row
@@ -337,7 +313,6 @@ def probe_shot(bgr, origin, u_col, u_row, n):
     so only (n-2)^2 of n^2 tiles are looked at -- about 80% at either size.
     """
     sy = edge_rows(bgr)
-    tile = float(np.linalg.norm(u_col))
     out = {}
     for i in range(1, n - 1):
         for j in range(1, n - 1):
@@ -408,8 +383,7 @@ def main():
     args = ap.parse_args()
 
     names = args.only or list(bl.SETS)
-    kept, cut = [], {"unseen": 0, "score": 0, "color": 0, "plate": 0,
-                     "diff": 0}
+    kept, cut = [], {"unseen": 0, "score": 0, "color": 0, "diff": 0}
     for name in names:
         d = os.path.join(ROOT, "tests", name, "debug")
         if not os.path.exists(os.path.join(d, "anchor.json")):
@@ -467,7 +441,6 @@ def main():
                 # widths, overlapping whatever a non-bar reads, so as built it
                 # rejects real bars -- see the note by PLATE_MIN.
                 if PLATE_MIN and m["plate"] < PLATE_MIN:
-                    cut["plate"] += 1
                     continue
                 # The differential: among the shots that witnessed this tile as
                 # explored, a bar should stand clear. Terrain scores about the

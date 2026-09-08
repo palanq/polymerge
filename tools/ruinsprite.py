@@ -10,12 +10,20 @@ from.
 
 Why this exists
 ---------------
-detect_ruin_vision currently decides what a marker is from HSV statistics
-fitted to the corpus, and CLAUDE.md already records that the basis is unsound:
-mean S is a mean over pixels *already* above RUIN_MIN_SAT, so it describes how
-crisply a marker was captured rather than what the marker is. That mistake cost
-u_forest 6 of 8 ruins and basin_treaties 4 of 5 while both sets still reported
-a non-zero count and looked healthy.
+**The rewrite argued for below has shipped.** detect_ruin_vision matches the
+sprite now: RUIN_FLAME_TILE_FRAC, RUIN_MATCH_MIN_CORR, RUIN_MATCH_MIN_SUPPORT
+and RUIN_MATCH_MIN_FADE are the constants this measures, and ruin_match_maps is
+the fit. So read this as the instrument those constants were set with and are
+re-derived on, not as a proposal.
+
+What it replaced: the detector decided what a marker was from HSV statistics
+fitted to the corpus, on an unsound basis -- mean saturation was a mean over
+pixels *already* above a saturation floor, so it described how crisply a marker
+was captured rather than what the marker is. That cost u_forest 6 of 8 ruins
+and basin_treaties 4 of 5 while both sets still reported a non-zero count and
+looked healthy. (The floor was called RUIN_MIN_SAT and no longer exists;
+RUIN_NOMINATE_SAT in polymerge is a different thing -- it nominates *where to
+search*, and never classifies anything.)
 
 The sprite settles it, because the compositing is exact and invertible:
 
@@ -55,7 +63,8 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLYMERGE = os.path.join(ROOT, "polymerge.py")
-TESTS = os.path.join(ROOT, "tests")
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+import baseline as bl                                     # noqa: E402
 SPRITE = os.path.join(ROOT, "Assets", "Rainbowflame.png")
 
 # The seven sets with an Elyrion player, and their board sizes. Membership is a
@@ -75,10 +84,11 @@ ELYRION = {
 CONTROLS = {"goon_test": 18, "star_change": 18, "xizauh": 20, "archers_test2": 20}
 
 # A flame's width as a fraction of the tile step -- the one number the matched
-# filter rests on. A starting estimate only: the shipped detector's thresholded
-# cores run 18-21px at |u_col| ~ 80, which is a floor, since a threshold sees
-# less of a flame than the flame is. --scale-sweep measures it properly.
-FLAME_TILE_FRAC = 0.24
+# filter rests on. Kept in step with polymerge's RUIN_FLAME_TILE_FRAC, which
+# --scale-sweep is what set: median correlation runs 0.689 at 0.16, 0.894 at
+# 0.26 and 0.480 at 0.44, a clean single peak, and one scale fits every flame
+# across both board sizes. Re-run the sweep before changing it.
+FLAME_TILE_FRAC = 0.26
 
 
 def load_sprite():
@@ -151,10 +161,12 @@ def run_merge(name, size, out_dir):
     Runs the real CLI rather than importing, for the reason polybot does the
     same: polymerge reads sys.argv and reports every failure via SystemExit.
     """
-    shots = sorted(
-        os.path.join(TESTS, name, f)
-        for f in os.listdir(os.path.join(TESTS, name))
-        if f.lower().endswith((".jpg", ".png", ".webp")) and f != "merged.png")
+    # baseline.shots_for, not a local filter: this one excluded "merged.png"
+    # alone, so tests/goon_test/fogless.png and tests/archers_test2/fogless.png
+    # -- post-game renders of the finished map, kept as references -- were being
+    # merged as input shots on two of the four control sets, which baseline
+    # explicitly refuses to do. It also missed ".jpeg".
+    shots = bl.shots_for(name)
     dbg = os.path.join(out_dir, name)
     os.makedirs(dbg, exist_ok=True)
     cmd = [sys.executable, POLYMERGE] + shots + [
@@ -254,10 +266,13 @@ def corr_map(obs, fog, spr, fog_mean, valid):
     return num / den, num / np.maximum(kk, 1e-9), kk / max(kk_full, 1e-9)
 
 
-# What the shipped detector reports today, per set, as tools/baseline.py
-# tracks it. Not a target -- the point of the rewrite is to find ruins this
-# misses -- but the number any change has to be read against, since a count
-# going *down* on a set is the regression this whole exercise is about.
+# What the shipped detector reports per set, as tools/baseline.py tracks it.
+# A count going *down* on a set is the regression this whole exercise is about.
+#
+# These seven numbers happen to be unchanged across the sprite rewrite -- the
+# matched filter reproduced the old detector's per-set counts exactly -- so they
+# are the current figures as well as the historical ones. Re-read them off
+# baseline.py rather than trusting this copy if anything here moves.
 KNOWN_RUINS = {
     "test_screenshots": 3, "test_ss_2": 3, "beautiful_test3": 3,
     "test_ss_elyruins": 11, "basin_treaties": 5, "u_forest": 9, "u_forest2": 3,
