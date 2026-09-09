@@ -3290,14 +3290,26 @@ class Shot:
     """One screenshot: its image, masks, anchor and warp -- everything main
     computes about it that is read more than once.
 
-    valid/valid_raw/edge_mask/frame/frame_raw are (re)built in place by
-    main's build_masks -- see its docstring, which is also why a Shot's
-    identity is the image rather than any one mask: the masks are just its
-    current best understanding of that image, and build_masks can replace
-    all of them a second time (the sunrise-sky fallback). badge_mask/
-    badge_halo stay None on a shot with no capture badge; every shot still
-    gets a Shot, badge or not, the same way badge_mask_of used to give every
-    shot an entry.
+    valid/valid_raw/edge_mask/frame/frame_raw and hsv are built at
+    construction from nothing but the image, args and this shot's ui-mask
+    rects -- there is no run state left to bolt on afterward the way an
+    earlier version did. valid/valid_raw/edge_mask/frame are also the one
+    part of this that is not "compute once": build_masks can be called again
+    later to replace all four in place (the sunrise-sky fallback), which is
+    why a Shot's identity is the image rather than any one mask -- the masks
+    are just its current best understanding of that image. frame_raw and hsv
+    never get rebuilt: the sky test decides what was *photographed*, not
+    what is bright enough to judge, and hsv is a plain colorspace conversion
+    with nothing sky-related in it.
+
+    badge_mask/badge_halo are set by detect_badge, also called once at
+    construction (unless --no-badge-filter) but kept a separate method
+    rather than folded into __init__: the badge is detected *from* valid,
+    so it is not known until after the first mask build, and the caller
+    needs the blob list back to log and bookkeep it, which is main()'s
+    business and not this object's. Both stay None on a shot with no
+    capture badge; every shot still gets a Shot, badge or not, the same way
+    badge_mask_of used to give every shot an entry.
 
     to_template is set once anchor_all resolves a transform and then, like
     the masks, can be replaced in place -- the zero-lock revert to `prior`,
@@ -3315,10 +3327,28 @@ class Shot:
     detector output (city-bar, ruin-vision) -- each a list, possibly empty,
     and None until that phase actually runs for this shot (only when the
     corresponding --city-bars/--ruin-vision flag is on); ruins is a list of
-    (i, j, area, mask). sift_mask/terrain_mask/sift_features are lazy,
-    memoized on first use by sift_mask_for/terrain_mask_for/sift_hops --
-    folded in because each already had exactly one producer, so there is no
-    caching topology to disturb by moving where the memo lives.
+    (i, j, area, mask). sift_features is lazy, memoized on first use by
+    sift_hops -- folded in because it already had exactly one producer, so
+    there is no caching topology to disturb by moving where the memo lives.
+
+    sift_mask() and terrain_mask() are genuine methods rather than fields
+    filed in from main, and that split is deliberate: everything above needs
+    something from the run (the template, the board lattice, an args
+    threshold) and so is computed by main and handed in, but these two need
+    nothing but the shot's own valid/edge_mask/hsv plus fixed constants of
+    the game's projection (BOARD_DIR_A/BOARD_DIR_B, PIXEL_FOG_SAT) -- they
+    were only ever passed dir_a/dir_b as parameters because main happened to
+    have local aliases for those constants lying around, not because the
+    values are actually per-run. A method only belongs on Shot when the shot
+    has everything it needs to compute the thing itself; these two are the
+    ones that qualify. build_masks and detect_badge are not that -- they
+    take args and rects because darkness thresholds and crop bands really
+    are per-run -- which is why __init__ takes them too rather than reading
+    them off nothing. The backing fields for sift_mask/terrain_mask are
+    private (a leading underscore) because the method, not the field, is
+    the interface -- same shape as Python's own cached_property, just
+    written out by hand since __slots__ has no instance __dict__ for
+    cached_property to use.
 
     __slots__ avoids a per-attribute dict for state read at every tile of
     every anchor candidate, the same reasoning behind polybot's _Queued."""
@@ -3327,24 +3357,27 @@ class Shot:
                  "to_template", "zoom_source", "implied_n", "prior",
                  "scale", "warped", "wmask", "wmask_raw", "pmask", "pmask_raw",
                  "gain", "fogpix", "bars", "ruins",
-                 "sift_mask", "terrain_mask", "sift_features")
+                 "_sift_mask", "_terrain_mask", "sift_features")
 
-    def __init__(self, img):
+    def __init__(self, img, args, rects):
         self.img = img
-        self.hsv = None
-        self.valid = None
-        self.valid_raw = None
-        self.frame = None
-        self.frame_raw = None
-        self.edge_mask = None
+        # The paste-time counterpart of valid: same badge handling as
+        # build_masks below, but built from build_frame_mask so darkness
+        # never disqualifies a pixel from being pasted (see that
+        # docstring). Built once, here, and never rebuilt -- see the class
+        # docstring.
+        self.frame_raw = build_frame_mask(img, rects, args.top_crop,
+                                          args.bottom_crop)
         self.badge_mask = None
         self.badge_halo = None
+        self.build_masks(args, rects)
+        self.hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         self.gain = None
         self.fogpix = None
         self.bars = None
         self.ruins = None
-        self.sift_mask = None
-        self.terrain_mask = None
+        self._sift_mask = None
+        self._terrain_mask = None
         self.sift_features = None
         self.to_template = None
         self.zoom_source = None
@@ -3356,6 +3389,99 @@ class Shot:
         self.wmask_raw = None
         self.pmask = None
         self.pmask_raw = None
+
+    def build_masks(self, args, rects, drop_sky=False):
+        """(Re)build the two brightness masks for this shot, in place.
+
+        Called at most twice: once from __init__, and again from
+        sky_rebuild_for when the ordinary masks yielded no usable board
+        edge, that time with the sunrise-sky test. Those two were written
+        out separately for a long time, which is a poor shape for a
+        sequence with a step that is easy to leave out -- see
+        _subtract_badges."""
+        self.valid_raw = build_valid_mask(self.img, rects, args.dark_thresh,
+                                          args.erode_px, args.top_crop,
+                                          args.bottom_crop, drop_sky=drop_sky)
+        # Geometry comes off the *un-eroded* mask. --erode-px exists to keep
+        # SIFT features and tile samples away from the mask's fringe, but it
+        # eats erode_px of the board edge in each image's own pixels -- i.e.
+        # a different amount of board in each, since the shots differ in
+        # zoom by up to 1.4x. Anchoring off that would bake a scale error
+        # into the fit.
+        self.edge_mask = build_valid_mask(self.img, rects, args.dark_thresh,
+                                          0, args.top_crop, args.bottom_crop,
+                                          drop_sky=drop_sky)
+        self._subtract_badges()
+
+    def _subtract_badges(self):
+        """Take this shot's capture badge back off the masks that must not
+        see it, after either build_masks call above.
+
+        Separate from build_masks for two reasons: the badge is detected
+        *from* valid, so at construction it is not known until after the
+        first build; and a rebuild replaces valid_raw and edge_mask from
+        scratch, so it has to redo exactly this. The halo half is the one
+        that gets forgotten, and forgetting it reintroduces the phantom
+        board edge on precisely the shots a rebuild is for -- see
+        badge_halo."""
+        badge = self.badge_mask
+        self.valid = self.valid_raw & ~badge if badge is not None else self.valid_raw
+        self.frame = self.frame_raw & ~badge if badge is not None else self.frame_raw
+        if self.badge_halo is not None:
+            self.edge_mask = self.edge_mask & ~self.badge_halo
+
+    def detect_badge(self, args):
+        """Find this shot's capture badge, if any, and exclude it from the
+        masks that must not see it.
+
+        Detected against the badge-free masks build_masks just built, which
+        is why this runs after it rather than being folded into it. Returns
+        the blob list rather than logging it directly, so the caller can
+        name the shot and add it to whatever run-wide bookkeeping it keeps
+        -- this object has no name of its own to log with. Every shot still
+        gets a badge_mask, badge or not -- an all-zero mask when nothing was
+        found, which --debug-dir relies on to write badges_<name>.png for
+        every shot: an empty overlay is how you see the detector did not
+        misfire. So "did any shot have a badge?" cannot be asked of
+        badge_mask; the caller's own bookkeeping answers it instead."""
+        badge, found = detect_capture_badges(self.img, self.valid)
+        if found:
+            self.badge_halo = badge_halo(badge, found)
+        self.badge_mask = badge
+        self._subtract_badges()
+        return found
+
+    def sift_mask(self):
+        """Pixels SIFT may take features from: the board, and nothing else.
+
+        Chrome that survives the crop is a hazard here in a way it is not for
+        the edge fit, because two screenshots of the same *replay* carry
+        pixel-identical UI -- the turn timeline, the transport buttons -- and
+        identical pixels match perfectly. On tests/replay_ss2 that gives 330
+        inliers on a flat identity transform, beating the genuine board match's
+        113 and reporting that two different views of the board are the same
+        image. Ordinary gameplay shots hide this because their HUD differs
+        between captures (score, turn, whose go it is).
+
+        Lazily computed and cached: it costs one morphology pass, and only on
+        the paths that use SIFT at all."""
+        if self._sift_mask is None:
+            self._sift_mask = self.valid & board_region(
+                self.edge_mask, (BOARD_DIR_A, BOARD_DIR_B))
+        return self._sift_mask
+
+    def terrain_mask(self):
+        """Pixels saturated enough that they cannot be the fog cube.
+
+        Used only to count how many SIFT inliers rest on terrain rather than
+        fog (see SIFT_TERRAIN_MIN_INLIERS). This is emphatically *not* fog
+        classification -- it never decides what a tile is, only whether a
+        correspondence is worth counting -- which is the same distinction
+        that makes RUIN_NOMINATE_SAT acceptable while a color-based fog test
+        is not."""
+        if self._terrain_mask is None:
+            self._terrain_mask = self.hsv[:, :, 1] >= PIXEL_FOG_SAT
+        return self._terrain_mask
 
 
 # ------------------------------------------------------ map size detection ---
@@ -3752,84 +3878,24 @@ def main():
         names = [os.path.basename(p) for p in args.images]
         shots = {}
         badge_found = set()
-
-        def build_masks(name, drop_sky=False):
-            """(Re)build the two brightness masks for one shot.
-
-            Called at most twice per shot: once at load, and again from
-            sky_rebuild_for when the ordinary masks yielded no usable board
-            edge, that time with the sunrise-sky test. Those two were written
-            out separately for a long time, which is a poor shape for a
-            sequence with a step that is easy to leave out -- see
-            subtract_badges."""
-            rects = ui.get(name, [])
-            s = shots[name]
-            im = s.img
-            s.valid_raw = build_valid_mask(im, rects, args.dark_thresh,
-                                           args.erode_px, args.top_crop,
-                                           args.bottom_crop,
-                                           drop_sky=drop_sky)
-            # Geometry comes off the *un-eroded* mask. --erode-px exists to keep
-            # SIFT features and tile samples away from the mask's fringe, but it
-            # eats erode_px of the board edge in each image's own pixels -- i.e.
-            # a different amount of board in each, since the shots differ in
-            # zoom by up to 1.4x. Anchoring off that would bake a scale error
-            # into the fit.
-            s.edge_mask = build_valid_mask(im, rects, args.dark_thresh, 0,
-                                           args.top_crop, args.bottom_crop,
-                                           drop_sky=drop_sky)
-            subtract_badges(name)
-
-        def subtract_badges(name):
-            """Take this shot's capture badge back off the masks that must not
-            see it, after either build above.
-
-            Separate from build_masks for two reasons: the badge is detected
-            *from* valid, so at load time it is not known until after the first
-            build; and a rebuild replaces valid_raw and edge_mask from scratch,
-            so it has to redo exactly this. The halo half is the one that gets
-            forgotten, and forgetting it reintroduces the phantom board edge on
-            precisely the shots a rebuild is for -- see badge_halo."""
-            s = shots[name]
-            badge = s.badge_mask
-            s.valid = s.valid_raw & ~badge if badge is not None else s.valid_raw
-            s.frame = s.frame_raw & ~badge if badge is not None else s.frame_raw
-            if s.badge_halo is not None:
-                s.edge_mask = s.edge_mask & ~s.badge_halo
         for path, name in zip(args.images, names):
             im = cv2.imread(path)
             if im is None:
                 # basename, not the full path: this message is passed straight
                 # to a Discord channel, and the path is a server-side temp dir
                 raise SystemExit(f"cannot read {name} -- it appears invalid")
-            shots[name] = Shot(im)
-            # frame/frame_raw are the paste-time counterparts of valid/valid_raw:
-            # same badge handling, but built from build_frame_mask so darkness
-            # never disqualifies a pixel from being pasted (see that docstring).
-            # Built once: the sky test does not touch it, because it decides
-            # what was *photographed*, not what is bright enough to judge.
-            shots[name].frame_raw = build_frame_mask(im, ui.get(name, []),
-                                                      args.top_crop, args.bottom_crop)
-            build_masks(name)
-            shots[name].hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+            shots[name] = Shot(im, args, ui.get(name, []))
             if not args.no_badge_filter:
-                # Detected against the badge-free masks just built, which is
-                # why the subtraction is a separate step rather than part of
-                # build_masks.
-                badge, found = detect_capture_badges(im, shots[name].valid)
+                found = shots[name].detect_badge(args)
                 if found:
                     print(f"{name}: excluding {len(found)} capture-badge "
                           f"blob(s) {found}")
-                    shots[name].badge_halo = badge_halo(badge, found)
+                    # badge_mask/badge_halo alone can't answer "did any shot
+                    # have a badge?" -- an all-zero badge_mask is also what a
+                    # clean shot gets, deliberately, so --debug-dir has an
+                    # empty badges_<name>.png to show the detector did not
+                    # misfire. badge_found is the answer to that question.
                     badge_found.add(name)
-                # Every shot gets a badge_mask, badge or not -- an all-zero
-                # mask when nothing was found. --debug-dir relies on that to
-                # write badges_<name>.png for every shot, which is deliberate:
-                # an empty overlay is how you see the detector did not misfire.
-                # So "did any shot have a badge?" cannot be asked of this
-                # field; badge_found answers it instead.
-                shots[name].badge_mask = badge
-                subtract_badges(name)
 
     # A score screen is a menu drawn over a dimmed copy of the map, and it
     # anchors well enough to poison a merge (see board_angle_fraction). Dropped
@@ -3915,39 +3981,6 @@ def main():
     tile_px = float(np.linalg.norm(u_col))
     print(f"tile step: {tile_px:.2f}px")
 
-    def sift_mask_for(n):
-        """Pixels SIFT may take features from: the board, and nothing else.
-
-        Chrome that survives the crop is a hazard here in a way it is not for
-        the edge fit, because two screenshots of the same *replay* carry
-        pixel-identical UI -- the turn timeline, the transport buttons -- and
-        identical pixels match perfectly. On tests/replay_ss2 that gives 330
-        inliers on a flat identity transform, beating the genuine board match's
-        113 and reporting that two different views of the board are the same
-        image. Ordinary gameplay shots hide this because their HUD differs
-        between captures (score, turn, whose go it is).
-
-        Built lazily and cached on the Shot: it costs one morphology pass per
-        shot, and only on the paths that use SIFT at all."""
-        s = shots[n]
-        if s.sift_mask is None:
-            s.sift_mask = s.valid & board_region(s.edge_mask, (dir_a, dir_b))
-        return s.sift_mask
-
-    def terrain_mask_for(n):
-        """Pixels saturated enough that they cannot be the fog cube.
-
-        Used only to count how many SIFT inliers rest on terrain rather than fog
-        (see SIFT_TERRAIN_MIN_INLIERS). This is emphatically *not* fog
-        classification -- it never decides what a tile is, only whether a
-        correspondence is worth counting -- which is the same distinction that
-        makes RUIN_NOMINATE_SAT acceptable while a color-based fog test is
-        not."""
-        s = shots[n]
-        if s.terrain_mask is None:
-            s.terrain_mask = s.hsv[:, :, 1] >= PIXEL_FOG_SAT
-        return s.terrain_mask
-
     def sky_rebuild_for(n):
         """Rebuild one shot's masks with the sunrise-sky test.
 
@@ -3960,7 +3993,7 @@ def main():
         because everything downstream -- the warp, tile sampling, SIFT --
         has to see the same masks the anchor was fitted on."""
         def rebuild():
-            build_masks(n, drop_sky=True)
+            shots[n].build_masks(args, ui.get(n, []), drop_sky=True)
             return shots[n].edge_mask, shots[n].valid
         return rebuild
 
@@ -4003,7 +4036,7 @@ def main():
             # "(unattributed)" line negative and makes the whole timing block
             # untrustworthy.
             with PHASES("anchor: SIFT zoom fallback"):
-                feats = {n: sift_features(shots[n].img, sift_mask_for(n), args.nfeatures,
+                feats = {n: sift_features(shots[n].img, shots[n].sift_mask(), args.nfeatures,
                                           args.contrast)
                          for n in list(M_of) + failed}
                 hints = {}
@@ -4016,7 +4049,7 @@ def main():
                     for m in M_of:
                         M_nm, inl, terr = pair_transform(
                             *feats[n], *feats[m], args.ratio, args.reproj,
-                            terrain=(terrain_mask_for(n), terrain_mask_for(m)))
+                            terrain=(shots[n].terrain_mask(), shots[m].terrain_mask()))
                         if M_nm is not None and terr > best[0]:
                             best = (terr, inl, m, M_nm)
                     hints[n] = best
@@ -4059,7 +4092,7 @@ def main():
 
     if args.cross_check:
         anchors = anchor_all()[0]
-        feats = {n: sift_features(shots[n].img, sift_mask_for(n), args.nfeatures, args.contrast)
+        feats = {n: sift_features(shots[n].img, shots[n].sift_mask(), args.nfeatures, args.contrast)
                  for n in names}
         sift_edges = {(a, b): pair_transform(*feats[a], *feats[b], args.ratio,
                                              args.reproj)
@@ -4329,14 +4362,14 @@ def main():
             for m in witnesses + [n]:
                 s = shots[m]
                 if s.sift_features is None:
-                    s.sift_features = sift_features(s.img, sift_mask_for(m),
+                    s.sift_features = sift_features(s.img, s.sift_mask(),
                                                     args.nfeatures, args.contrast)
             out = []
             for m in witnesses:
                 M_nm, inl, terr = pair_transform(
                     *shots[n].sift_features, *shots[m].sift_features,
                     args.ratio, args.reproj,
-                    terrain=(terrain_mask_for(n), terrain_mask_for(m)))
+                    terrain=(shots[n].terrain_mask(), shots[m].terrain_mask()))
                 if M_nm is None or terr < SIFT_TERRAIN_MIN_INLIERS:
                     continue
                 A = shots[m].to_template @ to_h(M_nm)   # n's pixels -> template
