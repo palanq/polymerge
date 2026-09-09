@@ -393,7 +393,7 @@ def to_h(M):
     return H
 
 
-# --------------------------------------------------------------- tile grid ---
+# ----------------------------------------------------------- board geometry ---
 SIDE_CORNER_MIN_WALL = 0.5   # fraction of the local wall height a column must
                              # reach before it can define a side corner
 
@@ -1527,9 +1527,9 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
     slab's 3D side walls, and a span always pairs a height-dependent top edge
     with a bottom lip, so the estimate carries a small systematic bias (mean
     +0.28%, at most 0.92% over the sets that existed when it was measured). But
-    they are an excellent
-    *prior*, and starting from them is what lets the refinement search a +-3%
-    window rather than sweeping the whole plausible zoom range. A shot with no
+    they are an excellent *prior*, and starting from them is what lets the
+    refinement search a +-3% window rather than sweeping the whole plausible
+    zoom range. A shot with no
     opposite pair of edges at all has no edge-derived zoom and falls back to
     the fog art's own repeat period (fog_period_scale; see that docstring for
     why period measurement replaced patch matching). An edge *pair* is still
@@ -1880,6 +1880,7 @@ def cross_check(anchors, sift_edges, t_corners, tile_px):
     return out
 
 
+# ------------------------------------------------------ tile grid & sampling ---
 def build_lattice(top, right, left, n):
     """The two tile step vectors, and the board's north corner as the origin.
 
@@ -2585,6 +2586,51 @@ def detect_ruin_vision(warped_bgr, wmask, fog_area, template, gain, origin,
     return out
 
 
+def cluster_ruin_tiles(hits, origin, u_col, u_row):
+    """Collapse per-tile ruin detections into one entry per actual ruin.
+
+    A ruin's marker is a cluster of several diamonds, and ruins are never
+    adjacent in Polytopia -- so two detections on neighboring tiles cannot be
+    two ruins. They are one cluster straddling a tile border, reported twice
+    because each diamond's own centroid fell on a different side. The rule is
+    the game's, which makes this a correction rather than a heuristic: on
+    test_ss_elyruins it turns 16 detections into 11 ruins, and any remaining
+    adjacency would mean something is wrong.
+
+    Adjacency is the 8-neighborhood, not the 4: three of the five clusters
+    measured there meet only at a tile *corner*, which is exactly what a
+    cluster sitting near a lattice vertex produces.
+
+    The surviving tile is the one containing the centroid of the cluster's
+    combined pixels, pooled across every source that saw it -- the same
+    centroid rule used for one diamond, applied to the whole cluster instead
+    of an arbitrary piece of it."""
+    tiles = sorted(hits)
+    seen, out = set(), {}
+    for t in tiles:
+        if t in seen:
+            continue
+        stack, comp = [t], []
+        seen.add(t)
+        while stack:                      # flood fill over adjacent detections
+            c = stack.pop()
+            comp.append(c)
+            for u in tiles:
+                if u not in seen and max(abs(u[0] - c[0]), abs(u[1] - c[1])) <= 1:
+                    seen.add(u)
+                    stack.append(u)
+        merged = [h for c in comp for h in hits[c]]
+        sy = sx = tot = 0.0
+        for _, _, mask in merged:
+            ys, xs = np.nonzero(mask)
+            sy += ys.sum(); sx += xs.sum(); tot += ys.size
+        key = tile_of_point((sx / tot, sy / tot), origin, u_col, u_row)
+        if key not in comp:               # centroid landed off the cluster --
+            key = comp[0]                 # shouldn't happen; keep it in-cluster
+        out[key] = (merged, sorted(comp))
+    return out
+
+
 # ------------------------------------------------- city population bar ---
 # The bar drawn under a city's name label is the one genuinely owner-only
 # element of the city UI: only that city's owner's screenshot renders it. (The
@@ -2637,7 +2683,6 @@ def plate_edge_run(gray, vx, vy, s):
         edges = np.flatnonzero(np.diff(np.concatenate(([0], row, [0]))))
         best = max(best, int((edges[1::2] - edges[::2]).max()))
     return best / s
-
 
 
 # **Detection is anchored, not searched.** A bar is always centered on its city
@@ -2955,52 +3000,10 @@ def detect_population_bars(warped_bgr, wmask, origin, u_col, u_row, n):
     return bars
 
 
-def cluster_ruin_tiles(hits, origin, u_col, u_row):
-    """Collapse per-tile ruin detections into one entry per actual ruin.
-
-    A ruin's marker is a cluster of several diamonds, and ruins are never
-    adjacent in Polytopia -- so two detections on neighboring tiles cannot be
-    two ruins. They are one cluster straddling a tile border, reported twice
-    because each diamond's own centroid fell on a different side. The rule is
-    the game's, which makes this a correction rather than a heuristic: on
-    test_ss_elyruins it turns 16 detections into 11 ruins, and any remaining
-    adjacency would mean something is wrong.
-
-    Adjacency is the 8-neighborhood, not the 4: three of the five clusters
-    measured there meet only at a tile *corner*, which is exactly what a
-    cluster sitting near a lattice vertex produces.
-
-    The surviving tile is the one containing the centroid of the cluster's
-    combined pixels, pooled across every source that saw it -- the same
-    centroid rule used for one diamond, applied to the whole cluster instead
-    of an arbitrary piece of it."""
-    tiles = sorted(hits)
-    seen, out = set(), {}
-    for t in tiles:
-        if t in seen:
-            continue
-        stack, comp = [t], []
-        seen.add(t)
-        while stack:                      # flood fill over adjacent detections
-            c = stack.pop()
-            comp.append(c)
-            for u in tiles:
-                if u not in seen and max(abs(u[0] - c[0]), abs(u[1] - c[1])) <= 1:
-                    seen.add(u)
-                    stack.append(u)
-        merged = [h for c in comp for h in hits[c]]
-        sy = sx = tot = 0.0
-        for _, _, mask in merged:
-            ys, xs = np.nonzero(mask)
-            sy += ys.sum(); sx += xs.sum(); tot += ys.size
-        key = tile_of_point((sx / tot, sy / tot), origin, u_col, u_row)
-        if key not in comp:               # centroid landed off the cluster --
-            key = comp[0]                 # shouldn't happen; keep it in-cluster
-        out[key] = (merged, sorted(comp))
-    return out
-
-
-# ------------------------------------------------------ map size detection ---
+# ---------------------------------------------- board renders & templates ---
+# Overlay/template file resolution and loading, plus the per-render and
+# per-shot geometry caches (template_geometry, ShotCache) that both the map
+# size detection below and the main anchoring path draw on.
 OVERLAY_DIR = "Overlays"
 
 
@@ -3283,6 +3286,7 @@ class ShotCache:
         return self._period[key]
 
 
+# ------------------------------------------------------ map size detection ---
 def _probe_basis(dark_thresh, erode_px=0):
     """The board's projection directions, tile step and per-direction span,
     from any template.
