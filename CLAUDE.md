@@ -1716,12 +1716,21 @@ measurement returns 11.01, 14.00, 16.01, 17.86, 20.03 and 30.05:
 
 | size | name | blank | gridded | shaded | push | spawns |
 |---|---|---|---|---|---|---|
-| 11 | tiny | yes | yes | yes | — | — |
+| 11 | tiny | yes | yes | yes | yes | — |
 | 14 | small | yes | yes | yes | yes | 2spawns |
 | 16 | normal | yes | yes | yes | yes | 2spawns |
 | 18 | large | yes | yes | yes | yes | 2spawns |
 | 20 | huge | yes | yes | yes | yes | 3spawns |
 | 30 | massive | yes | — | — | — | — |
+
+**`tiny-push.png` is the one file in this directory that is not a render
+extracted from the game** -- 11x11 has no push layer in the game itself, and
+the corpus has no real 11x11 screenshot to check it against. It was hand-built
+(2026-09-10) from a directions grid supplied outside the game, by lifting the
+arrow sprite straight out of `large-push.png` (same fill/stroke pixels, just
+rotated and rescaled per tile) so its *style* still matches every other size
+exactly. Treat its *placement* as authored data, not as something the render
+pipeline measured.
 
 Facts about these files worth knowing before touching them:
 
@@ -4754,6 +4763,53 @@ template location.
   that actually failed, and they are the ones to look at first.
 
 ## Deferred (known, deliberately not handled yet)
+
+### Player detection via tribe heads in the bottom UI
+
+The bottom-of-screen UI shows a row of tribe head icons, one per player in the
+game. Detecting and identifying them per screenshot would let the merge
+attribute a shot to a specific player without relying on the reaction-based
+workflow's bookkeeping, and — the more interesting use — let the composite draw
+each player's own visible-territory boundary rather than just the union.
+Unexplored territory: whether the icon set is a fixed, cataloguable sprite per
+tribe (closer to the ruin-flame sprite match, which this codebase trusts) or
+varies enough per skin/level to need something looser. Also open: whether the
+row is cropped by `--top-crop`/`--bottom-crop` today, and if so whether reading
+it needs a separate uncropped pass the same way `--ui-mask` does.
+
+### `/merge update`: overlay a new screenshot onto a prior merge
+
+A command that takes a previous composite (the `merged.png` a past `!merge`
+produced) plus one or more new screenshots, and folds the new shots in without
+re-processing the originals — useful for a long game where players keep
+posting occasional screenshots and don't get to (or don't need to) re-attach
+an updated screenshot. Mechanically this is `anchor_to_template` and the paste
+loop treating the prior merge as just another source image anchored against
+the blank template, **except that its own `--top-crop`/`--bottom-crop` bands
+must not be applied to it** — a finished composite has no game UI chrome
+baked in (it's already template-shaped map art, with `--overlays` drawn on top
+if any), so cropping it the way a fresh screenshot is cropped would delete
+real board content near the rim for no reason. The new screenshots still get
+cropped normally. Likely the prior merge can just be treated as
+pre-anchored (skip `anchor_to_template` for it, since it's already in template
+space) rather than re-anchored.
+
+The prior merge must always lose priority to a new screenshot, on every tile
+both witness, since players can use this kind of functionality to update
+the merge after moves have been taken in the game. Force the prior-merge source to 
+the back of `priority` wherever a new shot also witnesses the tile; although
+it should still win tiles no new shot covers at all.
+
+That rule is also what disposes of decorative overlays and ruin markers
+already drawn on the prior composite, without needing a separate step to
+strip them from `valid`/witness accounting: since the prior merge can never
+outrank a real source on a tile they both witness, its overlay pixels can
+never win a tile a genuine screenshot also covers. The only tiles where the
+prior merge's own pixels (overlays included) end up in the new composite are
+ones no new shot touches at all, where those pixels are just what's already
+there and carrying them forward is correct rather than a "wrong terrain"
+paste — and the decorative layers get redrawn fresh over the whole result
+afterward by `--overlays` regardless.
 
 ### A shot with only *one* board edge in frame
 
