@@ -844,6 +844,19 @@ def _masked_shift_ncc(gray, fogish, dx, dy, min_overlap):
 # monotonically from the shortest shift.
 PERIOD_MIN_PROMINENCE = 0.10
 
+# The smallest-period rule (below) assumes the first candidate that clears
+# min_ncc/PERIOD_MIN_PROMINENCE is trustworthy, and that assumption can fail:
+# a shift that isn't the tile period at all can still produce a shallow local
+# wobble that just barely clears both bars before the scan ever reaches the
+# real, far stronger peak. Every genuine period this file documents scores
+# >= 0.68 (xizauh 0.68, basin_treaties 0.72, hood.png 0.92); a peak weaker
+# than this is not trusted to stop the search on its own, and a stronger,
+# later peak is preferred over it. Peaks are still scanned smallest-first
+# among those that clear it -- this does not touch the missized_test/z2.png
+# case (fundamental 0.68 correctly preferred over its stronger 0.83 harmonic),
+# since 0.68 already clears the bar and nothing later is being compared to it.
+PERIOD_PEAK_MIN_NCC = 0.65
+
 
 def _peak_parabola(ts, ss, k):
     if 0 < k < len(ss) - 1 and (ss[k - 1] - 2 * ss[k] + ss[k + 1]) < 0:
@@ -924,7 +937,13 @@ def fog_period_scale(gray, valid, hsv, dir_a, tile_px,
              and ss[i] - float(ss[:i].min()) >= PERIOD_MIN_PROMINENCE]
     if not peaks:
         return None
-    k = peaks[0]              # smallest period: the fundamental, not a harmonic
+    # Smallest period among the *trustworthy* peaks, not smallest overall --
+    # see PERIOD_PEAK_MIN_NCC. A peak that only just clears min_ncc/prominence
+    # can be a coincidental wobble rather than the real lattice; fall back to
+    # the old smallest-of-all-peaks behavior only if none clears the higher
+    # bar, so this can never produce an answer where there wasn't one before.
+    strong = [i for i in peaks if ss[i] >= PERIOD_PEAK_MIN_NCC]
+    k = strong[0] if strong else peaks[0]  # fundamental, not a harmonic
     t0 = ts[k]
     fine = []
     for t in np.arange(t0 - q - 1, t0 + q + 1 + 1e-9, 1.0):
