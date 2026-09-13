@@ -876,14 +876,16 @@ was checked off as already merged, and re-running answered *"No usable screensho
 found"*, with no remedy but to hunt up the channel un-reacting by hand.
 
 The fix is to gate the loop on `Caller.send`'s return value, and the console says
-so when it fires. Note the two front ends differ in how bad the silent case is:
-on `/merge` the player at least gets `Caller.send`'s ephemeral fallback naming
-the missing permission, while `!merge` leaves them with nothing at all — which is
-an argument for the gate, not against it, since the marks are destroyed either
-way. It stays best-effort *within* the delivered case: a missing `ADD_REACTIONS`
-must still not fail a merge that did reach the channel. The general lesson is
-worth keeping: **a helper that swallows an error must not return the same thing
-on success and failure if any caller acts on what happened.**
+so when it fires. **This whole scenario belongs to `!merge` alone now**: `/merge`
+no longer scans history or reacts on source messages at all (see below), so it
+cannot reach the ✅ loop in the first place. That makes the gate matter more, not
+less, since `!merge` also has no interaction token to answer through when
+`Caller.send`'s `Forbidden` fires — before the gate, this failure had zero
+visible signal anywhere. It stays best-effort *within* the delivered case: a
+missing `ADD_REACTIONS` must still not fail a merge that did reach the channel.
+The general lesson is worth keeping: **a helper that swallows an error must not
+return the same thing on success and failure if any caller acts on what
+happened.**
 
 **There are two front ends now — `!merge` and `/merge` — and they no longer
 just differ in how the options arrive.** `!merge [size] [layers...]` parses
@@ -898,15 +900,6 @@ which is what keeps them on **one** queue: `MERGE_LOCK`, `_waiting`,
 function, so a `/merge` queues behind a `!merge` and `wait_estimate` covers
 both. Do not give either front end its own path to the semaphore.
 
-**A third front end, `/merge-update`, existed briefly and was folded back into
-`/merge`.** It began as `/merge`'s reaction workflow plus a *second*,
-direct-attach command for updating a prior composite, and that split stopped
-making sense once it was clear the reaction workflow was buying `/merge`
-nothing: see below. Rather than run three commands where two would
-do, `/merge-update`'s direct-attach/`base` design simply became `/merge`'s own
-body, and the old reaction-only `/merge` was retired. If you are reading an
-older reference to `/merge-update`, it is this command.
-
 **`/merge` deliberately does *not* offer the reaction workflow, and that is a
 reversal from this file's own earlier reasoning.** It used to read "the
 reaction path is the one most players use, so restricting `/merge` to it costs
@@ -914,9 +907,9 @@ the common case nothing" — true as far as it went, but it missed that the
 whole *point* of a slash command here is the permission story below, and the
 reaction scan cannot participate in it: `collect_marked_shots` needs
 `message_content` and Read Message History regardless of which front end
-invokes it (see the next section), so putting the scan behind `/merge` bought
-no permission benefit over `!merge`, only a second, more limited way to run
-the identical scan (no attachments on the same message, no accumulating a
+invokes it (see below), so putting the scan behind `/merge` bought no
+permission benefit over `!merge`, only a second, more limited way to run the
+identical scan (no attachments on the same message, no accumulating a
 thread's shots over time). Keeping the scan on `!merge` alone is what makes a
 slash-only deployment possible at all — a guild that never grants the
 privileged intent can still run `/merge` in full, direct-attach and `base`
@@ -930,6 +923,15 @@ discussion `#5285`; there is no multi-file option to reach for even if the
 picker had room for it). Three named slots is a clutter tradeoff against
 `!merge`'s `MAX_SHOTS`-file drag-and-drop, not a hard ceiling — a player with
 more shots, or shots posted over time, is already better served by `!merge`.
+
+**A third front end, `/merge-update`, existed briefly and was folded into the
+design above.** It began as a reaction-only `/merge` plus a *second*,
+direct-attach command for updating a prior composite, and that split stopped
+making sense once it was clear the reaction workflow was buying `/merge`
+nothing (see above). Rather than run three commands where two would do,
+`/merge-update`'s direct-attach/`base` design simply became `/merge`'s own
+body, and the old reaction-only `/merge` was retired. If you are reading an
+older reference to `/merge-update`, it is this command.
 
 **Three things slash commands do *not* change, all of which look like they
 should.**
