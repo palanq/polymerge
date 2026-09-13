@@ -1448,7 +1448,8 @@ async def merge_slash(interaction: discord.Interaction,
     for n in MAP_SIZES
 ])
 @app_commands.describe(
-    new="A new screenshot to merge or fold in.",
+    new="A new screenshot to merge or fold in. Optional with `base`, to just "
+        "redraw its layers.",
     base="A prior map this bot posted, to update instead of starting fresh.",
     size="Board size. Leave blank to measure it (or read it off `base`).",
     new2="A second new screenshot, if you have one.",
@@ -1457,7 +1458,7 @@ async def merge_slash(interaction: discord.Interaction,
            + ", ".join(OVERLAY_NAMES) + f") -- /{HELP_COMMAND} explains each",
 )
 async def merge_update_slash(interaction: discord.Interaction,
-                             new: discord.Attachment,
+                             new: typing.Optional[discord.Attachment] = None,
                              base: typing.Optional[discord.Attachment] = None,
                              size: typing.Optional[app_commands.Choice[int]] = None,
                              new2: typing.Optional[discord.Attachment] = None,
@@ -1481,11 +1482,25 @@ async def merge_update_slash(interaction: discord.Interaction,
     then normally left blank too, since the base's own pixel dimensions name
     the board exactly (see polymerge's base_output_size).
 
+    `new` is optional precisely so `base` alone is a complete request: redraw
+    this composite's overlays (e.g. someone forgot `grid` on the first merge)
+    without resupplying any screenshot. polymerge's own --base learned the
+    same trick -- it can run with no images at all, classifying the base's
+    pixels directly to know which tiles are still fog for `layers` that need
+    that (shade/spawns) -- so nothing else here has to fake up a screenshot to
+    ask for it. `new`/`new2`/`new3` still work exactly as before when you do
+    have new shots to add.
+
     `layers` is the same free-text field as /merge's, parsed by the same
     parse_overlays -- see that command for why it replaced a bool per layer.
     Left blank it is OVERLAY_DEFAULT (nothing), same as every other front
     end."""
     shots = [a for a in (new, new2, new3) if a is not None]
+    if not shots and base is None:
+        await interaction.response.send_message(
+            f"Attach a screenshot, a prior map to update, or both. {SAD_EMOJI}",
+            ephemeral=True)
+        return
     bad = [a.filename for a in shots + ([base] if base else [])
            if pathlib.Path(a.filename).suffix.lower() not in IMAGE_EXTS]
     if bad:
@@ -1508,8 +1523,10 @@ async def merge_update_slash(interaction: discord.Interaction,
     log_invocation(caller, f"/merge-update {size.value if size else None} "
                            f"base={base is not None} "
                            f"{' '.join(sorted(overlay_set))}")
+    # allow_history=False: an empty `shots` here means "just base", never
+    # "go scan the channel for reacted screenshots" -- see do_merge.
     await do_merge(caller, size.value if size else None, overlay_set,
-                   base=base)
+                   base=base, allow_history=False)
 
 
 @bot.tree.command(name=HELP_COMMAND,
@@ -1528,7 +1545,7 @@ async def merge_help_slash(interaction: discord.Interaction):
     await interaction.response.send_message(help_text(), ephemeral=True)
 
 
-async def do_merge(caller, map_size, overlays, base=None):
+async def do_merge(caller, map_size, overlays, base=None, allow_history=True):
     """Run one merge and report it, however the merge was asked for.
 
     Shared by every front end, which is what puts them on one queue:
@@ -1541,11 +1558,19 @@ async def do_merge(caller, map_size, overlays, base=None):
     three things and nothing else: it is downloaded alongside the shots and
     passed to polymerge as --base; the board size may come from it instead of
     from map_size/detection (see used_size below); and the ack/caption wording
-    says "updating" rather than "merging". /merge-update always supplies its
-    own attachments (`new`/`new2`/`new3`), so `caller.attachments` is already
-    non-empty here regardless of `base` -- the reaction-history scan below is
-    unreachable from that command, the same way it already is for `!merge`
-    with files attached."""
+    says "updating" rather than "merging".
+
+    `allow_history` is False only for /merge-update. That command's shots
+    (`new`/`new2`/`new3`) are all optional, since a base image on its own is
+    enough to ask for -- redraw this composite's overlays, no new screenshot
+    needed (see base_only below). So `caller.attachments` can legitimately be
+    empty there, and it must not fall through to the reaction-history scan
+    below, which is `!merge`/`/merge`'s job and would either misfire on
+    whatever is marked in the channel or, with nothing marked, report a
+    confusing "no usable screenshots found" for a command that never wanted
+    any. merge_update_slash validates that at least one of its own shots or
+    `base` was given, so allow_history=False with an empty caller.attachments
+    always means base_only here."""
     global _running_shots, _running_since
 
     # Both of these are install faults, so the channel gets the consequence in
@@ -1577,7 +1602,11 @@ async def do_merge(caller, map_size, overlays, base=None):
     source_messages = []
     barren = 0
     from_history = False
-    if not shots:
+    # See do_merge's docstring: /merge-update passes allow_history=False, and
+    # an empty caller.attachments there means "just redraw base's overlays",
+    # never "go scan the channel for reacted screenshots".
+    base_only = not shots and not allow_history and base is not None
+    if not shots and allow_history:
         from_history = True
         try:
             pairs, barren = await collect_marked_shots(caller.channel)
@@ -1595,7 +1624,7 @@ async def do_merge(caller, map_size, overlays, base=None):
         shots = [a for _, a in pairs]
         source_messages = list({m.id: m for m, _ in pairs}.values())
 
-    if not shots:
+    if not shots and not base_only:
         # The one reply a lost player is most likely to see, so it is where the
         # help gets named -- a bare `!merge` no longer prints it, and someone
         # who ran a merge with nothing marked is exactly who was looking for it.
@@ -1688,9 +1717,16 @@ async def do_merge(caller, map_size, overlays, base=None):
     # replacing the seed, which is exactly when a queued player is watching
     # this message.
     def starting_text():
-        what = (f"Updating the map with {len(shots)} new screenshot{plural}"
-                if base is not None
-                else f"Merging {len(shots)} screenshot{plural}{at}")
+        if not shots:
+            # Only reachable via /merge-update with a base and no new
+            # screenshots at all -- see base_only below. There is nothing to
+            # merge, so say what is actually happening: redrawing the prior
+            # composite's overlays.
+            what = "Redrawing the map's layers"
+        elif base is not None:
+            what = f"Updating the map with {len(shots)} new screenshot{plural}"
+        else:
+            what = f"Merging {len(shots)} screenshot{plural}{at}"
         return (f"{what}{note} -- "
                 f"{human_wait(merge_estimate(len(shots)))}. {WAIT_EMOJI}")
 
@@ -1885,6 +1921,9 @@ async def do_merge(caller, map_size, overlays, base=None):
                        f"Merged the other {used} in {elapsed:.0f}s. A "
                        f"screenshot needs two adjoining sides of the board "
                        f"in frame.")
+        elif base is not None and not shots:
+            caption = (f"Redrew the map's layers in {elapsed:.0f}s. "
+                       f"{HAPPY_EMOJI}")
         elif base is not None:
             caption = (f"Updated the map with {len(shots)} new "
                        f"screenshot{plural} in {elapsed:.0f}s. {HAPPY_EMOJI}")
