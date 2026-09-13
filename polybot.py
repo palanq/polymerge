@@ -1392,13 +1392,13 @@ async def merge(ctx, size: str = None, *extras):
 ])
 @app_commands.describe(
     size="Board size. Leave blank to measure it from the screenshots.",
-    **{n: OVERLAY_HELP[n].capitalize() for n in OVERLAY_NAMES},
+    layers="Layers to draw, space-separated ("
+           + ", ".join(OVERLAY_NAMES) + f") -- /{HELP_COMMAND} explains each",
 )
 async def merge_slash(interaction: discord.Interaction,
                       size: typing.Optional[app_commands.Choice[int]] = None,
-                      shade: bool = False, grid: bool = False,
-                      spawns: bool = False, push: bool = False):
-    """/merge -- the reaction workflow, with the options typed rather than parsed.
+                      layers: typing.Optional[str] = None):
+    """/merge -- the reaction workflow, with the size typed rather than parsed.
 
     Deliberately takes no attachments. A slash command has no variadic
     attachment option, so offering the drag-and-drop path here would mean
@@ -1406,23 +1406,37 @@ async def merge_slash(interaction: discord.Interaction,
     `!merge` keeps that job, where dropping four files on one message just
     works.
 
-    The choices and descriptions above are built from MAP_SIZES,
-    MAP_SIZE_NAMES and OVERLAY_HELP for the same anti-drift reason help_text
-    is: a layer the parser accepts but the UI does not name is a feature nobody
-    can find, and one the UI names but the parser rejects is an error the
-    player did not earn."""
-    # First statement, before the history scan below: an interaction has three
-    # seconds to be answered at all, and collect_marked_shots walks up to
-    # HISTORY_LIMIT messages at 100 per API call before anything is sent.
-    # Ephemeral because it is a placeholder rather than a message -- the real
-    # ack goes to the channel, where everyone waiting on the merge can see it.
-    await interaction.response.defer(ephemeral=True)
+    `layers` is one free-text field rather than a bool per layer, parsed by
+    the same parse_overlays that reads !merge's trailing words -- so it takes
+    the same words, aliases and `plain`, and a typo gets the same reply
+    !merge gives rather than a second copy of that logic. A bool-per-layer
+    UI was tried first and doesn't scale: every new layer needs one more
+    parameter here as well as one more word in OVERLAY_NAMES.
+
+    The size choices above are still built from MAP_SIZES/MAP_SIZE_NAMES for
+    the same anti-drift reason help_text is."""
     caller = Caller.from_interaction(interaction)
-    layers = {n for n, on in (("shade", shade), ("grid", grid),
-                              ("spawns", spawns), ("push", push)) if on}
+    overlay_set, bad_layers = parse_overlays([] if layers is None else layers.split())
+    if bad_layers:
+        # Validated before defer, same as merge_update_slash's bad-attachment
+        # check below -- there is nothing slow about parsing this string, so
+        # there is no need to spend the interaction token on it.
+        await interaction.response.send_message(
+            f"Don't know what to do with {', '.join(f'`{w}`' for w in bad_layers)}. "
+            f"{SAD_EMOJI} You can add "
+            + ", ".join(f"`{n}`" for n in OVERLAY_NAMES)
+            + f", in any order. `/{HELP_COMMAND}` explains what each one draws.",
+            ephemeral=True)
+        return
+    # First statement after validation: an interaction has three seconds to be
+    # answered at all, and collect_marked_shots walks up to HISTORY_LIMIT
+    # messages at 100 per API call before anything is sent. Ephemeral because
+    # it is a placeholder rather than a message -- the real ack goes to the
+    # channel, where everyone waiting on the merge can see it.
+    await interaction.response.defer(ephemeral=True)
     log_invocation(caller, f"/merge {size.value if size else None} "
-                           f"{' '.join(sorted(layers))}")
-    await do_merge(caller, size.value if size else None, layers)
+                           f"{' '.join(sorted(overlay_set))}")
+    await do_merge(caller, size.value if size else None, overlay_set)
 
 
 @bot.tree.command(
@@ -1439,13 +1453,16 @@ async def merge_slash(interaction: discord.Interaction,
     size="Board size. Leave blank to measure it (or read it off `base`).",
     new2="A second new screenshot, if you have one.",
     new3="A third new screenshot, if you have one.",
+    layers="Layers to draw, space-separated ("
+           + ", ".join(OVERLAY_NAMES) + f") -- /{HELP_COMMAND} explains each",
 )
 async def merge_update_slash(interaction: discord.Interaction,
                              new: discord.Attachment,
                              base: typing.Optional[discord.Attachment] = None,
                              size: typing.Optional[app_commands.Choice[int]] = None,
                              new2: typing.Optional[discord.Attachment] = None,
-                             new3: typing.Optional[discord.Attachment] = None):
+                             new3: typing.Optional[discord.Attachment] = None,
+                             layers: typing.Optional[str] = None):
     """A standalone command, deliberately not folded into /merge as a
     subcommand of it: Discord gives a command options or subcommands, never
     both, so adding this under /merge would have meant turning the existing,
@@ -1462,7 +1479,12 @@ async def merge_update_slash(interaction: discord.Interaction,
     behaves exactly as it does there (blank measures it). Supplying `base`
     updates that composite instead of starting from blank fog, and `size` is
     then normally left blank too, since the base's own pixel dimensions name
-    the board exactly (see polymerge's base_output_size)."""
+    the board exactly (see polymerge's base_output_size).
+
+    `layers` is the same free-text field as /merge's, parsed by the same
+    parse_overlays -- see that command for why it replaced a bool per layer.
+    Left blank it is OVERLAY_DEFAULT (nothing), same as every other front
+    end."""
     shots = [a for a in (new, new2, new3) if a is not None]
     bad = [a.filename for a in shots + ([base] if base else [])
            if pathlib.Path(a.filename).suffix.lower() not in IMAGE_EXTS]
@@ -1471,12 +1493,22 @@ async def merge_update_slash(interaction: discord.Interaction,
             f"That doesn't look like a supported image: {', '.join(bad)}. "
             f"{SAD_EMOJI}", ephemeral=True)
         return
+    overlay_set, bad_layers = parse_overlays([] if layers is None else layers.split())
+    if bad_layers:
+        await interaction.response.send_message(
+            f"Don't know what to do with {', '.join(f'`{w}`' for w in bad_layers)}. "
+            f"{SAD_EMOJI} You can add "
+            + ", ".join(f"`{n}`" for n in OVERLAY_NAMES)
+            + f", in any order. `/{HELP_COMMAND}` explains what each one draws.",
+            ephemeral=True)
+        return
     # Same three-second reasoning as /merge: defer before anything slower.
     await interaction.response.defer(ephemeral=True)
     caller = Caller.from_interaction(interaction, attachments=shots)
     log_invocation(caller, f"/merge-update {size.value if size else None} "
-                           f"base={base is not None}")
-    await do_merge(caller, size.value if size else None, OVERLAY_DEFAULT,
+                           f"base={base is not None} "
+                           f"{' '.join(sorted(overlay_set))}")
+    await do_merge(caller, size.value if size else None, overlay_set,
                    base=base)
 
 
