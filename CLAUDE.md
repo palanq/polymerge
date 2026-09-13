@@ -924,15 +924,6 @@ picker had room for it). Three named slots is a clutter tradeoff against
 `!merge`'s `MAX_SHOTS`-file drag-and-drop, not a hard ceiling — a player with
 more shots, or shots posted over time, is already better served by `!merge`.
 
-**A third front end, `/merge-update`, existed briefly and was folded into the
-design above.** It began as a reaction-only `/merge` plus a *second*,
-direct-attach command for updating a prior composite, and that split stopped
-making sense once it was clear the reaction workflow was buying `/merge`
-nothing (see above). Rather than run three commands where two would do,
-`/merge-update`'s direct-attach/`base` design simply became `/merge`'s own
-body, and the old reaction-only `/merge` was retired. If you are reading an
-older reference to `/merge-update`, it is this command.
-
 **Three things slash commands do *not* change, all of which look like they
 should.**
 - **Guild operators still grant the same five `REQUIRED_PERMS`, in the same
@@ -4817,11 +4808,7 @@ it needs a separate uncropped pass the same way `--ui-mask` does.
 
 ### `/merge`: merge screenshots directly, optionally updating a prior map
 
-**Built** — `--base` in polymerge, `/merge` in polybot. This was first built
-as a separate command, `/merge-update`, alongside a reaction-only `/merge`;
-the two were later folded into one `/merge` (see the front-ends section
-above for why the reaction workflow moved to `!merge` alone). If you are
-reading an older reference to `/merge-update`, it is this command.
+**Built** — `--base` in polymerge, `/merge` in polybot.
 `tests/goon_test2` is the regression case exercised while building it. What
 remains deferred is a `new` shot with only *one* board edge, at the bottom of
 this section.
