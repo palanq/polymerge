@@ -885,14 +885,18 @@ must still not fail a merge that did reach the channel. The general lesson is
 worth keeping: **a helper that swallows an error must not return the same thing
 on success and failure if any caller acts on what happened.**
 
-**There are two front ends, `!merge` and `/merge`, and they differ only in how
-the options arrive.** `!merge [size] [layers...]` parses free text; `/merge`
-takes the same two as typed options that Discord validates and describes at the
-point of typing. Both call `do_merge`, which is what keeps them on **one**
-queue: `MERGE_LOCK`, `_waiting`, `_running_*` and `merge_speed` are module state
-reached only through that function, so a `/merge` queues behind a `!merge` and
-`wait_estimate` covers both. Do not give either front end its own path to the
-semaphore.
+**There are three front ends — `!merge`, `/merge` and `/merge-update` — and the
+first two differ only in how the options arrive.** `!merge [size] [layers...]`
+parses free text; `/merge` takes the same two as typed options that Discord
+validates and describes at the point of typing. `/merge-update` is the third
+and takes its shots as direct attachments rather than through the reaction
+workflow, optionally updating a prior composite it also receives as an
+attachment (`base`) — see the `/merge-update` section for the whole of it. All
+three call `do_merge`, which is what keeps them on **one** queue: `MERGE_LOCK`,
+`_waiting`, `_running_*` and `merge_speed` are module state reached only
+through that function, so a `/merge` queues behind a `!merge` and
+`wait_estimate` covers all of them. Do not give any front end its own path to
+the semaphore.
 
 **`/merge` deliberately takes no attachments — it is the reaction workflow
 only.** A slash command has no variadic attachment option, so parity with
@@ -4777,39 +4781,121 @@ varies enough per skin/level to need something looser. Also open: whether the
 row is cropped by `--top-crop`/`--bottom-crop` today, and if so whether reading
 it needs a separate uncropped pass the same way `--ui-mask` does.
 
-### `/merge update`: overlay a new screenshot onto a prior merge
+### `/merge-update`: merge screenshots directly, optionally updating a prior map
 
-A command that takes a previous composite (the `merged.png` a past `!merge`
-produced) plus one or more new screenshots, and folds the new shots in without
-re-processing the originals — useful for a long game where players keep
-posting occasional screenshots and don't get to (or don't need to) re-attach
-an updated screenshot. Mechanically this is `anchor_to_template` and the paste
-loop treating the prior merge as just another source image anchored against
-the blank template, **except that its own `--top-crop`/`--bottom-crop` bands
-must not be applied to it** — a finished composite has no game UI chrome
-baked in (it's already template-shaped map art, with `--overlays` drawn on top
-if any), so cropping it the way a fresh screenshot is cropped would delete
-real board content near the rim for no reason. The new screenshots still get
-cropped normally. Likely the prior merge can just be treated as
-pre-anchored (skip `anchor_to_template` for it, since it's already in template
-space) rather than re-anchored.
+**Built** — `--base` in polymerge, `/merge-update` in polybot (a standalone
+command, not a subcommand of `/merge` — see below). `tests/goon_test2` is the
+regression case exercised while building it. What remains deferred is a `new`
+shot with only *one* board edge, at the bottom of this section.
 
-The prior merge must always lose priority to a new screenshot, on every tile
-both witness, since players can use this kind of functionality to update
-the merge after moves have been taken in the game. Force the prior-merge source to 
-the back of `priority` wherever a new shot also witnesses the tile; although
-it should still win tiles no new shot covers at all.
+The design this replaced treated the prior composite as a competing
+**source** — wrapping it in a `Shot`, anchoring it, running it through
+`sample_tile`'s fog classification and `rank`'s sharpness ranking, excluding
+it from the conflict-check by name. That fights the wrong instinct: a
+finished composite isn't ambiguous the way a screenshot is. Its geometry is
+exactly known — it's cropped to one of five fixed pixel sizes, one per board
+size, as a pure function of board geometry (`output_crop`) — so it needs no
+anchoring at all, and its content is already fully resolved, so it needs no
+classification either.
 
-That rule is also what disposes of decorative overlays and ruin markers
-already drawn on the prior composite, without needing a separate step to
-strip them from `valid`/witness accounting: since the prior merge can never
-outrank a real source on a tile they both witness, its overlay pixels can
-never win a tile a genuine screenshot also covers. The only tiles where the
-prior merge's own pixels (overlays included) end up in the new composite are
-ones no new shot touches at all, where those pixels are just what's already
-there and carrying them forward is correct rather than a "wrong terrain"
-paste — and the decorative layers get redrawn fresh over the whole result
-afterward by `--overlays` regardless.
+**The base is the paste canvas's *starting state*, not a source.**
+`main()`'s canvas init (`out = template.copy()`, right before the paste loop)
+becomes `out[by0:by1, bx0:bx1] = base_bgr` first when `--base` is given, at
+the exact rectangle `output_crop` computes for the resolved board size — no
+warp, no sampling. Everything else — `anchor_all`, `rank`, the conflict-check,
+city-bars, ruin-vision, badge detection — runs completely unmodified, over
+just the new screenshots, because the base is never added to `names`/`shots`
+at all. This is correct by construction: `priority[key]` and `winner[key]`
+are only ever set together, in winner selection and in the bar/vision-
+promotion pass (which only ever reorders an existing entry, never adds one),
+so the paste loop only ever writes tiles someone explored *this run* — every
+other tile is left exactly as the canvas was seeded. New content therefore
+always wins wherever a new screenshot shows any, with no ranking or demotion
+rule needed for the base at all — the old design's `rank()` special-case
+existed specifically to manufacture this; here it falls out for free.
+
+**The board size comes off the base's pixel dimensions**
+(`base_output_size`), when `--map-size` is omitted — exact match only,
+deliberately: an 18x18 composite scaled ~1.1x lands within a pixel of 20x20's
+own native size, so a near-match would silently pick the wrong board, and a
+resized or re-encoded `--base` is refused rather than guessed at. It probes
+sizes largest-first, matching `_probe_basis`'s own precedent and for the same
+reason: most merges are 20x20, so the common case loads exactly one template
+geometry — the same one the real merge loads moments later via
+`template_geometry`'s cache, so it costs nothing extra there either. A
+base-derived size counts as *stated*, not detected — it says nothing about
+whether fog exists, only which board this is — so a run that then locks no
+fog against it warns rather than refuses, exactly the replay/late-game board
+this feature is for. Whether the size came from `--map-size`, from the base,
+or from neither, it is validated against the base's actual pixel dimensions
+before `anchor_all` ever runs (the same `output_crop` arithmetic, so the two
+checks can't drift apart).
+
+**A base carrying `--overlays` is not a defect to guard against — it is the
+feature working as intended.** The base's pixels, decorations included, are
+carried forward wherever nothing new re-photographed a tile, exactly like any
+other pixel content; whatever `--overlays` the *current* run asks for has no
+say over what is already baked into another image. A player who wants a clean
+update supplies a plain base.
+
+**One real interaction had to be fixed, and it is not about the base's own
+decorations.** `--overlays`' CLI default is `shade` (`OVERLAY_DEFAULT`), and
+`shade`/`spawns` clip to `fog_only`, which this run computes from its own
+`winner` — tiles the base already carries as real content but that no new
+screenshot re-witnesses are *not* in `winner` either, so the ordinary shade
+default painted a checkerboard tint straight over that content. Measured on
+`tests/goon_test2`: updating a base built from `imp.jpg` with `q.jpg` alone
+painted shade over 100+ tiles of `imp`'s own already-explored territory, none
+of it fog. `--base`'s own default is `none` instead of `OVERLAY_DEFAULT`
+now — an explicit `--overlays` still overrides it, on the same "it's on the
+caller" basis as the paragraph above. `/merge-update` never exposes overlay
+options at all, so this cannot arise from the bot regardless; it is a CLI-only
+concern.
+
+**`/merge-update` is a standalone command, not `/merge update`.** Discord
+gives a command options or subcommands, never both, so folding this in as a
+subcommand would have meant turning the existing, working reaction workflow
+into `/merge map` to make room for it. The cost of not doing that is a picker
+collision: typing `/merge` lists `/merge-update` too, since Discord matches by
+substring — the same mechanism documented below for `/polymerge-help`, where
+the picker's prefix-favoring ranking has consistently put `/merge` on top in
+practice. Accepted for now rather than reworked.
+
+**Measured.** `tests/goon_test2` run as base(`imp`) + update(`q`, plain
+overlays on both sides) gives **238/324** — the same union as merging both
+directly — and the composite is **99.36% pixel-identical** to it; the residual
+is four tiles where `imp` is sharper but `q`'s own content wins anyway (new
+always wins, by design). A 3-shot set (`archers_test2`, base from `cym1`,
+updated with `cym2`+`yad`) came back **99.999% identical** to a direct 3-shot
+merge. `tools/baseline.py --compare` reports **identical on every set and
+every tracked field** — no corpus set uses `--base`, and every touch point is
+gated on `args.base`/`base` being truthy, so the ordinary merge path is
+provably unchanged.
+
+`/merge-update` omitting `base` entirely is a **superset**, not a separate
+mode: with no base, every `--base`-gated branch is inert and the run is an
+ordinary merge of whatever was attached, `size` behaving exactly as `/merge`'s
+own `size` option does. Verified against the same set: identical output
+either way `size` is given or auto-detected.
+
+**What remains deferred: a `new` shot with only one board edge, and nothing
+else in the same update to hop through.** The base supplies the board's
+*size*, not registration help — it never enters `anchor_all`, so it cannot
+lend a `pan_hint`/`zoom_hint` the way an already-anchored screenshot can (see
+that mechanism two sections below). A lone screenshot like
+`badland_test3/cym.png` still refuses with the ordinary two-adjoining-edges
+message even against a `--base` that has its whole geometry. The base would
+be an unusually good lender for this — a full-board view of known geometry,
+unlike a typical screenshot — but wiring it into `anchor_all`'s rescue pass
+needs care: naively seeding it into the `M_of` dict that function *returns*
+would defeat `if not M_of: raise SystemExit(...)`, the only "nothing anchored
+at all" guard, letting a run where every new screenshot fails proceed with an
+empty `names` and crash later on `max(fog_lock.values())` — an empty-sequence
+`ValueError` — instead of refusing cleanly. The fix, if this is ever built, is
+a lender-only local view (a `lenders` dict copied from `M_of` plus the base)
+used solely inside the rescue block, never returned, so `M_of`, `dropped_names`
+and every downstream per-screenshot loop stay exactly as narrow as they are
+today.
 
 ### A shot with only *one* board edge in frame
 
