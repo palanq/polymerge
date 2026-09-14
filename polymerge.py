@@ -3193,6 +3193,9 @@ def head_icon_patch(img, cx, cy, r):
 
 PLAYER_HEAD_MIN_CORR = 0.25     # floor on the winning entry's own score
 PLAYER_HEAD_MIN_MARGIN = 0.02   # lead it must hold over the runner-up
+HEAD_ICON_BLACK_FLOOR = 10      # screenshot pixels this dark are the black
+                                # button background leaking into the interior
+                                # mask (see match_head_icon), not icon art
 
 _head_catalog_cache = None
 
@@ -3268,10 +3271,32 @@ def match_head_icon(patch, mask, catalog):
     different catalog entries -- neither bound is tightly calibrated (the
     corpus gives maybe a couple dozen usable samples per tribe at best), so a
     drawn boundary is a best-effort aid, not a claim of certainty, which is
-    why this feature is opt-in."""
+    why this feature is opt-in.
+
+    Screenshot pixels darker than HEAD_ICON_BLACK_FLOOR are dropped from the
+    mask before correlating -- they are the button's own black fill leaking
+    in, not icon art. head_icon_patch's interior circle is a fixed 0.78 of
+    the measured ring radius, and that fraction does not always land inside
+    the actual glyph: on some captures the rendered icon is smaller relative
+    to its ring than that assumes, leaving flat black between the icon and
+    the ring, inside the circle. Correlating that against a catalog entry's
+    own pixels there (never black -- see load_head_catalog) is pure noise
+    for every candidate, not signal for any of them, and it was measured
+    costing real matches: on test_ss_elyruins/ely1.jpg it was the entire
+    reason Elyrion's own render (e.png) tied with, and sometimes lost to,
+    Ai-Mo's To-Li skin (ai2.png) -- two renders that share no dominant color
+    at all (e.png is ~17% a saturated blue; ai2.png is entirely browns and
+    tans, confirmed by direct pixel histogram, not by eye). Dropping the
+    black pixels took that shot's margin from a tied 0.006 to a clear 0.130,
+    and strengthened every other match checked alongside it, including
+    already-confident ones (test_ss_elyruins/cym.jpg's margin 0.094 ->
+    0.324) -- so the black gap was diluting every comparison, just not
+    always by enough to flip the winner."""
     C = HEAD_ICON_CANON
     color = cv2.resize(patch, (C, C), interpolation=cv2.INTER_AREA).astype(np.float32)
     pm = cv2.resize(mask, (C, C), interpolation=cv2.INTER_NEAREST) > 0
+    gray = cv2.cvtColor(color.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+    pm = pm & (gray >= HEAD_ICON_BLACK_FLOOR)
     scores = []
     for name, (tcolor, tmask) in catalog.items():
         m = pm & tmask
@@ -3298,17 +3323,32 @@ def identify_player(img, catalog):
     """(player_key, ncc) for one raw screenshot, or None if it cannot be
     identified with any confidence.
 
-    Requires at least one real button-row anchor (see locate_game_stats_icon)
-    before even attempting a match -- a location built entirely from the
-    corpus-mean fallback has no evidence behind it, and measured on the nine
-    corpus shots that reach it, the resulting crop matches *something* in the
-    catalog at a confidence a genuinely well-placed crop would clear, just
-    the wrong thing. No score threshold on the match itself can tell that
-    case apart from a real one, so it is excluded before matching is tried."""
+    Requires at least two real button-row anchors (see locate_game_stats_icon)
+    before even attempting a match. A location built entirely from the
+    corpus-mean fallback (zero anchors) has no evidence behind it at all, and
+    measured on the nine corpus shots that reach it, the resulting crop
+    matches *something* in the catalog at a confidence a genuinely
+    well-placed crop would clear, just the wrong thing.
+
+    A single anchor is barely better: locate_game_stats_icon then places
+    Game Stats by extrapolating one measured position using
+    BUTTON_ROW_UNIT, a corpus-average spacing rather than anything measured
+    on this shot, so a real per-image spacing that differs from that average
+    (confirmed to happen -- see spacing_vs_radius in the player-vision
+    scratchpad work) silently shifts the crop. The corpus has exactly two
+    such shots and both are wrong: star_change/oum2.png crops mostly
+    black/white/gray -- close to Oumaji's own catalog palette, measured --
+    and still loses to c.png (Cymanti) even after HEAD_ICON_BLACK_FLOOR
+    strips the black; basin_treaties/q.png crops almost entirely dark
+    background with no real icon color at all, yet still clears both gates
+    in match_head_icon against c2.png purely because that entry happens to
+    correlate with the noise. No score threshold on the match itself can
+    tell either case apart from a real one, so both are excluded before
+    matching is tried, the same way the zero-anchor case already is."""
     if not catalog:
         return None
     cx, cy, r, n_anchors = locate_game_stats_icon(img)
-    if n_anchors == 0:
+    if n_anchors < 2:
         return None
     patch = head_icon_patch(img, cx, cy, r)
     if patch is None:
@@ -3355,9 +3395,11 @@ _TRIBE_COLOR_OF = dict(TRIBE_COLORS_BGR)
 # Yorthwober, i2 Imperius's Lirepacci, and so on) -- a skin is a genuinely
 # different identity for matching purposes, since its head icon looks
 # different, but shares its base tribe's color. The wiki names exactly two
-# skins that change color instead (Aquarion's "Forgotten", Cymanti's "New
-# Dawn"), and this catalog has a render of neither, so every "2" file here
-# is color-identical to its base tribe with no exception to carry.
+# skins that change color instead: Aquarion's "Forgotten" and Cymanti's
+# "New Dawn". aq2.png and c2.png (added 2026-09-14, pulled from the same
+# wikia.nocookie.net asset host the rest of this catalog's renders came
+# from) are exactly those two skins, so this is no longer an exception with
+# nothing to carry -- see _SKIN_COLOR_OVERRIDE just below tribe_default_color.
 HEAD_TRIBE = {
     "x.png": "Xin-xi", "x2.png": "Xin-xi",       # x2 = Sha-po
     "i.png": "Imperius", "i2.png": "Imperius",   # i2 = Lirepacci
@@ -3371,17 +3413,44 @@ HEAD_TRIBE = {
     "ai.png": "Ai-Mo", "ai2.png": "Ai-Mo",       # ai2 = To-Li
     "q.png": "Quetzali", "q2.png": "Quetzali",   # q2 = Iqaruz
     "y.png": "Yadakk", "y2.png": "Yadakk",       # y2 = Urkaz
-    "aq.png": "Aquarion",
+    "aq.png": "Aquarion", "aq2.png": "Aquarion",  # aq2 = Forgotten (recolors)
     "e.png": "Elyrion", "e2.png": "Elyrion",     # e2 = Midnight
     "p.png": "Polaris",
-    "c.png": "Cymanti",
+    "c.png": "Cymanti", "c2.png": "Cymanti",     # c2 = New Dawn (recolors)
+}
+
+
+# The two skins the wiki names as changing the tribe's color outright,
+# keyed by catalog filename rather than tribe name since they must win over
+# the ordinary TRIBE_COLORS_BGR lookup for that one file only -- the base
+# tribe (aq.png/c.png) still uses its own color unchanged.
+#
+# Forgotten's replacement is confirmed straight from the Aquarion wiki page
+# ("a muted swamp green ... #678c30", stated inline, unlike the Tribes page's
+# table which has no color column for skins at all). New Dawn's is not: its
+# wiki section states only that it changes (on the Tribes page, not
+# Cymanti's own -- that page's New Dawn section has no color mention at all
+# and reads as the least-maintained part of that article), and no other
+# source found gives a specific replacement hex for it -- what turns up
+# instead is the skin's own cosmetic palette (its unit renders' costume
+# colors), which is a different thing from a team/border color for the same
+# reason the head icon's own palette is (see match_head_icon's docstring).
+# c2.png therefore has no override and falls back to Cymanti's own color
+# below, which is wrong if New Dawn's true replacement ever turns up -- fix
+# this entry rather than assume the fallback is still right.
+_SKIN_COLOR_OVERRIDE = {
+    "aq2.png": _hex_to_bgr("678c30"),  # Forgotten
 }
 
 
 def tribe_default_color(player_key):
-    """This catalog filename's tribe's own default color (BGR), or None for
-    a filename HEAD_TRIBE does not know -- a future catalog addition, most
-    likely, until this table is updated to match."""
+    """This catalog filename's own default color (BGR) -- a skin-specific
+    override when one is known (see _SKIN_COLOR_OVERRIDE), else its tribe's
+    color from TRIBE_COLORS_BGR, else None for a filename HEAD_TRIBE does
+    not know -- a future catalog addition, most likely, until this table is
+    updated to match."""
+    if player_key in _SKIN_COLOR_OVERRIDE:
+        return _SKIN_COLOR_OVERRIDE[player_key]
     return _TRIBE_COLOR_OF.get(HEAD_TRIBE.get(player_key))
 
 

@@ -3852,12 +3852,29 @@ are heavily overrepresented relative to the catalog's own size. Cross-checked
 against every place the corpus lets two screenshots be confirmed as one real
 player, a match this gate accepts has so far always agreed with itself.
 
-**The catalog covers all 16 tribes as base renders, but only 11 of their 16
-possible skins** (confirmed with the project owner against the wiki's own
-"Tribe Skins" table — see `HEAD_TRIBE`'s comment for exactly which). A
-genuine coverage gap remains only for a player using one of the five missing
-skins (Oumaji's Khondor, Zebasi's Anzala, Aquarion's Forgotten, Polaris's
-Solaris, Cymanti's New Dawn).
+**The catalog covers all 16 tribes as base renders, and (as of 2026-09-14)
+13 of their 16 possible skins** (confirmed with the project owner against
+the wiki's own "Tribe Skins" table — see `HEAD_TRIBE`'s comment for exactly
+which). `aq2.png` (Aquarion's Forgotten) and `c2.png` (Cymanti's New Dawn)
+were added that day, pulled from the same wikia.nocookie.net asset host the
+original 27 renders came from — matched by art style (transparent PNG,
+isometric cube head, two eye windows) against the Tribes wiki page's own
+tribe-skin gallery, not a screenshot. A genuine coverage gap remains only
+for a player using Oumaji's Khondor, Zebasi's Anzala or Polaris's Solaris.
+
+Forgotten and New Dawn are also the wiki's only two skins that recolor the
+tribe outright (see `_SKIN_COLOR_OVERRIDE`, below `tribe_default_color`) —
+Forgotten's replacement is confirmed straight off Aquarion's own wiki page
+("a muted swamp green ... #678c30", stated inline; the Tribes page's skins
+table itself carries no color column at all). New Dawn's is not: Cymanti's
+own wiki section for it states only that it changes, gives no hex, and
+reads as the wiki's least-maintained corner (typos throughout); nothing
+else found names a specific replacement either — what turns up instead is
+the skin's own cosmetic unit-sprite palette, a different thing from a
+team/border color for the same reason the head icon's own palette is (two
+paragraphs below). `c2.png` therefore has no override yet and falls back to
+Cymanti's base color, which will be wrong the moment New Dawn's true color
+turns up — fix `_SKIN_COLOR_OVERRIDE` then, not this paragraph.
 
 More often the limitation actually hit is accuracy rather than coverage.
 `xizauh/pol.jpg` is a confirmed Polaris player and Polaris *is* in the
@@ -3873,6 +3890,49 @@ rather than an always-on diagnostic like ruin-vision and city-bars (whose
 color/shape math this file otherwise argues against generalizing from — see
 the standing decision below on cataloging terrain; the sprite-match approach
 itself does not change, only its completeness and its use of color).
+
+**A second, distinct source of confusion was found the same day and it is
+not a visual-similarity limit — it is a mask-sizing bug, now fixed.**
+`head_icon_patch`'s interior circle is a fixed 0.78 of the measured
+button-ring radius, and that fraction does not hold on every capture: on
+some the rendered icon glyph is smaller relative to its ring than that
+assumes, leaving flat black button-background between the icon and the
+ring — *inside* the assumed circle. Correlating that against a catalog
+entry's own pixels there (never black — see `load_head_catalog`) is pure
+noise for every candidate, not signal for any of them. Measured on
+`test_ss_elyruins/ely1.jpg`: 31% of the masked pixels were flat black, and
+it was the entire reason Elyrion's own render (`e.png`) tied with, and
+sometimes lost to, Ai-Mo's To-Li skin (`ai2.png`) — two renders that share
+no dominant color at all, confirmed by direct pixel histogram rather than
+by eye (`e.png` is ~17% a saturated blue; `ai2.png` is entirely browns and
+tans). Dropping screenshot pixels darker than `HEAD_ICON_BLACK_FLOOR` (10)
+from the comparison (`match_head_icon`) took that shot's margin from a tied
+0.006 to a clear 0.130, and strengthened every other match checked
+alongside it, including already-confident ones
+(`test_ss_elyruins/cym.jpg`'s margin 0.094 → 0.324) — so the black gap was
+diluting every comparison corpus-wide, just not always by enough to flip
+the winner. Verified against the whole corpus: identical union, conflicts,
+bars, ruins and fog lock on all 27 sets (this feature cannot touch any of
+them, gated as it is behind `"vision" in overlays`), and a fresh
+`--overlays vision` sweep completes on every set.
+
+**A related, rarer failure surfaced at the same time: single-anchor
+localization is not reliable enough to trust at all.**
+`locate_game_stats_icon` places Game Stats from a *single* found anchor by
+extrapolating with `BUTTON_ROW_UNIT`, a corpus-average spacing rather than
+anything measured on that shot — and a real per-shot spacing that differs
+from the average silently shifts the crop. The corpus has exactly two shots
+this happens on (`n_anchors == 1`, out of 74 total), and both produced a
+confident wrong match: `star_change/oum2.png` crops mostly black/white/gray
+— close to Oumaji's own catalog palette by direct measurement — and still
+loses to `c.png` (Cymanti) even after the black-floor fix above;
+`basin_treaties/q.png` crops almost entirely dark background with no real
+icon color at all, yet still cleared both gates in `match_head_icon` purely
+because `c2.png` happened to correlate with the noise once it was added to
+the catalog. `identify_player` now requires **two** anchors, not one, the
+same way it already refused the zero-anchor case — costing exactly those
+two shots their outline, and turning two confident wrong matches into two
+honest non-matches.
 
 **Each identified player's outline draws in that tribe's own default color**
 (`TRIBE_COLORS_BGR`), not an arbitrary per-merge palette slot — pulled
