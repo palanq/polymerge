@@ -3043,6 +3043,323 @@ def detect_population_bars(warped_bgr, wmask, origin, u_col, u_row, n):
     return bars
 
 
+# ------------------------------------------------- player identification ---
+# Every screenshot's bottom action row is four circular buttons -- Settings,
+# Game Stats, Tech Tree, Exit (or End Turn on the viewing player's own turn)
+# -- and the second of those, Game Stats, always shows *that screenshot's own
+# player's* tribe/skin head icon, circled. Nobody else's game state renders
+# there, so matching that one icon against a catalog of known head renders
+# (Assets/Heads/*.png -- the game's own art, same idea as Assets/Rainbowflame
+# for ruin-vision) tells two shots apart as belonging to the same player or
+# different ones, with no reaction/attachment bookkeeping needed. --overlays
+# vision uses this to outline the union of what each identified player's own
+# shot(s) witnessed as explored.
+#
+# This is inherently approximate in a way ruin-vision and city-bars are not:
+# there is no game guarantee bounding how many tribes/skins exist or that the
+# supplied catalog covers all of them, so an uncatalogued tribe cannot be told
+# apart from a mismatch by this method alone. Treat a drawn boundary as an
+# aid, not as ground truth -- and see the confidence gate in match_head_icon
+# for what keeps a bad guess from being drawn at all.
+HEAD_ICON_DIR = "Assets/Heads"
+HEAD_ICON_CANON = 96          # shape-comparison resolution; small on purpose,
+                              # since the icon itself is a few dozen px across
+                              # in most screenshots
+
+# Fractional x-position of three of the four bottom-bar buttons (0=Settings,
+# 2=Tech Tree, 3=Exit/End Turn), measured over 63 portrait screenshots across
+# the whole test corpus. Index 1 (Game Stats) is deliberately absent: its
+# icon is colorful game content rather than a plain white ring on black, so
+# it fails the brightness/circularity test below far more often than the
+# other three -- in that same sample it was found directly in 0 of 63 shots
+# once 3 candidates were already in hand. Its position is instead always
+# *interpolated* from whichever of 0/2/3 are found (see locate_game_stats_icon),
+# which is safe because the row is evenly spaced (confirmed: gap(0,2) is 2x
+# gap(2,3) on every sample) and centered on the screen (index i sits at
+# fraction a + i*d for some a, d, symmetric about 0.5).
+BUTTON_ROW_ANCHOR_X = {0: 0.216, 2: 0.594, 3: 0.783}
+BUTTON_ROW_UNIT = 0.189        # corpus-mean spacing between adjacent buttons
+                              # (std 0.025); used only to place a single lone
+                              # anchor, since two anchors already fix the
+                              # local spacing directly
+BUTTON_ROW_MATCH_TOL = 0.08    # how far a detected circle may sit from one of
+                              # the anchors above and still be assigned to it;
+                              # comfortably inside the anchors' own spread
+                              # (idx0 ranges 0.154-0.267, idx3 0.732-0.845)
+                              # and well short of the ~0.19 gap to a neighbor
+BUTTON_ROW_BOTTOM_FRAC = 0.18  # search band, as a fraction of image height.
+                              # --bottom-crop's own default (0.15) is
+                              # calibrated to just clear this same row, so
+                              # this gives a little headroom without reaching
+                              # board content on an ordinary shot
+BUTTON_RING_BRIGHTNESS = 205   # the button ring is a bright white stroke on
+                              # the black sky background --bottom-crop
+                              # excludes from the board; genuine board content
+                              # essentially never reaches this band (see
+                              # BUTTON_ROW_BOTTOM_FRAC), so a plain brightness
+                              # cut is safe here in a way it is not for fog
+BUTTON_MIN_CIRCULARITY = 0.70  # contour area vs area of its own enclosing
+                              # circle; rejects UI fragments and, combined
+                              # with the border-touch rejection below, a
+                              # screenshot cropped mid-button
+
+
+def _button_row_candidates(img):
+    """Bright, sufficiently circular blobs in the bottom action-button band,
+    as (cx, cy, r) fractions of (w, h, w).
+
+    Rejects a blob touching the image's own bottom edge: a screenshot
+    physically cropped through the middle of the button row leaves a wide,
+    low-circularity arc there rather than a clean ring, and a few real
+    captures in the corpus are cropped exactly that tight."""
+    h, w = img.shape[:2]
+    y0 = h - int(h * BUTTON_ROW_BOTTOM_FRAC)
+    band = img[y0:, :]
+    gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
+    bright = (gray > BUTTON_RING_BRIGHTNESS).astype(np.uint8) * 255
+    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    contours, _ = cv2.findContours(bright, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 150:
+            continue
+        (cx, cy), r = cv2.minEnclosingCircle(c)
+        if r < 0.015 * w or r > 0.11 * w:
+            continue
+        if area / (np.pi * r * r) < BUTTON_MIN_CIRCULARITY:
+            continue
+        if cy + y0 + r > h - 2:
+            continue
+        out.append((cx / w, (cy + y0) / h, r / w))
+    return out
+
+
+def locate_game_stats_icon(img):
+    """Where the Game Stats button's icon sits in this (raw, unwarped)
+    screenshot, as (cx, cy, r) in pixels.
+
+    Never gives up outright: with no usable anchor at all it falls back to
+    the corpus-mean position (GAME_STATS_*_FALLBACK below), on the theory
+    that a bad guess here is caught later by match_head_icon's confidence
+    gate rather than by refusing to look. Callers that need to know whether
+    the position is actually trustworthy should count anchors themselves --
+    see how main() gates on it before ever calling this."""
+    h, w = img.shape[:2]
+    anchors = []
+    for cx, cy, r in _button_row_candidates(img):
+        idx, canon_x = min(BUTTON_ROW_ANCHOR_X.items(), key=lambda kv: abs(cx - kv[1]))
+        if abs(cx - canon_x) < BUTTON_ROW_MATCH_TOL:
+            anchors.append((idx, cx, cy, r))
+    if len(anchors) >= 2:
+        idxs = np.float32([a[0] for a in anchors])
+        xs = np.float32([a[1] for a in anchors])
+        A = np.stack([idxs, np.ones_like(idxs)], 1)
+        d, a0 = np.linalg.lstsq(A, xs, rcond=None)[0]
+        cx = a0 + d
+        cy = float(np.median([a[2] for a in anchors]))
+        r = float(np.median([a[3] for a in anchors]))
+    elif len(anchors) == 1:
+        idx, x, y, r0 = anchors[0]
+        cx = x + (1 - idx) * BUTTON_ROW_UNIT
+        cy, r = y, r0
+    else:
+        cx, cy, r = (GAME_STATS_X_FALLBACK, GAME_STATS_Y_FALLBACK,
+                    GAME_STATS_R_FALLBACK)
+    return int(round(cx * w)), int(round(cy * h)), int(round(r * w)), len(anchors)
+
+
+# Corpus means for the fallback above (std 0.012, 0.02 and n/a respectively
+# over the same 63 shots) -- used only when zero buttons were found at all.
+GAME_STATS_X_FALLBACK = 0.405
+GAME_STATS_Y_FALLBACK = 0.90
+GAME_STATS_R_FALLBACK = 0.065
+
+
+def head_icon_patch(img, cx, cy, r):
+    """The Game Stats icon's own square crop and a mask of its interior,
+    inset off the white ring (which carries no tribe information and would
+    only dilute the match). None if the location is degenerate."""
+    x0, x1 = max(cx - r, 0), min(cx + r, img.shape[1])
+    y0, y1 = max(cy - r, 0), min(cy + r, img.shape[0])
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    patch = img[y0:y1, x0:x1]
+    mask = np.zeros(patch.shape[:2], np.uint8)
+    center = ((x1 - x0) // 2, (y1 - y0) // 2)
+    cv2.circle(mask, center, int(min(center) * 0.78), 255, -1)
+    return patch, mask
+
+
+# A few of the shipped renders are the same tribe/skin rendered more than
+# once (different export passes, evidently) -- confirmed by eye, not by pixel
+# similarity: cropped-to-content and resized the way match_head_icon compares
+# them, these three correlate at only 0.12-0.14 with each other despite being
+# visibly the same Oumaji head, because the renders differ in exactly how
+# much of the flowing hood is in frame. Left ungrouped, a real Oumaji
+# screenshot flip-flops between them from one shot to the next (measured:
+# tests/star_change's two Oumaji shots, confirmed the same player, picked
+# different ones of these three) -- which reads as two different players.
+# Grouping them fixes that without needing pixel-level dedup, and is the only
+# entry this dict needs unless a future asset drop adds more duplicates.
+HEAD_GROUP_OF = {
+    "Oumaji_heads_1024x1024.png": "oumaji",
+    "heads_16.png": "oumaji",
+    "all_heads0016.png": "oumaji",
+}
+
+PLAYER_HEAD_MIN_CORR = 0.25     # floor on the winning group's own score
+PLAYER_HEAD_MIN_MARGIN = 0.02   # lead the winning group must hold over the
+                                # next-best *different* group
+
+_head_catalog_cache = None
+
+
+def head_icon_dir():
+    """Assets/Heads: the working directory, else next to this script -- same
+    resolution order as ruin_sprite_path/overlay_path and for the same
+    reason (the bot runs this with cwd set to a per-merge temp dir)."""
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), HEAD_ICON_DIR)
+    return HEAD_ICON_DIR if os.path.isdir(HEAD_ICON_DIR) else here
+
+
+def load_head_catalog():
+    """Every Assets/Heads/*.png as a (grayscale, interior-mask) pair at
+    HEAD_ICON_CANON resolution, keyed by filename, cached at module scope --
+    the catalog is fixed for the life of the process and every identified
+    shot in a merge probes all of it.
+
+    Composited over black (matching the button's own dark fill, not white)
+    and cropped to the sprite's own alpha extent before resizing, the same
+    treatment the real screenshot crop gets in match_head_icon so the two
+    sides are comparable."""
+    global _head_catalog_cache
+    if _head_catalog_cache is not None:
+        return _head_catalog_cache
+    cat = {}
+    C = HEAD_ICON_CANON
+    for f in sorted(glob.glob(os.path.join(head_icon_dir(), "*.png"))):
+        im = cv2.imread(f, cv2.IMREAD_UNCHANGED)
+        if im is None or im.ndim != 3 or im.shape[2] != 4:
+            continue
+        alpha = im[:, :, 3]
+        ys, xs = np.where(alpha > 8)
+        if len(xs) == 0:
+            continue
+        x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
+        bgr = im[:, :, :3].astype(np.float32)
+        a = (alpha.astype(np.float32) / 255.0)[:, :, None]
+        comp = (bgr * a)[y0:y1, x0:x1]
+        amask = (alpha[y0:y1, x0:x1] > 8).astype(np.uint8) * 255
+        gray = cv2.resize(cv2.cvtColor(comp, cv2.COLOR_BGR2GRAY), (C, C),
+                          interpolation=cv2.INTER_AREA)
+        amask = cv2.resize(amask, (C, C), interpolation=cv2.INTER_AREA)
+        pm = np.zeros((C, C), np.uint8)
+        cv2.circle(pm, (C // 2, C // 2), int(C // 2 * 0.78), 255, -1)
+        cat[os.path.basename(f)] = (gray, (amask > 0) & (pm > 0))
+    _head_catalog_cache = cat
+    return cat
+
+
+def match_head_icon(patch, mask, catalog):
+    """The catalog identity this icon crop looks most like, as (key, ncc), or
+    None if nothing clears the confidence gate.
+
+    Correlation is grayscale and mean/variance-normalized (the same shape of
+    test sample_tile uses for fog), which survives the crop's own lighting
+    and JPEG noise but not a genuine difference in tribe/skin colors alone --
+    fine here, since what actually tells tribes apart is silhouette, not hue.
+
+    The gate has two parts and both matter. The floor rejects a crop that
+    resembles nothing in the catalog at all (an uncatalogued tribe, or a
+    badly-placed crop). The margin is compared against the best *different*
+    group's score -- see HEAD_GROUP_OF -- since two renders of the same
+    tribe are expected to compete closely and must not fail the shot for
+    that. Neither bound is tightly calibrated (the corpus gives maybe a
+    couple dozen usable samples per tribe at best): a drawn boundary is a
+    best-effort aid, not a claim of certainty, which is why this feature is
+    opt-in."""
+    C = HEAD_ICON_CANON
+    gray = cv2.resize(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), (C, C),
+                      interpolation=cv2.INTER_AREA)
+    pm = cv2.resize(mask, (C, C), interpolation=cv2.INTER_NEAREST) > 0
+    best_by_group = {}
+    for name, (tgray, tmask) in catalog.items():
+        m = pm & tmask
+        if m.sum() < 200:
+            continue
+        a = gray[m].astype(np.float32)
+        b = tgray[m].astype(np.float32)
+        a = a - a.mean()
+        b = b - b.mean()
+        den = float(np.sqrt((a * a).sum() * (b * b).sum()))
+        ncc = float((a * b).sum() / den) if den > 0 else 0.0
+        group = HEAD_GROUP_OF.get(name, name)
+        if group not in best_by_group or ncc > best_by_group[group][0]:
+            best_by_group[group] = (ncc, name)
+    if not best_by_group:
+        return None
+    ranked = sorted(best_by_group.values(), reverse=True)
+    top_ncc, top_name = ranked[0]
+    runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
+    if top_ncc < PLAYER_HEAD_MIN_CORR or top_ncc - runner_up < PLAYER_HEAD_MIN_MARGIN:
+        return None
+    return HEAD_GROUP_OF.get(top_name, top_name), top_ncc
+
+
+def identify_player(img, catalog):
+    """(player_key, ncc) for one raw screenshot, or None if it cannot be
+    identified with any confidence.
+
+    Requires at least one real button-row anchor (see locate_game_stats_icon)
+    before even attempting a match -- a location built entirely from the
+    corpus-mean fallback has no evidence behind it, and measured on the nine
+    corpus shots that reach it, the resulting crop matches *something* in the
+    catalog at a confidence a genuinely well-placed crop would clear, just
+    the wrong thing. No score threshold on the match itself can tell that
+    case apart from a real one, so it is excluded before matching is tried."""
+    if not catalog:
+        return None
+    cx, cy, r, n_anchors = locate_game_stats_icon(img)
+    if n_anchors == 0:
+        return None
+    patch = head_icon_patch(img, cx, cy, r)
+    if patch is None:
+        return None
+    return match_head_icon(patch[0], patch[1], catalog)
+
+
+PLAYER_VISION_PALETTE = (
+    (255, 90, 0), (0, 140, 255), (40, 180, 40), (200, 0, 200),
+    (255, 220, 0), (30, 90, 200), (0, 200, 200), (140, 100, 255),
+)  # BGR, one per identified player in a merge; cycles past 8. Kept clear of
+   # RUIN_MARK_BGR's violet and the spawn-zone layer's saturated red.
+
+
+def draw_player_vision(out, samples, by_player, origin, u_col, u_row, W, H, thick):
+    """Outline, in a distinct color per player, the union of tiles each
+    identified player's own shot(s) witnessed as explored.
+
+    `by_player` maps a player key to the names of shots identified as that
+    player. The tile set comes straight from `samples` -- the same per-(tile,
+    shot) classification winner selection already used -- so this asks
+    nothing new of the pipeline; it just asks it a different question,
+    "what did this one player see" rather than "what did anyone see"."""
+    for idx, key in enumerate(sorted(by_player)):
+        shot_names = by_player[key]
+        tiles = [ij for ij, per in samples.items()
+                if any(per.get(n, {}).get("explored") for n in shot_names)]
+        if not tiles:
+            continue
+        mask = np.zeros((H, W), np.uint8)
+        for i, j in tiles:
+            poly = tile_poly(origin, u_col, u_row, i, j, 0.0)
+            cv2.fillConvexPoly(mask, np.round(poly).astype(np.int32), 1)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        color = PLAYER_VISION_PALETTE[idx % len(PLAYER_VISION_PALETTE)]
+        cv2.polylines(out, contours, True, color, thick, cv2.LINE_AA)
+
+
 # ---------------------------------------------- board renders & templates ---
 # Overlay/template file resolution and loading, plus the per-render and
 # per-shot geometry caches (template_geometry, ShotCache) that both the map
@@ -3927,11 +4244,19 @@ def main():
                     help="comma-separated decorative layers to draw on the "
                          "composite: " +
                          ", ".join(name for name, _ in OVERLAY_LAYERS) +
-                         ", or 'none'. These come from the same Overlays/ "
-                         "renders as the board itself, so they need no "
-                         "registration. Not every board size has every layer "
-                         "-- a missing one is skipped and reported, never an "
-                         f"error. Default: {OVERLAY_DEFAULT}.")
+                         ", vision, or 'none'. The first four come from the "
+                         "same Overlays/ renders as the board itself, so "
+                         "they need no registration; not every board size "
+                         "has every one -- a missing layer is skipped and "
+                         "reported, never an error. `vision` is computed "
+                         "rather than loaded: it identifies each shot's own "
+                         "player from its Game Stats icon (see "
+                         "identify_player) and outlines what that player's "
+                         "shot(s) alone witnessed as explored, in a "
+                         "different color per player. Best-effort -- a shot "
+                         "whose player cannot be identified with confidence "
+                         "simply contributes no outline. "
+                         f"Default: {OVERLAY_DEFAULT}.")
     ap.add_argument("--no-badge-filter", action="store_true",
                     help="skip capture-city/capture-ruin badge detection "
                          "(see detect_capture_badges)")
@@ -3983,7 +4308,9 @@ def main():
 
     # Validated here rather than where it is used, so a typo fails immediately
     # instead of after the ~20s of work that produced the composite.
-    known = {name for name, _ in OVERLAY_LAYERS}
+    # `vision` is not in OVERLAY_LAYERS -- it has no Overlays/ file, so it is
+    # never handed to paint_overlays and is drawn by its own code in main().
+    known = {name for name, _ in OVERLAY_LAYERS} | {"vision"}
     overlays = {p.strip().lower() for p in args.overlays.split(",") if p.strip()}
     overlays.discard("none")
     unknown = overlays - known
@@ -4334,6 +4661,23 @@ def main():
         print(f"DROPPED {len(dropped_names)}/{len(all_names)}: "
               + ", ".join(dropped_names))
     names = [n for n in names if shots[n].to_template is not None]
+
+    # Identifying a shot's player needs nothing but its own raw pixels -- no
+    # anchor, no board size -- so it could run before any of the above. It
+    # runs here instead, once `names` is final, so a dropped shot (which
+    # contributes no explored tiles either way) is not probed for nothing.
+    player_of = {}
+    no_head_catalog = False
+    if "vision" in overlays:
+        with PHASES("player identification"):
+            catalog = load_head_catalog()
+            no_head_catalog = not catalog
+            if no_head_catalog:
+                print(f"\nNO-HEAD-CATALOG: cannot read "
+                      f"{os.path.join(head_icon_dir(), '*.png')}, so no shot "
+                      f"could be matched to a player -- vision outlines skipped")
+            for n in names:
+                player_of[n] = identify_player(shots[n].img, catalog)
 
     # Any shot spanning the whole board counts the tiles across it directly
     # (span / fog repeat period), which is an estimate of the board size owing
@@ -5075,6 +5419,17 @@ def main():
             print(f"NO-OVERLAY {len(missing_overlays)}: "
                   f"{' '.join(sorted(missing_overlays))} -- not available on a "
                   f"{N}x{N} board")
+        thick = max(3, int(round(np.linalg.norm(u_col) * 0.075)))
+        # Drawn after the decorative overlays (so shade cannot dull an
+        # outline) and before the ruin markers (so those stay the topmost
+        # thing on the composite, as the comment below already promises).
+        by_player = {}
+        for n, ident in player_of.items():
+            if ident is not None:
+                by_player.setdefault(ident[0], []).append(n)
+        if by_player:
+            draw_player_vision(out, samples, by_player, origin, u_col, u_row,
+                               W, Hc, thick)
         # A fogged tile carrying a ruin gets two things: the Elyrion player's
         # own view of that tile, and a violet outline around it.
         #
@@ -5102,7 +5457,6 @@ def main():
         #  * pmask, not wmask: this is a *pasting* operation, and the mask
         #    taxonomy reserves wmask for judging color. A flame's own dark
         #    pixels are content here, not untrustworthy data.
-        thick = max(3, int(round(np.linalg.norm(u_col) * 0.075)))
         for key, (hits, comp) in sorted(ruin_hits.items()):
             if key in winner:
                 continue
@@ -5258,6 +5612,21 @@ def main():
                 print(f"  tile ({i},{j}): seen by {srcs}{merged}{note}")
         elif not no_ruin_sprite:
             print("\nElyrion ruin vision: no markers found on any fogged tile")
+
+    if "vision" in overlays and not no_head_catalog:
+        identified = {n: ident for n, ident in player_of.items() if ident is not None}
+        if identified:
+            n_players = len({key for key, _ncc in identified.values()})
+            print(f"\nplayer vision outlines: {n_players} player(s) identified "
+                  f"from the Game Stats icon:")
+            for n in names:
+                ident = player_of.get(n)
+                if ident is not None:
+                    print(f"  {n:40s} -> {ident[0]} (ncc={ident[1]:.2f})")
+        unmatched = [n for n in names if player_of.get(n) is None]
+        if unmatched:
+            print(f"  {len(unmatched)} shot(s) not confidently matched to a "
+                  f"player, no outline drawn: {sorted(unmatched)}")
 
     print(f"\nconflicts: {len(conflicts)} tile(s) with inconsistent content "
           f"across sources (mean color dist > {args.consistency_thresh})")
