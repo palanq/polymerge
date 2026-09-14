@@ -3863,18 +3863,17 @@ tribe-skin gallery, not a screenshot. A genuine coverage gap remains only
 for a player using Oumaji's Khondor, Zebasi's Anzala or Polaris's Solaris.
 
 Forgotten and New Dawn are also the wiki's only two skins that recolor the
-tribe outright (see `_SKIN_COLOR_OVERRIDE`, below `tribe_default_color`) —
-Forgotten's replacement is confirmed straight off Aquarion's own wiki page
-("a muted swamp green ... #678c30", stated inline; the Tribes page's skins
-table itself carries no color column at all). New Dawn's is not: Cymanti's
-own wiki section for it states only that it changes, gives no hex, and
-reads as the wiki's least-maintained corner (typos throughout); nothing
-else found names a specific replacement either — what turns up instead is
-the skin's own cosmetic unit-sprite palette, a different thing from a
-team/border color for the same reason the head icon's own palette is (two
-paragraphs below). `c2.png` therefore has no override yet and falls back to
-Cymanti's base color, which will be wrong the moment New Dawn's true color
-turns up — fix `_SKIN_COLOR_OVERRIDE` then, not this paragraph.
+tribe outright, so each gets its own named row directly in
+`TRIBE_COLORS_BGR` (`"Aquarion (Forgotten)"`, `"Cymanti (New Dawn)"`) rather
+than sharing its base tribe's. Forgotten's replacement is confirmed straight
+off Aquarion's own wiki page ("a muted swamp green ... #678c30", stated
+inline; the Tribes page's skins table itself carries no color column at
+all). New Dawn's is not documented anywhere found — Cymanti's own wiki
+section for it states only that it changes, gives no hex, and reads as the
+wiki's least-maintained corner (typos throughout) — so it was measured
+directly instead, from a clean, near-uniform screenshot crop the project
+owner supplied: 788 of 800 sampled pixels came back the exact same value,
+`#ccfa4f`, well clear of base Cymanti's own `#c2fd00`.
 
 More often the limitation actually hit is accuracy rather than coverage.
 `xizauh/pol.jpg` is a confirmed Polaris player and Polaris *is* in the
@@ -3937,8 +3936,9 @@ honest non-matches.
 **Each identified player's outline draws in that tribe's own default color**
 (`TRIBE_COLORS_BGR`), not an arbitrary per-merge palette slot — pulled
 directly from the "Color" column of the Tribes table on
-https://polytopia.fandom.com/wiki/Tribes. Two things about that table are
-easy to get backwards:
+https://polytopia.fandom.com/wiki/Tribes, precomputed to BGR literals there
+rather than converted from hex at import time. Two things about that table
+are easy to get backwards:
 - **It is the player/team color** (borders, banners, unit tint elsewhere in
   the game), not the head icon's own rendered palette, and the two are
   unrelated. Imperius's assigned color is blue (`#0000ff`); its head icon
@@ -3946,32 +3946,40 @@ easy to get backwards:
   off the asset — nowhere near blue. So this table could never have doubled
   as a color-*matching* signal for `match_head_icon` above; it only supplies
   the color a found identity is drawn in afterward.
-- **A skin shares its base tribe's color**, with the wiki naming exactly two
-  exceptions (Aquarion's "Forgotten", Cymanti's "New Dawn") that change it —
-  and this catalog holds a render of neither, so every "2"-suffixed file
-  here is color-identical to its own base tribe with no exception to carry
-  (see `HEAD_TRIBE`).
+- **A skin usually shares its base tribe's color**, with the wiki naming
+  exactly two exceptions that change it (Aquarion's "Forgotten", Cymanti's
+  "New Dawn") — both now confirmed and given their own named row in
+  `TRIBE_COLORS_BGR` (see `HEAD_TRIBE`). Every other skin still maps to its
+  base tribe's own row rather than getting a duplicate one with the same
+  value: a duplicated literal has no single source of truth, so correcting
+  a base tribe's color later would silently leave every skin's copy stale.
+  One row per *distinct* color, not one per skin, is the rule.
 
 That second fact is exactly what makes a collision possible and expected,
 not a bug to route around: a base tribe and its own skin can both show up
 identified in one merge (two different real players, one on each), and by
 the game's own reckoning they are the same tribe wearing different cosmetics
-— so they are assigned the same default color and would draw
-indistinguishably. `_assign_vision_colors` resolves it by sorted-key order
-(which happens to put a base file like `i.png` ahead of its own skin
-`i2.png` whenever both appear, so the skin is the one bumped): the first
-identified player to reach a given color keeps the tribe's real default, and
-anyone after them who would collide gets the next unclaimed color from the
-same 16-tribe set instead, falling back to `PLAYER_VISION_PALETTE` only if
-all 16 are already spoken for (unreachable in practice — `MAX_SHOTS` caps a
-merge at 8 shots, so at most 8 distinct players).
+— so they share one default color and would draw indistinguishably.
+`_assign_vision_colors` resolves it by sorted-key order (which happens to
+put a base file like `i.png` ahead of its own skin `i2.png` whenever both
+appear, so the skin is the one bumped): the first identified player to
+reach a given color keeps the tribe's real default, and anyone after them
+who would collide is bumped to the next unused color in
+`PLAYER_VISION_PALETTE` instead — **never to another tribe's own color**.
+Borrowing an unused tribe's color from `TRIBE_COLORS_BGR` was the first
+design and was reverted: handing a colliding Xin-xi skin Imperius's own
+blue reads as a second Imperius player, not a second Xin-xi one, defeating
+the point of coloring by identity at all. `PLAYER_VISION_PALETTE` is
+verified clear of every tribe's own color, of `RUIN_MARK_BGR`'s violet, and
+of the spawn-zone layer's saturated red, so a bumped player's color can
+never be mistaken for something else already on the composite.
 
 **No set in the corpus happens to identify both a base tribe and its own
 skin in one merge**, so this path is exercised in isolation
 (`_assign_vision_colors`) rather than by any tracked baseline — verified by
 hand: `_assign_vision_colors(["i.png", "i2.png"])` gives `i.png` Imperius
-blue and bumps `i2.png` to Xin-xi's red, the first color in
-`TRIBE_COLORS_BGR` neither claims.
+blue and bumps `i2.png` to `PLAYER_VISION_PALETTE`'s first entry, `#005aff`
+(BGR `(255, 90, 0)`) — a color no tribe in `TRIBE_COLORS_BGR` uses.
 
 **Drawing reuses `samples` rather than asking the pipeline anything new.**
 Every (tile, shot) pair's fog/explored classification is already computed

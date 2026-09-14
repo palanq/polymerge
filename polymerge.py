@@ -3330,48 +3330,50 @@ def identify_player(img, catalog):
     return match_head_icon(patch[0], patch[1], catalog)
 
 
-def _hex_to_bgr(h):
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-    return (b, g, r)
-
-
 # Each of the 16 tribes' own default color, straight from the "Color" column
-# of the Tribes table on https://polytopia.fandom.com/wiki/Tribes (hex RGB,
-# converted to BGR for OpenCV). In the wiki's own order: the 12 regular
-# tribes first, then the 4 special ones. This list is also the fixed pool
-# _assign_vision_colors draws a substitute from -- see there for why one is
-# ever needed.
+# of the Tribes table on https://polytopia.fandom.com/wiki/Tribes (hex RGB
+# in a trailing comment, precomputed to BGR for OpenCV in the tuple itself).
+# In the wiki's own order: the 12 regular tribes first, then the 4 special
+# ones, then any skin whose own color differs from its base tribe's -- the
+# wiki names exactly two (Aquarion's "Forgotten", Cymanti's "New Dawn"), and
+# a skin like that is a genuinely different color identity, so it gets its
+# own row here rather than a separate lookup table. This list is also the
+# fixed pool _assign_vision_colors draws a substitute from -- see there for
+# why one is ever needed.
 TRIBE_COLORS_BGR = (
-    ("Xin-xi",   _hex_to_bgr("cc0000")),
-    ("Imperius", _hex_to_bgr("0000ff")),
-    ("Bardur",   _hex_to_bgr("352514")),
-    ("Oumaji",   _hex_to_bgr("ffff00")),
-    ("Kickoo",   _hex_to_bgr("00ff00")),
-    ("Hoodrick", _hex_to_bgr("996600")),
-    ("Luxidoor", _hex_to_bgr("ab3bd6")),
-    ("Vengir",   _hex_to_bgr("ffffff")),
-    ("Zebasi",   _hex_to_bgr("ff9900")),
-    ("Ai-Mo",    _hex_to_bgr("36e2aa")),
-    ("Quetzali", _hex_to_bgr("275c4a")),
-    ("Yadakk",   _hex_to_bgr("7d231c")),
-    ("Aquarion", _hex_to_bgr("f38381")),
-    ("Elyrion",  _hex_to_bgr("ff0099")),
-    ("Polaris",  _hex_to_bgr("b6a185")),
-    ("Cymanti",  _hex_to_bgr("c2fd00")),
+    ("Xin-xi",   (0, 0, 204)),      # cc0000
+    ("Imperius", (255, 0, 0)),      # 0000ff
+    ("Bardur",   (20, 37, 53)),     # 352514
+    ("Oumaji",   (0, 255, 255)),    # ffff00
+    ("Kickoo",   (0, 255, 0)),      # 00ff00
+    ("Hoodrick", (0, 102, 153)),    # 996600
+    ("Luxidoor", (214, 59, 171)),   # ab3bd6
+    ("Vengir",   (255, 255, 255)),  # ffffff
+    ("Zebasi",   (0, 153, 255)),    # ff9900
+    ("Ai-Mo",    (170, 226, 54)),   # 36e2aa
+    ("Quetzali", (74, 92, 39)),     # 275c4a
+    ("Yadakk",   (28, 35, 125)),    # 7d231c
+    ("Aquarion", (129, 131, 243)),  # f38381
+    ("Elyrion",  (153, 0, 255)),    # ff0099
+    ("Polaris",  (133, 161, 182)),  # b6a185
+    ("Cymanti",  (0, 253, 194)),    # c2fd00
+    ("Aquarion (Forgotten)", (48, 140, 103)),  # 678c30, confirmed on Aquarion's own wiki page
+    ("Cymanti (New Dawn)",   (79, 250, 204)),  # ccfa4f, measured off a screenshot -- not on the wiki
 )
 _TRIBE_COLOR_OF = dict(TRIBE_COLORS_BGR)
 
-# Assets/Heads/ filename -> tribe. Base tribes are coded by first letter,
-# or first two when that collides with another tribe -- the only collision
-# among these 16 names is "A" (Ai-Mo, Aquarion), hence "ai"/"aq". A "2"
-# suffix is a cosmetic skin of that same base tribe (confirmed with the
-# project owner against the wiki's own "Tribe Skins" table: h2 Hoodrick's
-# Yorthwober, i2 Imperius's Lirepacci, and so on) -- a skin is a genuinely
-# different identity for matching purposes, since its head icon looks
-# different, but shares its base tribe's color. The wiki names exactly two
-# skins that change color instead: Aquarion's "Forgotten" and Cymanti's
-# "New Dawn". aq2.png and c2.png are those two skins (added 2026-09-14) --
-# see _SKIN_COLOR_OVERRIDE below for their colors.
+# Assets/Heads/ filename -> tribe (or named skin, for the rare skin with its
+# own color -- see TRIBE_COLORS_BGR above). Base tribes are coded by first
+# letter, or first two when that collides with another tribe -- the only
+# collision among these 16 names is "A" (Ai-Mo, Aquarion), hence "ai"/"aq".
+# A "2" suffix is a cosmetic skin of that same base tribe (confirmed with
+# the project owner against the wiki's own "Tribe Skins" table: h2
+# Hoodrick's Yorthwober, i2 Imperius's Lirepacci, and so on) -- a skin is a
+# genuinely different identity for matching purposes, since its head icon
+# looks different. Most skins share their base tribe's color and map to it
+# unchanged; aq2.png (Forgotten) and c2.png (New Dawn) do not -- the wiki's
+# only two color-changing skins -- so each maps to its own row above instead
+# of to its base tribe.
 HEAD_TRIBE = {
     "x.png": "Xin-xi", "x2.png": "Xin-xi",       # x2 = Sha-po
     "i.png": "Imperius", "i2.png": "Imperius",   # i2 = Lirepacci
@@ -3385,49 +3387,34 @@ HEAD_TRIBE = {
     "ai.png": "Ai-Mo", "ai2.png": "Ai-Mo",       # ai2 = To-Li
     "q.png": "Quetzali", "q2.png": "Quetzali",   # q2 = Iqaruz
     "y.png": "Yadakk", "y2.png": "Yadakk",       # y2 = Urkaz
-    "aq.png": "Aquarion", "aq2.png": "Aquarion",  # aq2 = Forgotten (recolors)
+    "aq.png": "Aquarion", "aq2.png": "Aquarion (Forgotten)",
     "e.png": "Elyrion", "e2.png": "Elyrion",     # e2 = Midnight
     "p.png": "Polaris",
-    "c.png": "Cymanti", "c2.png": "Cymanti",     # c2 = New Dawn (recolors)
-}
-
-
-# Skins that change the tribe's own color, keyed by filename (not tribe
-# name) so the override applies to that one skin only -- the base tribe
-# (aq.png/c.png) still draws in its own unchanged color.
-#
-# Forgotten's color (#678c30, a muted swamp green) is confirmed on
-# Aquarion's own wiki page. New Dawn's isn't documented anywhere we could
-# find, so c2.png has no entry here and falls back to Cymanti's base color
-# below -- update this once New Dawn's real color turns up.
-_SKIN_COLOR_OVERRIDE = {
-    "aq2.png": _hex_to_bgr("678c30"),  # Forgotten
+    "c.png": "Cymanti", "c2.png": "Cymanti (New Dawn)",
 }
 
 
 def tribe_default_color(player_key):
-    """This catalog filename's own default color (BGR): a skin override if
-    one is known (_SKIN_COLOR_OVERRIDE), else its tribe's color, else None
-    if HEAD_TRIBE doesn't know the filename."""
-    if player_key in _SKIN_COLOR_OVERRIDE:
-        return _SKIN_COLOR_OVERRIDE[player_key]
+    """This catalog filename's tribe (or named skin)'s own default color
+    (BGR), or None if HEAD_TRIBE doesn't know the filename."""
     return _TRIBE_COLOR_OF.get(HEAD_TRIBE.get(player_key))
 
 
 PLAYER_VISION_PALETTE = (
     (255, 90, 0), (0, 140, 255), (40, 180, 40), (200, 0, 200),
     (255, 220, 0), (30, 90, 200), (0, 200, 200), (140, 100, 255),
-)  # BGR fallback for a player key tribe_default_color cannot place (see
-   # above) -- cycles past 8. Kept clear of RUIN_MARK_BGR's violet and the
-   # spawn-zone layer's saturated red.
+)  # BGR fallback for any identified player whose own tribe color is
+   # already taken by someone else in this merge (a base tribe and its own
+   # skin, the only case reached in practice -- see _assign_vision_colors)
+   # or that tribe_default_color cannot place at all. Verified clear of
+   # every tribe's own color in TRIBE_COLORS_BGR, of RUIN_MARK_BGR's
+   # violet, and of the spawn-zone layer's saturated red -- cycles past 8.
 
 
 def _assign_vision_colors(keys):
     """Map each identified player key (already sorted) to a BGR color: that
     tribe's own default when nobody else identified in this merge already
-    has it, else another color from the same 16-tribe set that is still
-    free, else (every one of the 16 already spoken for -- MAX_SHOTS makes
-    this exceedingly unlikely) PLAYER_VISION_PALETTE.
+    has it, else the next unused color from PLAYER_VISION_PALETTE.
 
     A base tribe and its own skin sharing one default color is the
     motivating case (see HEAD_TRIBE) -- both shots are the same tribe by the
@@ -3436,7 +3423,9 @@ def _assign_vision_colors(keys):
     then draw indistinguishably. First claim wins in sorted-key order, which
     happens to put a base tribe (e.g. "i.png") ahead of its own skin
     ("i2.png") whenever both appear, so the skin is the one that gets
-    bumped."""
+    bumped -- to a palette color, not another tribe's own: drawing it in
+    (say) Imperius's blue would read as a second Imperius player rather
+    than as a second Xin-xi one."""
     used = set()
     assigned = {}
     unresolved = []
@@ -3446,17 +3435,11 @@ def _assign_vision_colors(keys):
             assigned[key] = color
             used.add(color)
         else:
-            unresolved.append((key, color))
-    pool = [bgr for _name, bgr in TRIBE_COLORS_BGR if bgr not in used]
+            unresolved.append(key)
     spare = 0
-    for key, own_color in unresolved:
-        if pool:
-            color = pool.pop(0)
-        elif own_color is not None:
-            color = own_color
-        else:
-            color = PLAYER_VISION_PALETTE[spare % len(PLAYER_VISION_PALETTE)]
-            spare += 1
+    for key in unresolved:
+        color = PLAYER_VISION_PALETTE[spare % len(PLAYER_VISION_PALETTE)]
+        spare += 1
         assigned[key] = color
         used.add(color)
     return assigned
