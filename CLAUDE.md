@@ -3771,10 +3771,20 @@ finished composite.
 ruin-vision: predict what a known asset looks like here and ask how well
 that matches, rather than inferring a shape or color rule from screenshots.
 Composited over black (the button's own fill) and cropped to the sprite's
-alpha extent, mean/variance-normalized grayscale correlation is what
-`sample_tile`'s fog test and `_region_ncc` already use for the same reason —
-it survives a screenshot's own lighting and compression without needing to
-match hue.
+alpha extent, correlation is over **color** (all three BGR channels, mean-
+centered as one pooled vector) — confirmed with the project owner that a
+tribe/skin's head icon renders in one fixed palette regardless of which
+player is looking at it or which in-game color they picked, so color is
+real signal here and not noise to discard the way it is for city bars or
+the spawn-zone layer, both of which really do vary by player/render. This
+replaced an earlier grayscale-only version (the same shape `sample_tile`'s
+fog test uses) once measured to be leaving real matches on the table: over
+the corpus it recovers several shots grayscale alone left unmatched
+entirely (a same-silhouette, different-color catalog entry no longer
+competes on equal footing) without costing any shot grayscale got right,
+and several of the newly-recovered matches agree with the shot's own
+nickname in the test corpus (`imp.png` → Imperius, `hood.png` → Hoodrick,
+`v1.png` → Vengir) in a way the grayscale picks previously did not.
 
 **Locating the icon does not try to detect it directly, and this is
 load-bearing rather than a shortcut.** Swept over 63 portrait screenshots,
@@ -3842,19 +3852,66 @@ are heavily overrepresented relative to the catalog's own size. Cross-checked
 against every place the corpus lets two screenshots be confirmed as one real
 player, a match this gate accepts has so far always agreed with itself.
 
-**The catalog may not cover every tribe or skin the game has**, and this is
-a real, currently-unaddressed gap rather than a theoretical one:
-`xizauh/pol.jpg` is a confirmed Polaris player (see the game-facts corpus
-table) and nothing in `Assets/Heads/` is a Polaris render, so it is matched
-to whatever happens to correlate best among tribes that *are* present. A
-threshold cannot fix a coverage gap — the crop is real and well-placed, so
-the confidence gate has no reason to doubt it — which is why a drawn
-boundary should be read as a best-effort aid rather than a claim of
-certainty, and why this stays an opt-in overlay rather than an always-on
-diagnostic like ruin-vision and city-bars (whose color/shape math this file
-otherwise argues against generalizing from — see the standing decision
-below on cataloging terrain; the sprite-match approach itself does not
-change, only its completeness).
+**The catalog covers all 16 tribes as base renders, but only 11 of their 16
+possible skins** (confirmed with the project owner against the wiki's own
+"Tribe Skins" table — see `HEAD_TRIBE`'s comment for exactly which). A
+genuine coverage gap remains only for a player using one of the five missing
+skins (Oumaji's Khondor, Zebasi's Anzala, Aquarion's Forgotten, Polaris's
+Solaris, Cymanti's New Dawn).
+
+More often the limitation actually hit is accuracy rather than coverage.
+`xizauh/pol.jpg` is a confirmed Polaris player and Polaris *is* in the
+catalog (`p.png`) — it still matches `e2.png` (Elyrion's Midnight skin)
+instead, with a score and margin that clear the gate under both grayscale
+and color correlation. The two renders are similar enough for this
+particular crop that neither approach tells them apart. A threshold cannot
+fix that kind of confusion any more than it can fix a real coverage gap —
+the crop is real and well-placed, so the confidence gate has no reason to
+doubt it — which is why a drawn boundary should be read as a best-effort aid
+rather than a claim of certainty, and why this stays an opt-in overlay
+rather than an always-on diagnostic like ruin-vision and city-bars (whose
+color/shape math this file otherwise argues against generalizing from — see
+the standing decision below on cataloging terrain; the sprite-match approach
+itself does not change, only its completeness and its use of color).
+
+**Each identified player's outline draws in that tribe's own default color**
+(`TRIBE_COLORS_BGR`), not an arbitrary per-merge palette slot — pulled
+directly from the "Color" column of the Tribes table on
+https://polytopia.fandom.com/wiki/Tribes. Two things about that table are
+easy to get backwards:
+- **It is the player/team color** (borders, banners, unit tint elsewhere in
+  the game), not the head icon's own rendered palette, and the two are
+  unrelated. Imperius's assigned color is blue (`#0000ff`); its head icon
+  (`i.png`) is gold and red, mean color RGB (212, 149, 48) measured directly
+  off the asset — nowhere near blue. So this table could never have doubled
+  as a color-*matching* signal for `match_head_icon` above; it only supplies
+  the color a found identity is drawn in afterward.
+- **A skin shares its base tribe's color**, with the wiki naming exactly two
+  exceptions (Aquarion's "Forgotten", Cymanti's "New Dawn") that change it —
+  and this catalog holds a render of neither, so every "2"-suffixed file
+  here is color-identical to its own base tribe with no exception to carry
+  (see `HEAD_TRIBE`).
+
+That second fact is exactly what makes a collision possible and expected,
+not a bug to route around: a base tribe and its own skin can both show up
+identified in one merge (two different real players, one on each), and by
+the game's own reckoning they are the same tribe wearing different cosmetics
+— so they are assigned the same default color and would draw
+indistinguishably. `_assign_vision_colors` resolves it by sorted-key order
+(which happens to put a base file like `i.png` ahead of its own skin
+`i2.png` whenever both appear, so the skin is the one bumped): the first
+identified player to reach a given color keeps the tribe's real default, and
+anyone after them who would collide gets the next unclaimed color from the
+same 16-tribe set instead, falling back to `PLAYER_VISION_PALETTE` only if
+all 16 are already spoken for (unreachable in practice — `MAX_SHOTS` caps a
+merge at 8 shots, so at most 8 distinct players).
+
+**No set in the corpus happens to identify both a base tribe and its own
+skin in one merge**, so this path is exercised in isolation
+(`_assign_vision_colors`) rather than by any tracked baseline — verified by
+hand: `_assign_vision_colors(["i.png", "i2.png"])` gives `i.png` Imperius
+blue and bumps `i2.png` to Xin-xi's red, the first color in
+`TRIBE_COLORS_BGR` neither claims.
 
 **Drawing reuses `samples` rather than asking the pipeline anything new.**
 Every (tile, shot) pair's fog/explored classification is already computed

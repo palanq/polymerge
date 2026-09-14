@@ -3206,7 +3206,7 @@ def head_icon_dir():
 
 
 def load_head_catalog():
-    """Every Assets/Heads/*.png as a (grayscale, interior-mask) pair at
+    """Every Assets/Heads/*.png as a (color, interior-mask) pair at
     HEAD_ICON_CANON resolution, keyed by filename, cached at module scope --
     the catalog is fixed for the life of the process and every identified
     shot in a merge probes all of it. One entry per tribe/skin, confirmed
@@ -3234,12 +3234,11 @@ def load_head_catalog():
         a = (alpha.astype(np.float32) / 255.0)[:, :, None]
         comp = (bgr * a)[y0:y1, x0:x1]
         amask = (alpha[y0:y1, x0:x1] > 8).astype(np.uint8) * 255
-        gray = cv2.resize(cv2.cvtColor(comp, cv2.COLOR_BGR2GRAY), (C, C),
-                          interpolation=cv2.INTER_AREA)
+        color = cv2.resize(comp, (C, C), interpolation=cv2.INTER_AREA)
         amask = cv2.resize(amask, (C, C), interpolation=cv2.INTER_AREA)
         pm = np.zeros((C, C), np.uint8)
         cv2.circle(pm, (C // 2, C // 2), int(C // 2 * 0.78), 255, -1)
-        cat[os.path.basename(f)] = (gray, (amask > 0) & (pm > 0))
+        cat[os.path.basename(f)] = (color, (amask > 0) & (pm > 0))
     _head_catalog_cache = cat
     return cat
 
@@ -3248,10 +3247,20 @@ def match_head_icon(patch, mask, catalog):
     """The catalog filename this icon crop looks most like, as (key, ncc), or
     None if nothing clears the confidence gate.
 
-    Correlation is grayscale and mean/variance-normalized (the same shape of
-    test sample_tile uses for fog), which survives the crop's own lighting
-    and JPEG noise but not a genuine difference in tribe/skin colors alone --
-    fine here, since what actually tells tribes apart is silhouette, not hue.
+    Correlation is over color (all three BGR channels), not grayscale.
+    Confirmed with the project owner: a tribe/skin's head icon renders in one
+    fixed palette regardless of which player is looking at it or which color
+    they picked, unlike a city's territory border or unit tint -- so color is
+    real signal here, not noise to discard, and measured over the corpus it
+    resolves several shots grayscale-only correlation left unmatched (a
+    same-shape, different-color catalog entry no longer competes) without
+    costing any shot that grayscale alone got right. It is still
+    mean-centered per match the same way sample_tile's fog test mean-centers
+    the pixels it compares, over all three channels pooled into one vector --
+    that survives a device's overall color cast (a warm or cool white
+    balance shifts every channel by roughly the same amount) the same way
+    mean-centering survives an ordinary brightness shift, without needing to
+    fit anything as elaborate as fog_illumination's per-channel gain.
 
     The gate has two parts and both matter. The floor rejects a crop that
     resembles nothing in the catalog at all (an uncatalogued tribe, or a
@@ -3261,16 +3270,15 @@ def match_head_icon(patch, mask, catalog):
     drawn boundary is a best-effort aid, not a claim of certainty, which is
     why this feature is opt-in."""
     C = HEAD_ICON_CANON
-    gray = cv2.resize(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), (C, C),
-                      interpolation=cv2.INTER_AREA)
+    color = cv2.resize(patch, (C, C), interpolation=cv2.INTER_AREA).astype(np.float32)
     pm = cv2.resize(mask, (C, C), interpolation=cv2.INTER_NEAREST) > 0
     scores = []
-    for name, (tgray, tmask) in catalog.items():
+    for name, (tcolor, tmask) in catalog.items():
         m = pm & tmask
         if m.sum() < 200:
             continue
-        a = gray[m].astype(np.float32)
-        b = tgray[m].astype(np.float32)
+        a = color[m].ravel()
+        b = tcolor[m].ravel()
         a = a - a.mean()
         b = b - b.mean()
         den = float(np.sqrt((a * a).sum() * (b * b).sum()))
@@ -3308,11 +3316,121 @@ def identify_player(img, catalog):
     return match_head_icon(patch[0], patch[1], catalog)
 
 
+def _hex_to_bgr(h):
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (b, g, r)
+
+
+# Each of the 16 tribes' own default color, straight from the "Color" column
+# of the Tribes table on https://polytopia.fandom.com/wiki/Tribes (hex RGB,
+# converted to BGR for OpenCV). In the wiki's own order: the 12 regular
+# tribes first, then the 4 special ones. This list is also the fixed pool
+# _assign_vision_colors draws a substitute from -- see there for why one is
+# ever needed.
+TRIBE_COLORS_BGR = (
+    ("Xin-xi",   _hex_to_bgr("cc0000")),
+    ("Imperius", _hex_to_bgr("0000ff")),
+    ("Bardur",   _hex_to_bgr("352514")),
+    ("Oumaji",   _hex_to_bgr("ffff00")),
+    ("Kickoo",   _hex_to_bgr("00ff00")),
+    ("Hoodrick", _hex_to_bgr("996600")),
+    ("Luxidoor", _hex_to_bgr("ab3bd6")),
+    ("Vengir",   _hex_to_bgr("ffffff")),
+    ("Zebasi",   _hex_to_bgr("ff9900")),
+    ("Ai-Mo",    _hex_to_bgr("36e2aa")),
+    ("Quetzali", _hex_to_bgr("275c4a")),
+    ("Yadakk",   _hex_to_bgr("7d231c")),
+    ("Aquarion", _hex_to_bgr("f38381")),
+    ("Elyrion",  _hex_to_bgr("ff0099")),
+    ("Polaris",  _hex_to_bgr("b6a185")),
+    ("Cymanti",  _hex_to_bgr("c2fd00")),
+)
+_TRIBE_COLOR_OF = dict(TRIBE_COLORS_BGR)
+
+# Assets/Heads/ filename -> tribe. Base tribes are coded by first letter,
+# or first two when that collides with another tribe -- the only collision
+# among these 16 names is "A" (Ai-Mo, Aquarion), hence "ai"/"aq". A "2"
+# suffix is a cosmetic skin of that same base tribe (confirmed with the
+# project owner against the wiki's own "Tribe Skins" table: h2 Hoodrick's
+# Yorthwober, i2 Imperius's Lirepacci, and so on) -- a skin is a genuinely
+# different identity for matching purposes, since its head icon looks
+# different, but shares its base tribe's color. The wiki names exactly two
+# skins that change color instead (Aquarion's "Forgotten", Cymanti's "New
+# Dawn"), and this catalog has a render of neither, so every "2" file here
+# is color-identical to its base tribe with no exception to carry.
+HEAD_TRIBE = {
+    "x.png": "Xin-xi", "x2.png": "Xin-xi",       # x2 = Sha-po
+    "i.png": "Imperius", "i2.png": "Imperius",   # i2 = Lirepacci
+    "b.png": "Bardur", "b2.png": "Bardur",       # b2 = Baergoff
+    "o.png": "Oumaji",
+    "k.png": "Kickoo", "k2.png": "Kickoo",       # k2 = Ragoo
+    "h.png": "Hoodrick", "h2.png": "Hoodrick",   # h2 = Yorthwober
+    "l.png": "Luxidoor", "l2.png": "Luxidoor",   # l2 = Aumux
+    "v.png": "Vengir", "v2.png": "Vengir",       # v2 = Cultist
+    "z.png": "Zebasi",
+    "ai.png": "Ai-Mo", "ai2.png": "Ai-Mo",       # ai2 = To-Li
+    "q.png": "Quetzali", "q2.png": "Quetzali",   # q2 = Iqaruz
+    "y.png": "Yadakk", "y2.png": "Yadakk",       # y2 = Urkaz
+    "aq.png": "Aquarion",
+    "e.png": "Elyrion", "e2.png": "Elyrion",     # e2 = Midnight
+    "p.png": "Polaris",
+    "c.png": "Cymanti",
+}
+
+
+def tribe_default_color(player_key):
+    """This catalog filename's tribe's own default color (BGR), or None for
+    a filename HEAD_TRIBE does not know -- a future catalog addition, most
+    likely, until this table is updated to match."""
+    return _TRIBE_COLOR_OF.get(HEAD_TRIBE.get(player_key))
+
+
 PLAYER_VISION_PALETTE = (
     (255, 90, 0), (0, 140, 255), (40, 180, 40), (200, 0, 200),
     (255, 220, 0), (30, 90, 200), (0, 200, 200), (140, 100, 255),
-)  # BGR, one per identified player in a merge; cycles past 8. Kept clear of
-   # RUIN_MARK_BGR's violet and the spawn-zone layer's saturated red.
+)  # BGR fallback for a player key tribe_default_color cannot place (see
+   # above) -- cycles past 8. Kept clear of RUIN_MARK_BGR's violet and the
+   # spawn-zone layer's saturated red.
+
+
+def _assign_vision_colors(keys):
+    """Map each identified player key (already sorted) to a BGR color: that
+    tribe's own default when nobody else identified in this merge already
+    has it, else another color from the same 16-tribe set that is still
+    free, else (every one of the 16 already spoken for -- MAX_SHOTS makes
+    this exceedingly unlikely) PLAYER_VISION_PALETTE.
+
+    A base tribe and its own skin sharing one default color is the
+    motivating case (see HEAD_TRIBE) -- both shots are the same tribe by the
+    game's own reckoning, just different cosmetic skins, so both may
+    legitimately show up identified separately in one merge and must not
+    then draw indistinguishably. First claim wins in sorted-key order, which
+    happens to put a base tribe (e.g. "i.png") ahead of its own skin
+    ("i2.png") whenever both appear, so the skin is the one that gets
+    bumped."""
+    used = set()
+    assigned = {}
+    unresolved = []
+    for key in keys:
+        color = tribe_default_color(key)
+        if color is not None and color not in used:
+            assigned[key] = color
+            used.add(color)
+        else:
+            unresolved.append((key, color))
+    pool = [bgr for _name, bgr in TRIBE_COLORS_BGR if bgr not in used]
+    spare = 0
+    for key, own_color in unresolved:
+        if pool:
+            color = pool.pop(0)
+        elif own_color is not None:
+            color = own_color
+        else:
+            color = PLAYER_VISION_PALETTE[spare % len(PLAYER_VISION_PALETTE)]
+            spare += 1
+        assigned[key] = color
+        used.add(color)
+    return assigned
 
 
 # The four tile-adjacency directions, as (di, dj, vertex-offset, vertex-offset):
@@ -3376,8 +3494,7 @@ def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
         explored[key] = {ij for ij, per in samples.items()
                          if any(per.get(n, {}).get("explored") for n in shot_names)}
     keys_sorted = [k for k in sorted(explored) if explored[k]]
-    color_of = {k: PLAYER_VISION_PALETTE[idx % len(PLAYER_VISION_PALETTE)]
-               for idx, k in enumerate(keys_sorted)}
+    color_of = _assign_vision_colors(keys_sorted)
 
     edge_players = {}   # (vertex, vertex) -> [player key, ...], insertion order
     for key in keys_sorted:
