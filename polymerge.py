@@ -3191,26 +3191,8 @@ def head_icon_patch(img, cx, cy, r):
     return patch, mask
 
 
-# A few of the shipped renders are the same tribe/skin rendered more than
-# once (different export passes, evidently) -- confirmed by eye, not by pixel
-# similarity: cropped-to-content and resized the way match_head_icon compares
-# them, these three correlate at only 0.12-0.14 with each other despite being
-# visibly the same Oumaji head, because the renders differ in exactly how
-# much of the flowing hood is in frame. Left ungrouped, a real Oumaji
-# screenshot flip-flops between them from one shot to the next (measured:
-# tests/star_change's two Oumaji shots, confirmed the same player, picked
-# different ones of these three) -- which reads as two different players.
-# Grouping them fixes that without needing pixel-level dedup, and is the only
-# entry this dict needs unless a future asset drop adds more duplicates.
-HEAD_GROUP_OF = {
-    "Oumaji_heads_1024x1024.png": "oumaji",
-    "heads_16.png": "oumaji",
-    "all_heads0016.png": "oumaji",
-}
-
-PLAYER_HEAD_MIN_CORR = 0.25     # floor on the winning group's own score
-PLAYER_HEAD_MIN_MARGIN = 0.02   # lead the winning group must hold over the
-                                # next-best *different* group
+PLAYER_HEAD_MIN_CORR = 0.25     # floor on the winning entry's own score
+PLAYER_HEAD_MIN_MARGIN = 0.02   # lead it must hold over the runner-up
 
 _head_catalog_cache = None
 
@@ -3227,7 +3209,8 @@ def load_head_catalog():
     """Every Assets/Heads/*.png as a (grayscale, interior-mask) pair at
     HEAD_ICON_CANON resolution, keyed by filename, cached at module scope --
     the catalog is fixed for the life of the process and every identified
-    shot in a merge probes all of it.
+    shot in a merge probes all of it. One entry per tribe/skin, confirmed
+    with the project owner -- there is nothing in this catalog to deduplicate.
 
     Composited over black (matching the button's own dark fill, not white)
     and cropped to the sprite's own alpha extent before resizing, the same
@@ -3262,7 +3245,7 @@ def load_head_catalog():
 
 
 def match_head_icon(patch, mask, catalog):
-    """The catalog identity this icon crop looks most like, as (key, ncc), or
+    """The catalog filename this icon crop looks most like, as (key, ncc), or
     None if nothing clears the confidence gate.
 
     Correlation is grayscale and mean/variance-normalized (the same shape of
@@ -3272,18 +3255,16 @@ def match_head_icon(patch, mask, catalog):
 
     The gate has two parts and both matter. The floor rejects a crop that
     resembles nothing in the catalog at all (an uncatalogued tribe, or a
-    badly-placed crop). The margin is compared against the best *different*
-    group's score -- see HEAD_GROUP_OF -- since two renders of the same
-    tribe are expected to compete closely and must not fail the shot for
-    that. Neither bound is tightly calibrated (the corpus gives maybe a
-    couple dozen usable samples per tribe at best): a drawn boundary is a
-    best-effort aid, not a claim of certainty, which is why this feature is
-    opt-in."""
+    badly-placed crop). The margin rejects a genuine tie between two
+    different catalog entries -- neither bound is tightly calibrated (the
+    corpus gives maybe a couple dozen usable samples per tribe at best), so a
+    drawn boundary is a best-effort aid, not a claim of certainty, which is
+    why this feature is opt-in."""
     C = HEAD_ICON_CANON
     gray = cv2.resize(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), (C, C),
                       interpolation=cv2.INTER_AREA)
     pm = cv2.resize(mask, (C, C), interpolation=cv2.INTER_NEAREST) > 0
-    best_by_group = {}
+    scores = []
     for name, (tgray, tmask) in catalog.items():
         m = pm & tmask
         if m.sum() < 200:
@@ -3294,17 +3275,15 @@ def match_head_icon(patch, mask, catalog):
         b = b - b.mean()
         den = float(np.sqrt((a * a).sum() * (b * b).sum()))
         ncc = float((a * b).sum() / den) if den > 0 else 0.0
-        group = HEAD_GROUP_OF.get(name, name)
-        if group not in best_by_group or ncc > best_by_group[group][0]:
-            best_by_group[group] = (ncc, name)
-    if not best_by_group:
+        scores.append((ncc, name))
+    if not scores:
         return None
-    ranked = sorted(best_by_group.values(), reverse=True)
-    top_ncc, top_name = ranked[0]
-    runner_up = ranked[1][0] if len(ranked) > 1 else -1.0
+    scores.sort(reverse=True)
+    top_ncc, top_name = scores[0]
+    runner_up = scores[1][0] if len(scores) > 1 else -1.0
     if top_ncc < PLAYER_HEAD_MIN_CORR or top_ncc - runner_up < PLAYER_HEAD_MIN_MARGIN:
         return None
-    return HEAD_GROUP_OF.get(top_name, top_name), top_ncc
+    return top_name, top_ncc
 
 
 def identify_player(img, catalog):
@@ -3336,7 +3315,44 @@ PLAYER_VISION_PALETTE = (
    # RUIN_MARK_BGR's violet and the spawn-zone layer's saturated red.
 
 
-def draw_player_vision(out, samples, by_player, origin, u_col, u_row, W, H, thick):
+# The four tile-adjacency directions, as (di, dj, vertex-offset, vertex-offset):
+# crossing from tile (i,j) into its neighbor at (i+di, j+dj) crosses the edge
+# between lattice vertices (i,j)+offset0 and (i,j)+offset1. Vertex (a,b) is
+# origin + a*u_col + b*u_row -- the same lattice tile_poly builds tiles from,
+# just addressed by corner rather than by tile.
+_VISION_EDGE_DIRS = (
+    (-1, 0, (0, 0), (0, 1)),   # west edge, border with tile (i-1, j)
+    (1, 0, (1, 0), (1, 1)),    # east edge, border with tile (i+1, j)
+    (0, -1, (0, 0), (1, 0)),   # north edge, border with tile (i, j-1)
+    (0, 1, (0, 1), (1, 1)),    # south edge, border with tile (i, j+1)
+)
+
+VISION_BANDS_PER_EDGE = 6   # how many alternating color bands cover one
+                            # tile-edge length where two or more players'
+                            # boundaries coincide on the same edge
+
+
+def _draw_vision_edge(out, p0, p1, colors, thick):
+    """One tile-edge segment, solid if only one player's boundary reaches it,
+    else split into VISION_BANDS_PER_EDGE alternating bands cycling through
+    every player whose boundary does. Adjacent tiles' edges share endpoints
+    and each divides evenly, so a run of coinciding edges along a straight
+    stretch of frontier reads as one continuous striped line rather than a
+    stripe pattern that resets, and arbitrarily jumps, at every tile."""
+    if len(colors) == 1:
+        cv2.line(out, tuple(np.round(p0).astype(int)),
+                 tuple(np.round(p1).astype(int)), colors[0], thick, cv2.LINE_AA)
+        return
+    n = VISION_BANDS_PER_EDGE
+    for k in range(n):
+        a = p0 + (p1 - p0) * (k / n)
+        b = p0 + (p1 - p0) * ((k + 1) / n)
+        cv2.line(out, tuple(np.round(a).astype(int)),
+                 tuple(np.round(b).astype(int)), colors[k % len(colors)],
+                 thick, cv2.LINE_AA)
+
+
+def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
     """Outline, in a distinct color per player, the union of tiles each
     identified player's own shot(s) witnessed as explored.
 
@@ -3344,20 +3360,41 @@ def draw_player_vision(out, samples, by_player, origin, u_col, u_row, W, H, thic
     player. The tile set comes straight from `samples` -- the same per-(tile,
     shot) classification winner selection already used -- so this asks
     nothing new of the pipeline; it just asks it a different question,
-    "what did this one player see" rather than "what did anyone see"."""
-    for idx, key in enumerate(sorted(by_player)):
-        shot_names = by_player[key]
-        tiles = [ij for ij, per in samples.items()
-                if any(per.get(n, {}).get("explored") for n in shot_names)]
-        if not tiles:
-            continue
-        mask = np.zeros((H, W), np.uint8)
-        for i, j in tiles:
-            poly = tile_poly(origin, u_col, u_row, i, j, 0.0)
-            cv2.fillConvexPoly(mask, np.round(poly).astype(np.int32), 1)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        color = PLAYER_VISION_PALETTE[idx % len(PLAYER_VISION_PALETTE)]
-        cv2.polylines(out, contours, True, color, thick, cv2.LINE_AA)
+    "what did this one player see" rather than "what did anyone see".
+
+    Built at the level of individual tile edges rather than by rasterizing
+    each player's region and tracing its contour, specifically so two (or
+    more) players' boundaries that fall on the exact same edge -- their
+    explored regions border the same unexplored tile at the same place --
+    are detected rather than silently overdrawn. A contour-per-player
+    approach can only paint one color there, whichever player happened to be
+    drawn last; every edge is instead computed once, tagged with every
+    player whose boundary reaches it, and drawn solid when that is one player
+    or banded (see _draw_vision_edge) when it is more than one."""
+    explored = {}
+    for key, shot_names in by_player.items():
+        explored[key] = {ij for ij, per in samples.items()
+                         if any(per.get(n, {}).get("explored") for n in shot_names)}
+    keys_sorted = [k for k in sorted(explored) if explored[k]]
+    color_of = {k: PLAYER_VISION_PALETTE[idx % len(PLAYER_VISION_PALETTE)]
+               for idx, k in enumerate(keys_sorted)}
+
+    edge_players = {}   # (vertex, vertex) -> [player key, ...], insertion order
+    for key in keys_sorted:
+        tiles = explored[key]
+        for (i, j) in tiles:
+            for di, dj, v0off, v1off in _VISION_EDGE_DIRS:
+                if (i + di, j + dj) in tiles:
+                    continue          # interior to this player's own region
+                v0 = (i + v0off[0], j + v0off[1])
+                v1 = (i + v1off[0], j + v1off[1])
+                edge = (v0, v1) if v0 <= v1 else (v1, v0)
+                edge_players.setdefault(edge, []).append(key)
+
+    for (v0, v1), keys in edge_players.items():
+        p0 = origin + v0[0] * u_col + v0[1] * u_row
+        p1 = origin + v1[0] * u_col + v1[1] * u_row
+        _draw_vision_edge(out, p0, p1, [color_of[k] for k in keys], thick)
 
 
 # ---------------------------------------------- board renders & templates ---
@@ -5428,8 +5465,7 @@ def main():
             if ident is not None:
                 by_player.setdefault(ident[0], []).append(n)
         if by_player:
-            draw_player_vision(out, samples, by_player, origin, u_col, u_row,
-                               W, Hc, thick)
+            draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick)
         # A fogged tile carrying a ruin gets two things: the Elyrion player's
         # own view of that tile, and a violet outline around it.
         #

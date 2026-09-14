@@ -3807,38 +3807,40 @@ intruding on the search band). None of this costs the merge anything —
 these shots still anchor and paste normally — it only costs that one shot a
 vision outline.
 
-**The confidence gate has two parts, and the margin part is compared
-between *groups*, not raw catalog files.** A few of the shipped renders are
-the same tribe/skin exported more than once: `Oumaji_heads_1024x1024.png`,
-`heads_16.png` and `all_heads0016.png` are all visibly the same Oumaji head
-by eye, yet cropped-to-content and compared the way a real match is, they
-correlate at only **0.12–0.14** with each other — the renders differ in
-exactly how much of the flowing hood is in frame, and ordinary bounding-box
-centering cannot fix that. Left ungrouped, `tests/star_change`'s two
-confirmed-same-player Oumaji shots (`oum.png`, `oum2.png`) picked *different*
-ones of the three, which reads as two different players. `HEAD_GROUP_OF`
-merges the three into one identity; the margin gate then compares the
-winning group's score against the best score from any *different* group, so
-two renders of one tribe competing closely is expected and never fails the
-shot for it.
+**`Assets/Heads/` filenames are short tribe/skin codes** (`o.png`, `i.png`,
+`b.png`, a `2` suffix for an alternate skin of the same letter -- `b2.png`,
+`h2.png`, and so on), renamed by the project owner from the numbered dump
+this catalog first shipped with; three unused renders were deleted in the
+same pass. **There is exactly one entry per tribe/skin in this catalog**
+(confirmed with the project owner) — an earlier draft of this section
+guessed otherwise from three renders that happen to share a similar
+white/gray/orange palette (`o.png`, `c.png`, `p.png`) and built a
+duplicate-merging step (`HEAD_GROUP_OF`) on that guess. That was wrong and
+has been removed: nothing here catalogs what any of these tribes/skins
+*are* by name, on the same grounds this file elsewhere argues against
+cataloging terrain appearance by eye — a handful of renders looking alike at
+a glance is not evidence they render the same thing, and is not a
+substitute for asking. If a future rename or asset drop turns out to
+contain a genuine duplicate, confirm it with the project owner before
+building anything to merge it — visual similarity alone was already wrong
+once here.
 
-**Both bounds are loosely calibrated, and that is stated rather than
+**Both gate bounds are loosely calibrated, and that is stated rather than
 hidden.** `PLAYER_HEAD_MIN_CORR` (0.25) and `PLAYER_HEAD_MIN_MARGIN` (0.02)
 were set by hand against real corpus matches rather than swept the way
 `RUIN_MATCH_MIN_CORR` was: a genuinely correct match runs anywhere from 0.29
-to 0.61 with a margin from 0.006 to 0.29 over its nearest different-group
-competitor, so there is no clean gap to sit in the middle of the way ruin
-detection has. Reading the corpus by hand also surfaced the reason two
-tribes end up as the most common runners-up across the whole file: `head_toli`
-and the `oumaji` group are not spurious attractors, they are Elyrion and
-Oumaji respectively — Oumaji because it is the tutorial/default tribe and
-disproportionately common in casual games, and Elyrion because several test
-sets were built specifically to exercise ruin-vision and share an Elyrion
-contributor. Cross-checked against every place the corpus lets two
-screenshots be confirmed as one real player (same file reused across
-`badland_test`/`badland_test2`/`badland_test3`, and the `test_screenshots`/
-`test_ss_2`/`beautiful_test3` shared-board family), a match this gate
-accepts has always agreed with itself.
+to 0.61 with a margin from 0.006 to 0.29 over its runner-up, so there is no
+clean gap to sit in the middle of the way ruin detection has. Two catalog
+entries turn up as runners-up far more often than the rest across the whole
+corpus (one of them the closest thing to a false-positive attractor this
+feature has), which is at least partly a fact about the corpus rather than
+about those two renders specifically: several test sets share real players
+across shots or across sets (the identical `yad.png` reused in
+`badland_test`/`badland_test2`/`badland_test3`; the `test_screenshots`/
+`test_ss_2`/`beautiful_test3` shared-board family), so a handful of tribes
+are heavily overrepresented relative to the catalog's own size. Cross-checked
+against every place the corpus lets two screenshots be confirmed as one real
+player, a match this gate accepts has so far always agreed with itself.
 
 **The catalog may not cover every tribe or skin the game has**, and this is
 a real, currently-unaddressed gap rather than a theoretical one:
@@ -3856,22 +3858,41 @@ change, only its completeness).
 
 **Drawing reuses `samples` rather than asking the pipeline anything new.**
 Every (tile, shot) pair's fog/explored classification is already computed
-before winner selection runs; a player's outline is the boundary of the
-union, across that player's own identified shot(s), of tiles classified
-explored — found via `cv2.findContours` on a rasterized tile mask (the same
-`tile_poly` + `fillConvexPoly` construction `fog_only` already uses for the
-`shade`/`spawns` clip), and drawn after the decorative overlays (so `shade`
-cannot dull it) and before the ruin markers (so those stay topmost, per the
-existing comment there). It is deliberately **not** what any one shot of
-that player *won* on the composite — a player's own vision should not shrink
-just because a sharper shot from someone else took a contested tile.
+before winner selection runs; a player's own explored set is the union,
+across that player's identified shot(s), of tiles classified explored, and
+the boundary of that set is what gets drawn — after the decorative overlays
+(so `shade` cannot dull it) and before the ruin markers (so those stay
+topmost, per the existing comment there). It is deliberately **not** what
+any one shot of that player *won* on the composite — a player's own vision
+should not shrink just because a sharper shot from someone else took a
+contested tile.
+
+**Built at the level of individual tile edges, not by rasterizing each
+player's region and tracing its contour** (`draw_player_vision`,
+`_draw_vision_edge`) — for one reason: two or more players can have the
+*same* edge as their frontier, when their explored regions each border the
+same unexplored tile at the same place, and a contour traced per player has
+only one color to paint there, whichever player happened to be drawn last.
+Every tile's four edges are instead visited once per player whose explored
+set contains that tile but not the neighbor across it (the lattice-vertex
+arithmetic `tile_poly` already uses, addressed by corner instead of by
+tile), building one map from edge to the list of players whose boundary
+reaches it. An edge with one player draws as an ordinary solid line; an edge
+with more than one splits into `VISION_BANDS_PER_EDGE` (6) alternating bands
+cycling through every color that reaches it, so a shared frontier reads as
+visibly shared rather than arbitrarily belonging to whichever player's draw
+call happened to land on top. Adjacent tiles' edges share endpoints and each
+divides into the same number of equal bands, so a straight run of coinciding
+frontier reads as one continuous stripe rather than a pattern that resets at
+every tile boundary.
 
 **Costs about 0.8–1s per merge** (the "player identification" phase; one
-button-row scan plus one 30-entry catalog correlation per shot, all on raw,
-unwarped pixels) and nothing when `vision` is not requested — `player_of` is
-only ever populated inside the `"vision" in overlays` branch. Verified with
-`tools/baseline.py`: every tracked column is identical with and without this
-change, since nothing here runs unless asked for.
+button-row scan plus one catalog correlation per shot, against however many
+entries `Assets/Heads/` holds, all on raw, unwarped pixels) and nothing when
+`vision` is not requested — `player_of` is only ever populated inside the
+`"vision" in overlays` branch. Verified with `tools/baseline.py`: every
+tracked column is identical with and without this change, since nothing
+here runs unless asked for.
 
 ## Standing decisions (don't relitigate without new evidence)
 
