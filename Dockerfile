@@ -26,8 +26,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # fallback are gone, so this COPY is now the only thing standing between the
 # bot and a startup refusal -- which is the intended behavior.
 #
-# Assets/ carries the Elyrion ruin sprite. Without it ruin detection reports
-# NO-RUIN-SPRITE and switches itself off; the merge still runs.
+# Assets/ carries the Elyrion ruin sprite and the Assets/Heads/ tribe head
+# catalog --overlays vision matches screenshots against. Missing either
+# reports NO-RUIN-SPRITE/NO-HEAD-CATALOG and switches itself off; the merge
+# still runs.
 COPY polybot.py polymerge.py ./
 COPY Overlays/ ./Overlays/
 COPY Assets/ ./Assets/

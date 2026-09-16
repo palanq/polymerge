@@ -166,15 +166,19 @@ per-file rects, key them on something unambiguous.
   composite. Off by default in the CLI; the Discord bot passes it always, for
   the same no-wrong-answer reason. See the city-bar section below.
 - `--overlays` draws the board's decorative layers on the finished composite:
-  `shade`, `grid`, `spawns`, `push`, comma-separated, or `none`. Default
-  `shade`. They come from the same `Overlays/` renders as the board itself and
-  share its pixel frame exactly, so they alpha-blend on with **no registration
-  or warping** — see the `Overlays/` section. Drawn after the tile paste (so
-  they read over real terrain, not just fog) and before the ruin markers (so a
-  marker is never dimmed). `shade` and `spawns` are clipped to tiles nobody
-  explored; `grid` and `push` cover the whole board. A layer
-  that does not exist for the board size is skipped and named on stdout as
-  `NO-OVERLAY`, never an error — the bot lifts that line into its caption.
+  `shade`, `grid`, `spawns`, `push`, `vision`, comma-separated, or `none`.
+  Default `shade`. The first four come from the same `Overlays/` renders as
+  the board itself and share its pixel frame exactly, so they alpha-blend on
+  with **no registration or warping** — see the `Overlays/` section. Drawn
+  after the tile paste (so they read over real terrain, not just fog) and
+  before the ruin markers (so a marker is never dimmed). `shade` and `spawns`
+  are clipped to tiles nobody explored; `grid` and `push` cover the whole
+  board. A layer that does not exist for the board size is skipped and named
+  on stdout as `NO-OVERLAY`, never an error — the bot lifts that line into
+  its caption. `vision` is different from the other four: it has no
+  `Overlays/` file and is computed per merge, identifying each shot's own
+  player from its Game Stats icon and outlining what that player alone
+  witnessed as explored — see the player-identification section below.
   **Overlays cannot change the merge**: they are painted after every decision,
   so union, conflicts and bar counts are identical whatever is requested
   (verified across the corpus).
@@ -1106,7 +1110,7 @@ instructions already is. It costs nothing and survives any rename.
 
 **`/polymerge-help` exists because the option descriptions carry only half the
 help.** Discord renders the command and per-option descriptions inline as you
-type, so under `/merge` the board size and the four layers document themselves —
+type, so under `/merge` the board size and the five layers document themselves —
 that part of `help_text` is redundant there. Everything else in it has nowhere
 to appear: the 🗺️/✅ workflow, `MAX_SHOTS`, the accepted formats, the
 two-adjoining-edges rule, the 15% crop, the purple ruin outlines, the
@@ -3770,6 +3774,275 @@ contrast worth keeping: offset is an appearance, adjacency is a rule the game
 enforces. What remains genuinely untried is the **differential** idea below — a
 bar is present in exactly one source and absent from the others at the same
 template location.
+
+### 6. Player identification and vision outlines (`identify_player`, `--overlays vision`, off by default)
+
+**The bottom action row's second button, Game Stats, always shows the
+viewing player's own tribe/skin head icon, circled** — confirmed by the
+project owner, and this is a different UI element from anything else this
+file documents (it is not the city label's `★ N`, not a tribe icon on the
+map, and it is present on *every* screenshot, turn-transition or live,
+because the four-button row — Settings, Game Stats, Tech Tree, Exit/End
+Turn — is always there). So the icon identifies who took the screenshot, the
+same way the population bar identifies who owns a city: by rendering
+something only that one player's client shows, rather than by inferring
+identity from anything shared. `--overlays vision` uses it to attribute each
+input to a player and outline the union of what that player's own shot(s)
+witnessed as explored, in a different color per player, on top of the
+finished composite.
+
+**The icon is matched against a catalog of the game's own head renders**
+(`Assets/Heads/*.png`), the same idea as `Assets/Rainbowflame.png` for
+ruin-vision: predict what a known asset looks like here and ask how well
+that matches, rather than inferring a shape or color rule from screenshots.
+Composited over black (the button's own fill) and cropped to the sprite's
+alpha extent, correlation is over **color** (all three BGR channels, mean-
+centered as one pooled vector) — confirmed with the project owner that a
+tribe/skin's head icon renders in one fixed palette regardless of which
+player is looking at it or which in-game color they picked, so color is
+real signal here and not noise to discard the way it is for city bars or
+the spawn-zone layer, both of which really do vary by player/render. This
+replaced an earlier grayscale-only version (the same shape `sample_tile`'s
+fog test uses) once measured to be leaving real matches on the table: over
+the corpus it recovers several shots grayscale alone left unmatched
+entirely (a same-silhouette, different-color catalog entry no longer
+competes on equal footing) without costing any shot grayscale got right,
+and several of the newly-recovered matches agree with the shot's own
+nickname in the test corpus (`imp.png` → Imperius, `hood.png` → Hoodrick,
+`v1.png` → Vengir) in a way the grayscale picks previously did not.
+
+**Locating the icon does not try to detect it directly, and this is
+load-bearing rather than a shortcut.** Swept over 63 portrait screenshots,
+plain brightness/circularity ring detection finds Settings, Tech Tree and
+Exit reliably but finds Game Stats itself in **0 of 63** — its interior is a
+colorful tribe glyph rather than a plain icon on black, which breaks the
+same test that finds the other three cleanly, and a viewing player's own
+rank badge ("1st"/"3rd") sometimes sits across its top-right corner besides.
+The four buttons are evenly spaced and centered on the screen, though
+(confirmed: gap(0,2) is 2× gap(2,3) on every sample, and index *i* sits at a
+fixed fraction *a + i·d* symmetric about 0.5), so Game Stats' position is
+always **interpolated** from whichever of the other three are found
+(`locate_game_stats_icon`) — never guessed at directly. A shot with *zero*
+usable anchors falls back to the corpus-mean position, but `identify_player`
+refuses to trust a match built on that fallback at all (see below): measured
+on the nine corpus shots that reach it, the resulting crop matches
+*something* in the catalog with a confidence a genuinely well-placed crop
+would clear, just the wrong thing, and no score threshold on the match
+itself can tell the two cases apart.
+
+**A handful of screenshots supply no anchor at all**, and are the
+regression cases for that refusal: `badland_test/oum.jpg` and
+`badland_test2/cym.png` are the two landscape captures whose button row is
+physically cropped through the middle by the capture itself (the image ends
+mid-circle); `perilous_test/xin.png` and `scorched_earth/bard.png` are
+landscape shots whose ring reads at lower contrast than the brightness cut
+expects; `missized_test/z1.jpg`, `test_ss_elyruins/hood.png` and
+`u_forest2/ely.png` fail for related reasons (board content or chrome
+intruding on the search band). None of this costs the merge anything —
+these shots still anchor and paste normally — it only costs that one shot a
+vision outline.
+
+**`Assets/Heads/` filenames are short tribe/skin codes** (`o.png`, `i.png`,
+`b.png`, a `2` suffix for an alternate skin of the same letter -- `b2.png`,
+`h2.png`, and so on), renamed by the project owner from the numbered dump
+this catalog first shipped with; three unused renders were deleted in the
+same pass. **There is exactly one entry per tribe/skin in this catalog**
+(confirmed with the project owner) — an earlier draft of this section
+guessed otherwise from three renders that happen to share a similar
+white/gray/orange palette (`o.png`, `c.png`, `p.png`) and built a
+duplicate-merging step (`HEAD_GROUP_OF`) on that guess. That was wrong and
+has been removed: nothing here catalogs what any of these tribes/skins
+*are* by name, on the same grounds this file elsewhere argues against
+cataloging terrain appearance by eye — a handful of renders looking alike at
+a glance is not evidence they render the same thing, and is not a
+substitute for asking. If a future rename or asset drop turns out to
+contain a genuine duplicate, confirm it with the project owner before
+building anything to merge it — visual similarity alone was already wrong
+once here.
+
+**Both gate bounds are loosely calibrated, and that is stated rather than
+hidden.** `PLAYER_HEAD_MIN_CORR` (0.25) and `PLAYER_HEAD_MIN_MARGIN` (0.02)
+were set by hand against real corpus matches rather than swept the way
+`RUIN_MATCH_MIN_CORR` was: a genuinely correct match runs anywhere from 0.29
+to 0.61 with a margin from 0.006 to 0.29 over its runner-up, so there is no
+clean gap to sit in the middle of the way ruin detection has. Two catalog
+entries turn up as runners-up far more often than the rest across the whole
+corpus (one of them the closest thing to a false-positive attractor this
+feature has), which is at least partly a fact about the corpus rather than
+about those two renders specifically: several test sets share real players
+across shots or across sets (the identical `yad.png` reused in
+`badland_test`/`badland_test2`/`badland_test3`; the `test_screenshots`/
+`test_ss_2`/`beautiful_test3` shared-board family), so a handful of tribes
+are heavily overrepresented relative to the catalog's own size. Cross-checked
+against every place the corpus lets two screenshots be confirmed as one real
+player, a match this gate accepts has so far always agreed with itself.
+
+**The catalog covers all 16 tribes as base renders, and (as of 2026-09-14)
+13 of their 16 possible skins** (confirmed with the project owner against
+the wiki's own "Tribe Skins" table — see `HEAD_TRIBE`'s comment for exactly
+which). `aq2.png` (Aquarion's Forgotten) and `c2.png` (Cymanti's New Dawn)
+were added that day, pulled from the same wikia.nocookie.net asset host the
+original 27 renders came from — matched by art style (transparent PNG,
+isometric cube head, two eye windows) against the Tribes wiki page's own
+tribe-skin gallery, not a screenshot. A genuine coverage gap remains only
+for a player using Oumaji's Khondor, Zebasi's Anzala or Polaris's Solaris.
+
+Forgotten and New Dawn are also the wiki's only two skins that recolor the
+tribe outright, so each gets its own named row directly in
+`TRIBE_COLORS_BGR` (`"Aquarion (Forgotten)"`, `"Cymanti (New Dawn)"`) rather
+than sharing its base tribe's. Forgotten's replacement is confirmed straight
+off Aquarion's own wiki page ("a muted swamp green ... #678c30", stated
+inline; the Tribes page's skins table itself carries no color column at
+all). New Dawn's is not documented anywhere found — Cymanti's own wiki
+section for it states only that it changes, gives no hex, and reads as the
+wiki's least-maintained corner (typos throughout) — so it was measured
+directly instead, from a clean, near-uniform screenshot crop the project
+owner supplied: 788 of 800 sampled pixels came back the exact same value,
+`#ccfa4f`, well clear of base Cymanti's own `#c2fd00`.
+
+More often the limitation actually hit is accuracy rather than coverage.
+`xizauh/pol.jpg` is a confirmed Polaris player and Polaris *is* in the
+catalog (`p.png`) — it still matches `e2.png` (Elyrion's Midnight skin)
+instead, with a score and margin that clear the gate under both grayscale
+and color correlation. The two renders are similar enough for this
+particular crop that neither approach tells them apart. A threshold cannot
+fix that kind of confusion any more than it can fix a real coverage gap —
+the crop is real and well-placed, so the confidence gate has no reason to
+doubt it — which is why a drawn boundary should be read as a best-effort aid
+rather than a claim of certainty, and why this stays an opt-in overlay
+rather than an always-on diagnostic like ruin-vision and city-bars (whose
+color/shape math this file otherwise argues against generalizing from — see
+the standing decision below on cataloging terrain; the sprite-match approach
+itself does not change, only its completeness and its use of color).
+
+**A second, distinct source of confusion was found the same day and it is
+not a visual-similarity limit — it is a mask-sizing bug, now fixed.**
+`head_icon_patch`'s interior circle is a fixed 0.78 of the measured
+button-ring radius, and that fraction does not hold on every capture: on
+some the rendered icon glyph is smaller relative to its ring than that
+assumes, leaving flat black button-background between the icon and the
+ring — *inside* the assumed circle. Correlating that against a catalog
+entry's own pixels there (never black — see `load_head_catalog`) is pure
+noise for every candidate, not signal for any of them. Measured on
+`test_ss_elyruins/ely1.jpg`: 31% of the masked pixels were flat black, and
+it was the entire reason Elyrion's own render (`e.png`) tied with, and
+sometimes lost to, Ai-Mo's To-Li skin (`ai2.png`) — two renders that share
+no dominant color at all, confirmed by direct pixel histogram rather than
+by eye (`e.png` is ~17% a saturated blue; `ai2.png` is entirely browns and
+tans). Dropping screenshot pixels darker than `HEAD_ICON_BLACK_FLOOR` (10)
+from the comparison (`match_head_icon`) took that shot's margin from a tied
+0.006 to a clear 0.130, and strengthened every other match checked
+alongside it, including already-confident ones
+(`test_ss_elyruins/cym.jpg`'s margin 0.094 → 0.324) — so the black gap was
+diluting every comparison corpus-wide, just not always by enough to flip
+the winner. Verified against the whole corpus: identical union, conflicts,
+bars, ruins and fog lock on all 27 sets (this feature cannot touch any of
+them, gated as it is behind `"vision" in overlays`), and a fresh
+`--overlays vision` sweep completes on every set.
+
+**A related, rarer failure surfaced at the same time: single-anchor
+localization is not reliable enough to trust at all.**
+`locate_game_stats_icon` places Game Stats from a *single* found anchor by
+extrapolating with `BUTTON_ROW_UNIT`, a corpus-average spacing rather than
+anything measured on that shot — and a real per-shot spacing that differs
+from the average silently shifts the crop. The corpus has exactly two shots
+this happens on (`n_anchors == 1`, out of 74 total), and both produced a
+confident wrong match: `star_change/oum2.png` crops mostly black/white/gray
+— close to Oumaji's own catalog palette by direct measurement — and still
+loses to `c.png` (Cymanti) even after the black-floor fix above;
+`basin_treaties/q.png` crops almost entirely dark background with no real
+icon color at all, yet still cleared both gates in `match_head_icon` purely
+because `c2.png` happened to correlate with the noise once it was added to
+the catalog. `identify_player` now requires **two** anchors, not one, the
+same way it already refused the zero-anchor case — costing exactly those
+two shots their outline, and turning two confident wrong matches into two
+honest non-matches.
+
+**Each identified player's outline draws in that tribe's own default color**
+(`TRIBE_COLORS_BGR`), not an arbitrary per-merge palette slot — pulled
+directly from the "Color" column of the Tribes table on
+https://polytopia.fandom.com/wiki/Tribes, precomputed to BGR literals there
+rather than converted from hex at import time. Two things about that table
+are easy to get backwards:
+- **It is the player/team color** (borders, banners, unit tint elsewhere in
+  the game), not the head icon's own rendered palette, and the two are
+  unrelated. Imperius's assigned color is blue (`#0000ff`); its head icon
+  (`i.png`) is gold and red, mean color RGB (212, 149, 48) measured directly
+  off the asset — nowhere near blue. So this table could never have doubled
+  as a color-*matching* signal for `match_head_icon` above; it only supplies
+  the color a found identity is drawn in afterward.
+- **A skin usually shares its base tribe's color**, with the wiki naming
+  exactly two exceptions that change it (Aquarion's "Forgotten", Cymanti's
+  "New Dawn") — both now confirmed and given their own named row in
+  `TRIBE_COLORS_BGR` (see `HEAD_TRIBE`). Every other skin still maps to its
+  base tribe's own row rather than getting a duplicate one with the same
+  value: a duplicated literal has no single source of truth, so correcting
+  a base tribe's color later would silently leave every skin's copy stale.
+  One row per *distinct* color, not one per skin, is the rule.
+
+That second fact is exactly what makes a collision possible and expected,
+not a bug to route around: a base tribe and its own skin can both show up
+identified in one merge (two different real players, one on each), and by
+the game's own reckoning they are the same tribe wearing different cosmetics
+— so they share one default color and would draw indistinguishably.
+`_assign_vision_colors` resolves it by sorted-key order (which happens to
+put a base file like `i.png` ahead of its own skin `i2.png` whenever both
+appear, so the skin is the one bumped): the first identified player to
+reach a given color keeps the tribe's real default, and anyone after them
+who would collide is bumped to the next unused color in
+`PLAYER_VISION_PALETTE` instead — **never to another tribe's own color**.
+Borrowing an unused tribe's color from `TRIBE_COLORS_BGR` was the first
+design and was reverted: handing a colliding Xin-xi skin Imperius's own
+blue reads as a second Imperius player, not a second Xin-xi one, defeating
+the point of coloring by identity at all. `PLAYER_VISION_PALETTE` is
+verified clear of every tribe's own color, of `RUIN_MARK_BGR`'s violet, and
+of the spawn-zone layer's saturated red, so a bumped player's color can
+never be mistaken for something else already on the composite.
+
+**No set in the corpus happens to identify both a base tribe and its own
+skin in one merge**, so this path is exercised in isolation
+(`_assign_vision_colors`) rather than by any tracked baseline — verified by
+hand: `_assign_vision_colors(["i.png", "i2.png"])` gives `i.png` Imperius
+blue and bumps `i2.png` to `PLAYER_VISION_PALETTE`'s first entry, `#005aff`
+(BGR `(255, 90, 0)`) — a color no tribe in `TRIBE_COLORS_BGR` uses.
+
+**Drawing reuses `samples` rather than asking the pipeline anything new.**
+Every (tile, shot) pair's fog/explored classification is already computed
+before winner selection runs; a player's own explored set is the union,
+across that player's identified shot(s), of tiles classified explored, and
+the boundary of that set is what gets drawn — after the decorative overlays
+(so `shade` cannot dull it) and before the ruin markers (so those stay
+topmost, per the existing comment there). It is deliberately **not** what
+any one shot of that player *won* on the composite — a player's own vision
+should not shrink just because a sharper shot from someone else took a
+contested tile.
+
+**Built at the level of individual tile edges, not by rasterizing each
+player's region and tracing its contour** (`draw_player_vision`,
+`_draw_vision_edge`) — for one reason: two or more players can have the
+*same* edge as their frontier, when their explored regions each border the
+same unexplored tile at the same place, and a contour traced per player has
+only one color to paint there, whichever player happened to be drawn last.
+Every tile's four edges are instead visited once per player whose explored
+set contains that tile but not the neighbor across it (the lattice-vertex
+arithmetic `tile_poly` already uses, addressed by corner instead of by
+tile), building one map from edge to the list of players whose boundary
+reaches it. An edge with one player draws as an ordinary solid line; an edge
+with more than one splits into `VISION_BANDS_PER_EDGE` (6) alternating bands
+cycling through every color that reaches it, so a shared frontier reads as
+visibly shared rather than arbitrarily belonging to whichever player's draw
+call happened to land on top. Adjacent tiles' edges share endpoints and each
+divides into the same number of equal bands, so a straight run of coinciding
+frontier reads as one continuous stripe rather than a pattern that resets at
+every tile boundary.
+
+**Costs about 0.8–1s per merge** (the "player identification" phase; one
+button-row scan plus one catalog correlation per shot, against however many
+entries `Assets/Heads/` holds, all on raw, unwarped pixels) and nothing when
+`vision` is not requested — `player_of` is only ever populated inside the
+`"vision" in overlays` branch. Verified with `tools/baseline.py`: every
+tracked column is identical with and without this change, since nothing
+here runs unless asked for.
 
 ## Standing decisions (don't relitigate without new evidence)
 
