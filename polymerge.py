@@ -3482,9 +3482,71 @@ def _draw_vision_edge(out, p0, p1, colors, thick):
                  thick, cv2.LINE_AA)
 
 
+VISION_FADE_FRAC = 0.25    # how far a frontier's color wash reaches into the
+                           # interior, as a fraction of one tile width
+VISION_FADE_ALPHA = 0.75   # wash opacity immediately behind the frontier line
+
+
+def _draw_vision_fade(out, explored, keys_sorted, color_of, origin, u_col, u_row):
+    """Blend each player's own color into their own territory, fading to
+    nothing over VISION_FADE_FRAC of a tile from the frontier -- a soft wash
+    behind the frontier line rather than a bare line, without tinting the
+    rest of a large explored region.
+
+    Distance transform on each player's own rasterized tile set. Opening
+    the mask with a disk the size of the fade first rounds its outer
+    (convex) corners into a matching arc before the distance transform runs
+    -- a plain distance transform on the raw mask miters those corners
+    (the perpendicular distance to each adjacent edge stays valid right up
+    to the corner, so nothing rounds it), where an inner (concave) corner
+    already comes out rounded on its own. This is purely a look, not a
+    truer distance: a wash reads better wrapping a corner in an arc than
+    meeting itself in a sharp miter."""
+    h, w = out.shape[:2]
+    tile_px = (float(np.linalg.norm(u_col)) + float(np.linalg.norm(u_row))) / 2
+    fade_px = VISION_FADE_FRAC * tile_px
+    pad = int(np.ceil(fade_px)) + 2
+    corner_r = max(round(fade_px), 1)
+    corner_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                               (2 * corner_r + 1, 2 * corner_r + 1))
+    for key in keys_sorted:
+        tiles = explored[key]
+        ij = np.array(list(tiles))
+        i0, j0 = ij[:, 0].min(), ij[:, 1].min()
+        i1, j1 = ij[:, 0].max() + 1, ij[:, 1].max() + 1
+        corners = np.stack([origin + i0 * u_col + j0 * u_row,
+                             origin + i1 * u_col + j0 * u_row,
+                             origin + i0 * u_col + j1 * u_row,
+                             origin + i1 * u_col + j1 * u_row])
+        x0 = max(int(np.floor(corners[:, 0].min())) - pad, 0)
+        y0 = max(int(np.floor(corners[:, 1].min())) - pad, 0)
+        x1 = min(int(np.ceil(corners[:, 0].max())) + pad, w)
+        y1 = min(int(np.ceil(corners[:, 1].max())) + pad, h)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        sub_origin = origin - [x0, y0]
+        mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
+        for (i, j) in tiles:
+            poly = tile_poly(sub_origin, u_col, u_row, i, j)
+            cv2.fillConvexPoly(mask, np.round(poly).astype(np.int32), 255)
+        rounded = cv2.morphologyEx(mask, cv2.MORPH_OPEN, corner_kernel)
+        dist = cv2.distanceTransform(rounded, cv2.DIST_L2, 5)
+        # distanceTransform reports 0 for background pixels too, not just at
+        # the frontier -- alpha must be forced to 0 there explicitly, or the
+        # whole padded region outside this player's own territory paints at
+        # full strength instead of just the band along the frontier.
+        a = np.where(rounded > 0, np.clip(1 - dist / fade_px, 0, 1), 0.0)
+        a = (a * VISION_FADE_ALPHA)[..., None]
+        region = out[y0:y1, x0:x1].astype(np.float32)
+        col = np.array(color_of[key], np.float32)
+        out[y0:y1, x0:x1] = (region * (1 - a) + col * a).astype(np.uint8)
+
+
 def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
     """Outline, in a distinct color per player, the union of tiles each
-    identified player's own shot(s) witnessed as explored.
+    identified player's own shot(s) witnessed as explored, with a soft wash
+    of that color fading out over the interior VISION_FADE_FRAC of a tile
+    (see _draw_vision_fade) so the frontier reads as more than a bare line.
 
     `by_player` maps a player key to the names of shots identified as that
     player. The tile set comes straight from `samples` -- the same per-(tile,
@@ -3520,6 +3582,7 @@ def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
                 edge = (v0, v1) if v0 <= v1 else (v1, v0)
                 edge_players.setdefault(edge, []).append(key)
 
+    _draw_vision_fade(out, explored, keys_sorted, color_of, origin, u_col, u_row)
     for (v0, v1), keys in edge_players.items():
         p0 = origin + v0[0] * u_col + v0[1] * u_row
         p1 = origin + v1[0] * u_col + v1[1] * u_row
