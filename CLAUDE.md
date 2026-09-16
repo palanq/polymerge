@@ -880,38 +880,53 @@ was checked off as already merged, and re-running answered *"No usable screensho
 found"*, with no remedy but to hunt up the channel un-reacting by hand.
 
 The fix is to gate the loop on `Caller.send`'s return value, and the console says
-so when it fires. Note the two front ends differ in how bad the silent case is:
-on `/merge` the player at least gets `Caller.send`'s ephemeral fallback naming
-the missing permission, while `!merge` leaves them with nothing at all — which is
-an argument for the gate, not against it, since the marks are destroyed either
-way. It stays best-effort *within* the delivered case: a missing `ADD_REACTIONS`
-must still not fail a merge that did reach the channel. The general lesson is
-worth keeping: **a helper that swallows an error must not return the same thing
-on success and failure if any caller acts on what happened.**
+so when it fires. **This whole scenario belongs to `!merge` alone now**: `/merge`
+no longer scans history or reacts on source messages at all (see below), so it
+cannot reach the ✅ loop in the first place. That makes the gate matter more, not
+less, since `!merge` also has no interaction token to answer through when
+`Caller.send`'s `Forbidden` fires — before the gate, this failure had zero
+visible signal anywhere. It stays best-effort *within* the delivered case: a
+missing `ADD_REACTIONS` must still not fail a merge that did reach the channel.
+The general lesson is worth keeping: **a helper that swallows an error must not
+return the same thing on success and failure if any caller acts on what
+happened.**
 
-**There are three front ends — `!merge`, `/merge` and `/merge-update` — and the
-first two differ only in how the options arrive.** `!merge [size] [layers...]`
-parses free text; `/merge` takes the same two as typed options that Discord
-validates and describes at the point of typing. `/merge-update` is the third
-and takes its shots as direct attachments rather than through the reaction
-workflow, optionally updating a prior composite it also receives as an
-attachment (`base`) — see the `/merge-update` section for the whole of it. All
-three call `do_merge`, which is what keeps them on **one** queue: `MERGE_LOCK`,
-`_waiting`, `_running_*` and `merge_speed` are module state reached only
-through that function, so a `/merge` queues behind a `!merge` and
-`wait_estimate` covers all of them. Do not give any front end its own path to
-the semaphore.
+**There are two front ends now — `!merge` and `/merge` — and they no longer
+just differ in how the options arrive.** `!merge [size] [layers...]` parses
+free text and is the *only* way to reach the MARK_EMOJI reaction workflow.
+`/merge` takes screenshots as direct attachments (`new`/`new2`/`new3`) rather
+than through reactions, with `size` and `layers` as typed options Discord
+validates and describes at the point of typing, and can optionally update a
+prior composite it also receives as an attachment (`base`) — see the deferred
+section on `--base` for the whole of that mechanism. Both call `do_merge`,
+which is what keeps them on **one** queue: `MERGE_LOCK`, `_waiting`,
+`_running_*` and `merge_speed` are module state reached only through that
+function, so a `/merge` queues behind a `!merge` and `wait_estimate` covers
+both. Do not give either front end its own path to the semaphore.
 
-**`/merge` deliberately takes no attachments — it is the reaction workflow
-only.** A slash command has no variadic attachment option, so parity with
-`!merge`'s drag-and-drop would mean `MAX_SHOTS` separate `shot1..shot8` slots
-cluttering the picker and one file dialog each. `!merge` keeps that job, where
-dropping four files onto one message already works well. The reaction path is
-the one most players use, so this costs the common case nothing — and it is the
-path slash commands suit best, since everything a player supplies there is an
-option rather than a file. `Caller.can_attach` is what player-facing copy keys
-on, so the "no screenshots found" reply does not tell a `/merge` user to attach
-files to a command that cannot carry them.
+**`/merge` deliberately does *not* offer the reaction workflow, and that is a
+reversal from this file's own earlier reasoning.** It used to read "the
+reaction path is the one most players use, so restricting `/merge` to it costs
+the common case nothing" — true as far as it went, but it missed that the
+whole *point* of a slash command here is the permission story below, and the
+reaction scan cannot participate in it: `collect_marked_shots` needs
+`message_content` and Read Message History regardless of which front end
+invokes it (see below), so putting the scan behind `/merge` bought no
+permission benefit over `!merge`, only a second, more limited way to run the
+identical scan (no attachments on the same message, no accumulating a
+thread's shots over time). Keeping the scan on `!merge` alone is what makes a
+slash-only deployment possible at all — a guild that never grants the
+privileged intent can still run `/merge` in full, direct-attach and `base`
+update included; a player with shots scattered across a thread, or more than
+three of them, is pointed at `!merge` instead.
+
+`new`/`new2`/`new3` are three named slots rather than one variadic attachment
+option because Discord has no such option type — each `ATTACHMENT`-typed
+parameter is exactly one file (confirmed via the `discord-api-docs` GitHub
+discussion `#5285`; there is no multi-file option to reach for even if the
+picker had room for it). Three named slots is a clutter tradeoff against
+`!merge`'s `MAX_SHOTS`-file drag-and-drop, not a hard ceiling — a player with
+more shots, or shots posted over time, is already better served by `!merge`.
 
 **Three things slash commands do *not* change, all of which look like they
 should.**
@@ -922,39 +937,49 @@ should.**
   and the bot can answer ephemerally naming the permission it lacks. That is the
   one improvement on the failure this file records as unfixable — someone edits
   an overwrite, the bot loses `view_channel`, and `!merge` produces no event at
-  all. *Considered and rejected:* posting the composite through an interaction
+  all. **That improvement no longer reaches the reaction workflow**, now that
+  it is prefix-only: a channel that silently loses `view_channel` leaves a
+  `!merge` reaction-scan player exactly as undiagnosable as before either slash
+  command existed. Accepted as the cost of the split above — the alternative
+  was keeping a slash command that could not deliver its own advantage.
+  *Considered and rejected:* posting the composite through an interaction
   followup would bypass `send_messages`/`attach_files`, since interaction
   responses are exempt from channel permission checks. It saves two of five
   permissions and buys them with the token expiry below.
-- **`message_content` is still required.** `collect_marked_shots` reads
-  `message.attachments` off arbitrary history messages, and that privileged
-  intent gates attachments exactly as it gates content. Shedding it is the usual
-  headline reason to migrate to slash commands and it does not apply here.
+- **`message_content` is still required — for `!merge`.** `collect_marked_shots`
+  reads `message.attachments` off arbitrary history messages, and that
+  privileged intent gates attachments exactly as it gates content. Shedding it
+  is the usual headline reason to migrate to slash commands, and moving the
+  reaction scan off `/merge` is what finally lets a deployment do that: a guild
+  that never grants `message_content` loses only `!merge`'s reaction workflow,
+  not `/merge`.
 - **Nothing was deleted.** `parse_overlays`, the alias table, the legacy
   `no`-prefix words and both unrecognized-input replies still serve `!merge`.
-  Discord validating the typed options means the slash path cannot *reach*
-  those replies; it does not make them dead.
+  Discord validating the typed options means `/merge` cannot *reach* the
+  unrecognized-size reply; it does not make it dead.
 
 **The interaction token is why `/merge` uses ordinary channel messages rather
 than followups, and this is the load-bearing design decision in that path.** An
 interaction imposes two deadlines a channel message does not: **3 seconds** to
 respond at all, and **15 minutes** for the token thereafter, after which
-`edit_original_response` and `followup.send` both 404. Both bite this bot
-specifically:
-- The 3-second one because `collect_marked_shots` walks `HISTORY_LIMIT` = 500
-  messages at 100 per API call — five sequential round trips — before anything
-  is sent. Measured expectation is 0.3–0.75s from a well-connected host and
-  1–2s from a loaded one, so the risk is low rather than acute. **Do not cut
-  `HISTORY_LIMIT` to shrink it**: `defer(ephemeral=True)` is the first statement
-  in `merge_slash`, so the deadline is already satisfied before the scan starts,
-  and 500 is how far back into a chatty game thread the bot can still find
-  someone's 🗺️.
-- The 15-minute one because wall clock is *queue wait + downloads + merge*
-  against one semaphore shared by every guild, with `MERGE_TIMEOUT_S` at 300s
-  and the queue uncapped — three hung merges is the whole window. On expiry the
-  composite is already on disk and is then deleted by the `finally:
-  shutil.rmtree`, so the player gets a dead spinner after up to five minutes of
-  CPU. That is `shrink_for_upload`'s failure arriving by another route.
+`edit_original_response` and `followup.send` both 404.
+- **The 3-second one is no longer a real risk, now that `/merge` does not scan
+  history.** It used to be the tighter of the two — `collect_marked_shots`
+  walked `HISTORY_LIMIT` = 500 messages at 100 per API call, five sequential
+  round trips, measured at 0.3–0.75s from a well-connected host and 1–2s from a
+  loaded one — but that scan is `!merge`'s alone now (see the front-ends
+  section above), and `!merge` has no interaction token to race. What
+  `merge_slash` does before `defer(ephemeral=True)` today is validate the
+  attachment extensions and parse `layers`, both cheap and synchronous. Still
+  defer first regardless: the downloads that follow are not instant, and there
+  is no reason to spend the token's 3 seconds finding out.
+- The 15-minute one is unchanged and is the one that actually bites: wall clock
+  is *queue wait + downloads + merge* against one semaphore shared by every
+  guild, with `MERGE_TIMEOUT_S` at 300s and the queue uncapped — three hung
+  merges is the whole window. On expiry the composite is already on disk and is
+  then deleted by the `finally: shutil.rmtree`, so the player gets a dead
+  spinner after up to five minutes of CPU. That is `shrink_for_upload`'s
+  failure arriving by another route.
 
 So the token is used **once**, to defer, and never again; every visible message
 is `channel.send`/`message.edit`. That makes expiry structurally impossible
@@ -5054,12 +5079,12 @@ varies enough per skin/level to need something looser. Also open: whether the
 row is cropped by `--top-crop`/`--bottom-crop` today, and if so whether reading
 it needs a separate uncropped pass the same way `--ui-mask` does.
 
-### `/merge-update`: merge screenshots directly, optionally updating a prior map
+### `/merge`: merge screenshots directly, optionally updating a prior map
 
-**Built** — `--base` in polymerge, `/merge-update` in polybot (a standalone
-command, not a subcommand of `/merge` — see below). `tests/goon_test2` is the
-regression case exercised while building it. What remains deferred is a `new`
-shot with only *one* board edge, at the bottom of this section.
+**Built** — `--base` in polymerge, `/merge` in polybot.
+`tests/goon_test2` is the regression case exercised while building it. What
+remains deferred is a `new` shot with only *one* board edge, at the bottom of
+this section.
 
 The design this replaced treated the prior composite as a competing
 **source** — wrapping it in a `Shot`, anchoring it, running it through
@@ -5121,18 +5146,11 @@ default painted a checkerboard tint straight over that content. Measured on
 painted shade over 100+ tiles of `imp`'s own already-explored territory, none
 of it fog. `--base`'s own default is `none` instead of `OVERLAY_DEFAULT`
 now — an explicit `--overlays` still overrides it, on the same "it's on the
-caller" basis as the paragraph above. `/merge-update` never exposes overlay
-options at all, so this cannot arise from the bot regardless; it is a CLI-only
-concern.
-
-**`/merge-update` is a standalone command, not `/merge update`.** Discord
-gives a command options or subcommands, never both, so folding this in as a
-subcommand would have meant turning the existing, working reaction workflow
-into `/merge map` to make room for it. The cost of not doing that is a picker
-collision: typing `/merge` lists `/merge-update` too, since Discord matches by
-substring — the same mechanism documented below for `/polymerge-help`, where
-the picker's prefix-favoring ranking has consistently put `/merge` on top in
-practice. Accepted for now rather than reworked.
+caller" basis as the paragraph above. `/merge` exposes `layers` but its
+default is empty (`OVERLAY_DEFAULT`, nothing), matching `--base`'s own
+default, so an ordinary bot update never hits this path either; it is a
+CLI-only concern reachable only by explicitly passing `--overlays` alongside
+`--base` on the command line.
 
 **Measured.** `tests/goon_test2` run as base(`imp`) + update(`q`, plain
 overlays on both sides) gives **238/324** — the same union as merging both
@@ -5145,11 +5163,11 @@ every tracked field** — no corpus set uses `--base`, and every touch point is
 gated on `args.base`/`base` being truthy, so the ordinary merge path is
 provably unchanged.
 
-`/merge-update` omitting `base` entirely is a **superset**, not a separate
-mode: with no base, every `--base`-gated branch is inert and the run is an
-ordinary merge of whatever was attached, `size` behaving exactly as `/merge`'s
-own `size` option does. Verified against the same set: identical output
-either way `size` is given or auto-detected.
+`/merge` omitting `base` entirely is a **superset**, not a separate mode: with
+no base, every `--base`-gated branch is inert and the run is an ordinary
+merge of whatever was attached, `size` behaving exactly as it always did.
+Verified against the same set: identical output either way `size` is given
+or auto-detected.
 
 **What remains deferred: a `new` shot with only one board edge, and nothing
 else in the same update to hop through.** The base supplies the board's
