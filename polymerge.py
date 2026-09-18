@@ -3062,9 +3062,15 @@ def detect_population_bars(warped_bgr, wmask, origin, u_col, u_row, n):
 # aid, not as ground truth -- and see the confidence gate in match_head_icon
 # for what keeps a bad guess from being drawn at all.
 HEAD_ICON_DIR = "Assets/Heads"
-HEAD_ICON_CANON = 96          # shape-comparison resolution; small on purpose,
-                              # since the icon itself is a few dozen px across
-                              # in most screenshots
+HEAD_ICON_CANON = 96          # the size every button crop is normalized to
+                              # before matching, which is what lets one scale
+                              # sweep serve every capture resolution. Small on
+                              # purpose: the icon is only a few dozen px across
+                              # in most screenshots, and the whole match costs
+                              # O(area). Swept at 72/96/128/200 over 18 shots,
+                              # all four get every one right; 96 is where the
+                              # margins stop improving (0.248 against 0.225 at
+                              # 72 and 0.244 at 128) at 539ms against 942ms.
 
 # Fractional x-position of three of the four bottom-bar buttons (0=Settings,
 # 2=Tech Tree, 3=Exit/End Turn), measured over 63 portrait screenshots across
@@ -3176,26 +3182,66 @@ GAME_STATS_Y_FALLBACK = 0.90
 GAME_STATS_R_FALLBACK = 0.065
 
 
-def head_icon_patch(img, cx, cy, r):
-    """The Game Stats icon's own square crop and a mask of its interior,
-    inset off the white ring (which carries no tribe information and would
-    only dilute the match). None if the location is degenerate."""
-    x0, x1 = max(cx - r, 0), min(cx + r, img.shape[1])
-    y0, y1 = max(cy - r, 0), min(cy + r, img.shape[0])
-    if x1 - x0 < 8 or y1 - y0 < 8:
+# The crop handed to the matcher, as a multiple of the button's own ring
+# radius. It has to be wide enough that the head is wholly inside it at the
+# largest scale the sweep below tries (1.85 radii tall), with room for the
+# match to slide; 1.4 gives that with a little margin and nothing more, since
+# every extra pixel is background the correlation has to explain away.
+HEAD_ICON_REGION = 1.4
+# The head's own height, in button-ring radii. Measured over 16 shots spanning
+# the corpus: 1.235 to 1.742, mean 1.503, sd 0.131. It is *not* a constant --
+# the icon does not fill a fixed fraction of its button -- which is why this is
+# swept rather than assumed. The old code assumed one (a 0.78-of-radius
+# interior circle) and that was the single largest cause of lost recall.
+HEAD_SCALE_LO, HEAD_SCALE_HI, HEAD_SCALE_STEPS = 1.15, 1.85, 8
+HEAD_ICON_MIN_PIXELS = 60       # too little sprite left to say anything
+HEAD_SPRITE_MAX = 256           # catalog sprites are stored no larger than
+                                # this on their long side; they are only ever
+                                # rendered at a fraction of HEAD_ICON_CANON,
+                                # and the assets ship at up to 1024x1024.
+
+
+def head_icon_region(img, cx, cy, r):
+    """The Game Stats button's neighbourhood, normalized to a fixed canonical
+    size, as float32 -- or None if the location is degenerate.
+
+    Normalizing by the *button radius* is what makes one scale sweep serve
+    every device: after this the head is always between HEAD_SCALE_LO and
+    HEAD_SCALE_HI canonical radii tall whatever the capture's resolution.
+
+    Note this deliberately returns the whole square neighbourhood and applies
+    no interior circle. The ring and the rank badge are inside it, and are
+    handled where they belong -- by masking to the *sprite's* own alpha at
+    match time, so only pixels a candidate head actually claims are ever
+    compared. Cutting a fixed circle here instead threw away part of the head
+    on some captures and kept ring on others."""
+    R = int(round(r * HEAD_ICON_REGION))
+    if R < 8:
         return None
-    patch = img[y0:y1, x0:x1]
-    mask = np.zeros(patch.shape[:2], np.uint8)
-    center = ((x1 - x0) // 2, (y1 - y0) // 2)
-    cv2.circle(mask, center, int(min(center) * 0.78), 255, -1)
-    return patch, mask
+    pad = max(0, R - cy, R - cx, cy + R - img.shape[0], cx + R - img.shape[1])
+    if pad > 0:
+        img = cv2.copyMakeBorder(img, pad, pad, pad, pad,
+                                 cv2.BORDER_CONSTANT, value=(0, 0, 0))
+        cx, cy = cx + pad, cy + pad
+    box = img[cy - R:cy + R, cx - R:cx + R]
+    if box.shape[0] < 8 or box.shape[1] < 8:
+        return None
+    return cv2.resize(box, (HEAD_ICON_CANON, HEAD_ICON_CANON),
+                      interpolation=cv2.INTER_AREA).astype(np.float32)
 
 
-PLAYER_HEAD_MIN_CORR = 0.25     # floor on the winning entry's own score
-PLAYER_HEAD_MIN_MARGIN = 0.02   # lead it must hold over the runner-up
-HEAD_ICON_BLACK_FLOOR = 10      # screenshot pixels this dark are the black
-                                # button background leaking into the interior
-                                # mask (see match_head_icon), not icon art
+PLAYER_HEAD_MIN_CORR = 0.55     # floor on the winning entry's own score
+PLAYER_HEAD_MIN_MARGIN = 0.10   # lead it must hold over the runner-up
+HEAD_CLUSTER_MIN_NCC = 0.90     # two shots' own icons this alike are one player
+HEAD_SAME_ICON_NCC = 0.98       # ...and this alike are the *same icon*, so the
+                                # second one need not be matched against the
+                                # catalog at all. That matters because the two
+                                # costs are nothing like each other: correlating
+                                # two shots is 0.2ms for every pair in a merge,
+                                # while one catalog match is ~480ms (29 sprites
+                                # x 8 scales). Sitting far above the 0.926 of
+                                # the closest genuinely-different pair in the
+                                # corpus, this can only ever collapse work.
 
 _head_catalog_cache = None
 
@@ -3209,21 +3255,26 @@ def head_icon_dir():
 
 
 def load_head_catalog():
-    """Every Assets/Heads/*.png as a (color, interior-mask) pair at
-    HEAD_ICON_CANON resolution, keyed by filename, cached at module scope --
-    the catalog is fixed for the life of the process and every identified
-    shot in a merge probes all of it. One entry per tribe/skin, confirmed
-    with the project owner -- there is nothing in this catalog to deduplicate.
+    """Every Assets/Heads/*.png as a (premultiplied color, alpha) pair at its
+    own native aspect ratio, keyed by filename, cached at module scope.
 
-    Composited over black (matching the button's own dark fill, not white)
-    and cropped to the sprite's own alpha extent before resizing, the same
-    treatment the real screenshot crop gets in match_head_icon so the two
-    sides are comparable."""
+    Composited over black, matching the button's own dark fill, and cropped to
+    the sprite's own alpha extent -- but **not** resized to a square. That
+    squash was a real defect rather than a detail: the alpha extents run from
+    aspect 0.561 to 1.169 across the 29 assets, so forcing each to a square
+    stretched every candidate by a different amount, up to 45%, and then
+    compared them against an undistorted screenshot. Correct matches topped
+    out near 0.54 because of it; with the aspect kept they reach 0.94-0.99.
+
+    Downsampled once to HEAD_SPRITE_MAX on its long side, because the match
+    only ever renders these at a fraction of HEAD_ICON_CANON and rescaling a
+    1024x1024 asset down to ~100px on every one of 8 scale candidates x 29
+    entries was most of this phase's cost -- 478ms a shot against 104ms with
+    the cap, for scores identical to three decimals."""
     global _head_catalog_cache
     if _head_catalog_cache is not None:
         return _head_catalog_cache
     cat = {}
-    C = HEAD_ICON_CANON
     for f in sorted(glob.glob(os.path.join(head_icon_dir(), "*.png"))):
         im = cv2.imread(f, cv2.IMREAD_UNCHANGED)
         if im is None or im.ndim != 3 or im.shape[2] != 4:
@@ -3233,101 +3284,196 @@ def load_head_catalog():
         if len(xs) == 0:
             continue
         x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
-        bgr = im[:, :, :3].astype(np.float32)
         a = (alpha.astype(np.float32) / 255.0)[:, :, None]
-        comp = (bgr * a)[y0:y1, x0:x1]
-        amask = (alpha[y0:y1, x0:x1] > 8).astype(np.uint8) * 255
-        color = cv2.resize(comp, (C, C), interpolation=cv2.INTER_AREA)
-        amask = cv2.resize(amask, (C, C), interpolation=cv2.INTER_AREA)
-        pm = np.zeros((C, C), np.uint8)
-        cv2.circle(pm, (C // 2, C // 2), int(C // 2 * 0.78), 255, -1)
-        cat[os.path.basename(f)] = (color, (amask > 0) & (pm > 0))
+        comp = (im[:, :, :3].astype(np.float32) * a)[y0:y1, x0:x1]
+        amask = alpha[y0:y1, x0:x1].astype(np.float32) / 255.0
+        long_side = max(comp.shape[:2])
+        if long_side > HEAD_SPRITE_MAX:
+            k = HEAD_SPRITE_MAX / long_side
+            wh = (max(int(round(comp.shape[1] * k)), 1),
+                  max(int(round(comp.shape[0] * k)), 1))
+            comp = cv2.resize(comp, wh, interpolation=cv2.INTER_AREA)
+            amask = cv2.resize(amask, wh, interpolation=cv2.INTER_AREA)
+        cat[os.path.basename(f)] = (comp, amask)
     _head_catalog_cache = cat
     return cat
 
 
-def match_head_icon(patch, mask, catalog):
-    """The catalog filename this icon crop looks most like, as (key, ncc), or
-    None if nothing clears the confidence gate.
+def _head_scores(region, catalog):
+    """Every catalog entry's best masked correlation against this region, as
+    {filename: ncc}, searching scale and position.
 
-    Correlation is over color (all three BGR channels). Tribe/skin heads
-    render identically and are consistent per player in the game, so color
-    is helpful for matching. We assume only one player per tribe/skin and
-    render vision borders in the corresponding colors for all those
-    screenshots.
+    Three things make this work where a single fixed comparison did not, and
+    all three are about geometry rather than about color:
+      * the sprite keeps its aspect (see load_head_catalog);
+      * only the sprite's own alpha is compared, so the button's white ring,
+        its black fill and the rank badge in the corner are never scored --
+        they are simply not part of any candidate head;
+      * the head's size is searched rather than assumed, because it is not a
+        fixed fraction of the button (see HEAD_SCALE_LO).
 
-    It is still mean-centered per match the same way sample_tile's fog test
-    mean-centers the pixels it compares, over all three channels pooled into
-    one vector --
-    that survives a device's overall color cast (a warm or cool white
-    balance shifts every channel by roughly the same amount) the same way
-    mean-centering survives an ordinary brightness shift, without needing to
-    fit anything as elaborate as fog_illumination's per-channel gain.
-
-    The gate has two parts and both matter. The floor rejects a crop that
-    resembles nothing in the catalog at all (an uncatalogued tribe, or a
-    badly-placed crop). The margin rejects a genuine tie between two
-    different catalog entries -- neither bound is tightly calibrated (the
-    corpus gives maybe a couple dozen usable samples per tribe at best), so a
-    drawn boundary is a best-effort aid, not a claim of certainty, which is
-    why this feature is opt-in.
-
-    Screenshot pixels darker than HEAD_ICON_BLACK_FLOOR are dropped before
-    correlating. head_icon_patch's interior circle doesn't always land
-    exactly on the icon glyph -- it can include a ring of the button's own
-    black background, and correlating that against a catalog entry's (never
-    black) pixels is just noise for every candidate. Excluding it fixed a
-    real case: an Elyrion screenshot (e.png) that was tying with, and
-    sometimes losing to, Ai-Mo's To-Li skin (ai2.png) despite the two
-    sharing no dominant color at all -- and it strengthened every other
-    match checked alongside it too."""
+    matchTemplate locates each scale cheaply, then the masked correlation is
+    evaluated in a 3x3 window around that peak: the unmasked peak is close but
+    not always exact, since the ring it can see and the mask cannot pulls it a
+    pixel or two."""
     C = HEAD_ICON_CANON
-    color = cv2.resize(patch, (C, C), interpolation=cv2.INTER_AREA).astype(np.float32)
-    pm = cv2.resize(mask, (C, C), interpolation=cv2.INTER_NEAREST) > 0
-    gray = cv2.cvtColor(color.astype(np.uint8), cv2.COLOR_BGR2GRAY)
-    pm = pm & (gray >= HEAD_ICON_BLACK_FLOOR)
-    scores = []
-    for name, (tcolor, tmask) in catalog.items():
-        m = pm & tmask
-        if m.sum() < 200:
-            continue
-        a = color[m].ravel()
-        b = tcolor[m].ravel()
-        a = a - a.mean()
-        b = b - b.mean()
-        den = float(np.sqrt((a * a).sum() * (b * b).sum()))
-        ncc = float((a * b).sum() / den) if den > 0 else 0.0
-        scores.append((ncc, name))
+    rr = C / (2.0 * HEAD_ICON_REGION)       # the button's radius, canonically
+    scores = {}
+    for name, (comp, amask) in catalog.items():
+        best = -1.0
+        for hr in np.linspace(HEAD_SCALE_LO, HEAD_SCALE_HI, HEAD_SCALE_STEPS):
+            th = int(round(rr * hr))
+            if th < 8:
+                continue
+            tw = int(round(comp.shape[1] * (th / comp.shape[0])))
+            if tw < 8 or tw >= C or th >= C:
+                continue
+            t = cv2.resize(comp, (tw, th), interpolation=cv2.INTER_AREA)
+            m = cv2.resize(amask, (tw, th), interpolation=cv2.INTER_AREA) > 0.5
+            if int(m.sum()) < HEAD_ICON_MIN_PIXELS:
+                continue
+            b = t[m].ravel()
+            b = b - b.mean()
+            nb = float(np.sqrt((b * b).sum()))
+            if nb <= 0:
+                continue
+            res = cv2.matchTemplate(region, t, cv2.TM_CCOEFF_NORMED)
+            oy, ox = np.unravel_index(int(res.argmax()), res.shape)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    Y, X = oy + dy, ox + dx
+                    if Y < 0 or X < 0 or Y + th > C or X + tw > C:
+                        continue
+                    a = region[Y:Y + th, X:X + tw][m].ravel()
+                    a = a - a.mean()
+                    na = float(np.sqrt((a * a).sum()))
+                    if na > 0:
+                        best = max(best, float((a * b).sum()) / (na * nb))
+        if best > -1.0:
+            scores[name] = best
+    return scores
+
+
+def match_head_icon(region, catalog):
+    """The catalog filename this icon region looks most like, as (key, ncc),
+    or None if nothing clears the confidence gate.
+
+    Correlation is over color (all three BGR channels pooled and mean-centred
+    as one vector). A tribe/skin's head renders in one fixed palette whoever
+    is looking at it, so color is real signal here rather than noise.
+
+    It is worth knowing what color does *not* survive, since the code used to
+    claim it did: two captures of the identical icon can differ by a chroma
+    transform -- measured on one corpus pair as a 3x3 matrix in linear light
+    whose rows sum to 1.0, explaining 99.8% of the difference, i.e. a gamut
+    conversion between capture pipelines. It leaves the neutral axis untouched
+    at every lightness and moves saturated pixels in proportion to their
+    chroma. Mean-centring does not undo that, and no per-channel correction
+    does either. It cost a correct match once, when the margin budget was 0.02
+    and the geometry above was throwing away most of the signal; against the
+    0.2-0.6 margins this now returns it is immaterial.
+
+    The gate has two parts. The floor rejects a region that resembles nothing
+    catalogued -- an uncatalogued tribe or skin, which really happens (the
+    corpus has an Oumaji shot wearing the Khondor skin, which is not in
+    Assets/Heads and scores 0.39 against base Oumaji). The margin rejects a
+    genuine tie. Both sit far below what a correct match returns: over the
+    corpus those run 0.83-0.99 at margins of 0.20-0.59."""
+    scores = _head_scores(region, catalog)
     if not scores:
         return None
-    scores.sort(reverse=True)
-    top_ncc, top_name = scores[0]
-    runner_up = scores[1][0] if len(scores) > 1 else -1.0
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    top_name, top_ncc = ranked[0]
+    runner_up = ranked[1][1] if len(ranked) > 1 else -1.0
     if top_ncc < PLAYER_HEAD_MIN_CORR or top_ncc - runner_up < PLAYER_HEAD_MIN_MARGIN:
         return None
     return top_name, top_ncc
 
 
-def identify_player(img, catalog):
-    """(player_key, ncc) for one raw screenshot, or None if it cannot be
-    identified with any confidence.
+def player_icon_region(img):
+    """This screenshot's own Game Stats icon, canonically framed, or None.
 
     Requires at least two real button-row anchors (see locate_game_stats_icon)
-    before attempting a match. Zero anchors means the icon location is just
-    a corpus-average guess with no evidence behind it, and one anchor is
-    barely better -- the position is extrapolated from an average spacing
-    rather than anything measured on this shot, and can land badly. Both
-    cases were measured producing confident wrong matches that no score
+    before believing the position. Zero anchors means it is a corpus-average
+    guess with no evidence behind it, and one anchor is barely better -- the
+    position is extrapolated from an average spacing rather than anything
+    measured on this shot, and can land on a neighbouring button entirely.
+    Both were measured producing confident wrong matches that no score
     threshold could catch, so both are excluded up front."""
-    if not catalog:
-        return None
     cx, cy, r, n_anchors = locate_game_stats_icon(img)
     if n_anchors < 2:
         return None
-    patch = head_icon_patch(img, cx, cy, r)
-    if patch is None:
+    return head_icon_region(img, cx, cy, r)
+
+
+def identify_player(img, catalog):
+    """(player_key, ncc) for one raw screenshot, or None if it cannot be
+    identified with any confidence."""
+    if not catalog:
         return None
-    return match_head_icon(patch[0], patch[1], catalog)
+    region = player_icon_region(img)
+    if region is None:
+        return None
+    return match_head_icon(region, catalog)
+
+
+def icon_similarity(a, b):
+    """How alike two canonically-framed icon regions are, as a plain NCC over
+    all three channels pooled. Both sides come from screenshots, so there is
+    nothing here that mean-centring does not already cover -- which is the
+    whole reason this question is so much easier than naming the tribe."""
+    u = a.ravel() - a.mean()
+    v = b.ravel() - b.mean()
+    d = float(np.sqrt((u * u).sum() * (v * v).sum()))
+    return float((u * v).sum()) / d if d > 0 else 0.0
+
+
+def group_shots_by_icon(region_of):
+    """Group shot names by whose Game Stats icon they carry, as a list of
+    lists, without consulting the catalog at all.
+
+    Two screenshots are compared against *each other* rather than against a
+    reference render, which is a far easier question than naming the tribe:
+    they share a renderer, a ring, a badge position and usually a device, so
+    nothing has to be bridged. Measured over every within-set pair in the
+    corpus, same-player pairs correlate 0.926-1.000 and different-player pairs
+    0.017-0.837 -- populations that do not overlap.
+
+    That matters beyond robustness: grouping is what a per-player view
+    actually needs, and it keeps working for a tribe or skin Assets/Heads does
+    not have. Naming is then a separate, optional step that only decides which
+    color to draw in.
+
+    The single link at HEAD_CLUSTER_MIN_NCC is deliberately loose rather than
+    knife-edge. The one pair in the corpus that sits between the populations
+    is vengir_cultist's, at 0.926 -- two *different* players on the same tribe
+    wearing different skins. A threshold tight enough to split them would sit
+    0.031 below the worst genuine same-player pair, calibrated on one sample;
+    the catalog splits that case cleanly instead (see split_group_by_catalog),
+    so this bar is set where both margins are comfortable.
+
+    Note what no method can separate: two players on the same tribe *and* the
+    same skin render identically, so they are one group here and there is no
+    signal anywhere that would tell them apart."""
+    names = [n for n in region_of if region_of[n] is not None]
+    parent = {n: n for n in names}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if icon_similarity(region_of[a], region_of[b]) >= HEAD_CLUSTER_MIN_NCC:
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[ra] = rb
+    groups = {}
+    for n in names:
+        groups.setdefault(find(n), []).append(n)
+    return [sorted(g) for g in groups.values()]
 
 
 # Each of the 16 tribes' own default color, straight from the "Color" column
@@ -4926,8 +5072,68 @@ def main():
                 print(f"\nNO-HEAD-CATALOG: cannot read "
                       f"{os.path.join(head_icon_dir(), '*.png')}, so no shot "
                       f"could be matched to a player -- vision outlines skipped")
+            # Two questions, answered separately and in this order, because
+            # they are not equally hard. *Which shots are one player* is
+            # settled by comparing the shots' own icons against each other --
+            # like for like, no reference render involved, and it keeps
+            # working for a tribe or skin Assets/Heads has never seen. *Which
+            # tribe that player is* then only decides the outline's color, and
+            # is the question that needs the catalog.
+            region_of = {n: player_icon_region(shots[n].img) for n in names}
+            groups = group_shots_by_icon(region_of)
+            # One catalog match per distinct *icon*, not per shot. Two shots by
+            # one player are usually the same icon to three decimals, so the
+            # second asks a question already answered -- and it is the only
+            # expensive question in this phase.
+            named, matched = {}, []
+            for group in groups:
+                for n in group:
+                    same = next((m for m in matched
+                                 if icon_similarity(region_of[n], region_of[m])
+                                 >= HEAD_SAME_ICON_NCC), None)
+                    if same is not None:
+                        named[n] = named[same]
+                        continue
+                    named[n] = match_head_icon(region_of[n], catalog)
+                    matched.append(n)
+            anon = 0
+            for group in groups:
+                # A group holding two *confidently different* names is two
+                # players on one tribe wearing different skins -- rare, real
+                # (tests/vengir_cultist), and the one case icon similarity
+                # alone gets wrong, since those two icons correlate higher
+                # than any other pair of different players. Split on the
+                # catalog's word, which separates them cleanly.
+                keys = sorted({named[n][0] for n in group if named.get(n)})
+                if len(keys) > 1:
+                    parts = [[n for n in group
+                              if named.get(n) and named[n][0] == k] for k in keys]
+                    # A shot the catalog could not place cannot be assigned to
+                    # either skin on this evidence, so it goes with the part
+                    # its own icon is closest to -- which is why it was in
+                    # this group at all.
+                    for n in group:
+                        if not named.get(n):
+                            parts[0].append(n)
+                else:
+                    parts = [group]
+                for part in parts:
+                    # The whole part answers as one, best score first, so a
+                    # shot the catalog cannot place still inherits its
+                    # player's identity from the shots that could. When none
+                    # of them could, the part is still a player and still
+                    # earns an outline -- under a key that is deliberately not
+                    # a catalog filename, so tribe_default_color finds nothing
+                    # and _assign_vision_colors falls back to the palette.
+                    best = max((named[n] for n in part if named.get(n)),
+                               key=lambda kn: kn[1], default=None)
+                    if best is None:
+                        anon += 1
+                        best = (f"unnamed player {anon}", 0.0)
+                    for n in part:
+                        player_of[n] = best
             for n in names:
-                player_of[n] = identify_player(shots[n].img, catalog)
+                player_of.setdefault(n, None)
 
     # Any shot spanning the whole board counts the tiles across it directly
     # (span / fog repeat period), which is an estimate of the board size owing
