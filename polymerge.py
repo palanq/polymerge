@@ -4159,6 +4159,17 @@ def _draw_vision_fade(out, explored, keys_sorted, color_of, origin, u_col, u_row
         out[y0:y1, x0:x1] = (region * (1 - a) + col * a).astype(np.uint8)
 
 
+def _player_explored_tiles(samples, shot_names):
+    """The union, over `shot_names`, of tiles those shots' own samples
+    classified as explored -- one player's own witnessed territory, from the
+    same per-(tile, shot) classification winner selection already used.
+    Shared by draw_player_vision (the boundary outline) and the vision-each
+    per-player composites below, so "what did this player see" is answered
+    once rather than reimplemented per consumer."""
+    return {ij for ij, per in samples.items()
+            if any(per.get(n, {}).get("explored") for n in shot_names)}
+
+
 def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
     """Outline, in a distinct color per player, the union of tiles each
     identified player's own shot(s) witnessed as explored, with a soft wash
@@ -4180,10 +4191,8 @@ def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
     drawn last; every edge is instead computed once, tagged with every
     player whose boundary reaches it, and drawn solid when that is one player
     or banded (see _draw_vision_edge) when it is more than one."""
-    explored = {}
-    for key, shot_names in by_player.items():
-        explored[key] = {ij for ij, per in samples.items()
-                         if any(per.get(n, {}).get("explored") for n in shot_names)}
+    explored = {key: _player_explored_tiles(samples, shot_names)
+                for key, shot_names in by_player.items()}
     keys_sorted = [k for k in sorted(explored) if explored[k]]
     color_of = _assign_vision_colors(keys_sorted)
 
@@ -4204,6 +4213,57 @@ def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
         p0 = origin + v0[0] * u_col + v0[1] * u_row
         p1 = origin + v1[0] * u_col + v1[1] * u_row
         _draw_vision_edge(out, p0, p1, [color_of[k] for k in keys], thick)
+
+
+# `vision-each` wash: a flat, near-white tint rather than the game's own fog
+# art. The fog render's crystalline texture is a fixed, deterministic pattern
+# -- great as a *classifier* (see fog_period_scale) -- but laid back down over
+# real terrain at partial opacity it reads as visual noise competing with the
+# map underneath it, rather than a simple "you haven't seen this" cue. A
+# plain wash says the same thing without competing with the content.
+VISION_EACH_WASH_BGR = (255, 255, 255)
+# Not 1.0 (that would hide the real content someone else photographed) and
+# not too low to read as a wash at all; mid-range, the same role
+# OVERLAY_ALPHA's "grid" entry plays for a layer meant to be seen *and* seen
+# through.
+VISION_EACH_WASH_ALPHA = 0.55
+
+
+def _vision_each_unseen_mask(winner_tiles, explored_self, origin, u_col, u_row, W, Hc):
+    """uint8 mask, one player's "the union knows this tile but I don't" set:
+    every tile in `winner_tiles` (this run's explored union) that is not in
+    `explored_self` (this player's own witnessed tiles). Restricted to the
+    union rather than the whole board so a tile nobody explored keeps its
+    ordinary template fog untouched instead of a doubled wash."""
+    mask = np.zeros((Hc, W), np.uint8)
+    for (i, j) in winner_tiles:
+        if (i, j) in explored_self:
+            continue
+        poly = tile_poly(origin, u_col, u_row, i, j, 0.0)
+        cv2.fillConvexPoly(mask, np.round(poly).astype(np.int32), 255)
+    return mask
+
+
+def render_vision_each(out, unseen_mask, color=VISION_EACH_WASH_BGR,
+                        alpha=VISION_EACH_WASH_ALPHA):
+    """`out` (the finished composite) with a flat translucent `color` wash
+    laid over it wherever `unseen_mask` marks a tile -- real content stays
+    visible underneath, tinted just enough to read as "not yet seen by this
+    player" without obscuring what someone else's shot revealed there."""
+    a = (unseen_mask.astype(np.float32) / 255.0 * alpha)[..., None]
+    blended = out.astype(np.float32) * (1.0 - a) + np.array(color, np.float32) * a
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def vision_each_slug(key):
+    """Filesystem-safe stem for a vision-each output filename. `key` is a
+    by_player key: either a head-catalog filename ("i2.png") or the
+    "unnamed player N" fallback identify_player uses when no shot in that
+    group could be matched to the catalog at all."""
+    if key.endswith(".png"):
+        return key[:-4]
+    digits = "".join(ch for ch in key if ch.isdigit())
+    return "unnamed" + (digits or "0")
 
 
 # ---------------------------------------------- board renders & templates ---
@@ -5094,18 +5154,28 @@ def main():
                     help="comma-separated decorative layers to draw on the "
                          "composite: " +
                          ", ".join(name for name, _ in OVERLAY_LAYERS) +
-                         ", vision, or 'none'. The first four come from the "
-                         "same Overlays/ renders as the board itself, so "
-                         "they need no registration; not every board size "
-                         "has every one -- a missing layer is skipped and "
-                         "reported, never an error. `vision` is computed "
-                         "rather than loaded: it identifies each shot's own "
-                         "player from its Game Stats icon (see "
-                         "identify_player) and outlines what that player's "
-                         "shot(s) alone witnessed as explored, in a "
-                         "different color per player. Best-effort -- a shot "
-                         "whose player cannot be identified with confidence "
-                         "simply contributes no outline. "
+                         ", vision, vision-each, or 'none'. The first four "
+                         "come from the same Overlays/ renders as the board "
+                         "itself, so they need no registration; not every "
+                         "board size has every one -- a missing layer is "
+                         "skipped and reported, never an error. `vision` and "
+                         "`vision-each` are computed rather than loaded: both "
+                         "identify each shot's own player from its Game "
+                         "Stats icon (see identify_player). `vision` outlines "
+                         "what each identified player's shot(s) alone "
+                         "witnessed as explored, in a different color per "
+                         "player, on the one composite --out writes. "
+                         "`vision-each` instead writes one *additional* "
+                         "composite per identified player, alongside --out, "
+                         "named <out>_vision_<player>.<ext>: the same "
+                         "composite, with a flat translucent white wash laid "
+                         "back over any tile the union explored that this "
+                         "player's own shot(s) did not, so what somebody "
+                         "else revealed but this player has not personally "
+                         "seen still reads as unexplored to them. Both are "
+                         "best-effort -- a shot whose player cannot be "
+                         "identified with confidence simply contributes no "
+                         "outline/composite. "
                          f"Default: {OVERLAY_DEFAULT}.")
     ap.add_argument("--no-badge-filter", action="store_true",
                     help="skip capture-city/capture-ruin badge detection "
@@ -5168,9 +5238,10 @@ def main():
 
     # Validated here rather than where it is used, so a typo fails immediately
     # instead of after the ~20s of work that produced the composite.
-    # `vision` is not in OVERLAY_LAYERS -- it has no Overlays/ file, so it is
-    # never handed to paint_overlays and is drawn by its own code in main().
-    known = {name for name, _ in OVERLAY_LAYERS} | {"vision"}
+    # `vision`/`vision-each` are not in OVERLAY_LAYERS -- neither has an
+    # Overlays/ file, so neither is ever handed to paint_overlays; both are
+    # drawn/written by their own code in main().
+    known = {name for name, _ in OVERLAY_LAYERS} | {"vision", "vision-each"}
     overlays = {p.strip().lower() for p in args.overlays.split(",") if p.strip()}
     overlays.discard("none")
     unknown = overlays - known
@@ -5535,14 +5606,15 @@ def main():
     # contributes no explored tiles either way) is not probed for nothing.
     player_of = {}
     no_head_catalog = False
-    if "vision" in overlays:
+    if overlays & {"vision", "vision-each"}:
         with PHASES("player identification"):
             catalog = load_head_catalog()
             no_head_catalog = not catalog
             if no_head_catalog:
                 print(f"\nNO-HEAD-CATALOG: cannot read "
                       f"{os.path.join(head_icon_dir(), '*.png')}, so no shot "
-                      f"could be matched to a player -- vision outlines skipped")
+                      f"could be matched to a player -- vision outlines/"
+                      f"per-player composites skipped")
             # Two questions, answered separately and in this order, because
             # they are not equally hard. *Which shots are one player* is
             # settled by comparing the shots' own icons against each other --
@@ -6395,7 +6467,7 @@ def main():
         for n, ident in player_of.items():
             if ident is not None:
                 by_player.setdefault(ident[0], []).append(n)
-        if by_player:
+        if by_player and "vision" in overlays:
             draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick)
         # A fogged tile carrying a ruin gets two things: the Elyrion player's
         # own view of that tile, and a violet outline around it.
@@ -6452,6 +6524,37 @@ def main():
     x0c, y0c, x1c, y1c = output_crop(origin, u_col, u_row, N, W, Hc)
     with PHASES("encode + write output"):
         cv2.imwrite(args.out, out[y0c:y1c, x0c:x1c])
+
+    # One additional composite per identified player, each the finished
+    # composite above with a white wash laid back over any tile the union
+    # explored that this one player's own shot(s) did not -- what somebody
+    # else revealed but this player has not personally seen still reads as
+    # unexplored to them -- plus that same player's own vision boundary (see
+    # draw_player_vision) drawn on top, so the line between "mine" and
+    # "washed" reads as a frontier rather than just a color change.
+    # `by_player` and `winner` are exactly what draw_player_vision and the
+    # paste loop already computed above; this asks them nothing new, the
+    # same way that function's own docstring notes.
+    vision_each_paths = []
+    if "vision-each" in overlays and by_player:
+        with PHASES("vision-each per-player composites"):
+            out_stem, out_ext = os.path.splitext(args.out)
+            out_ext = out_ext or ".png"
+            for key in sorted(by_player):
+                explored_self = _player_explored_tiles(samples, by_player[key])
+                unseen = _vision_each_unseen_mask(winner, explored_self, origin,
+                                                   u_col, u_row, W, Hc)
+                per_out = render_vision_each(out, unseen)
+                draw_player_vision(per_out, samples, {key: by_player[key]},
+                                    origin, u_col, u_row, thick)
+                path = f"{out_stem}_vision_{vision_each_slug(key)}{out_ext}"
+                cv2.imwrite(path, per_out[y0c:y1c, x0c:x1c])
+                vision_each_paths.append(path)
+    if vision_each_paths:
+        # Named on stdout in the DROPPED/NO-OVERLAY shape so polybot can lift
+        # it straight into the merge caption/attachments.
+        print(f"VISION-EACH {len(vision_each_paths)}: "
+              + " ".join(vision_each_paths))
 
     total = N * N
     print(f"\nmap: {N}x{N} = {total} tiles")
@@ -6580,11 +6683,11 @@ def main():
         elif not no_ruin_sprite:
             print("\nElyrion ruin vision: no markers found on any fogged tile")
 
-    if "vision" in overlays and not no_head_catalog:
+    if overlays & {"vision", "vision-each"} and not no_head_catalog:
         identified = {n: ident for n, ident in player_of.items() if ident is not None}
         if identified:
             n_players = len({key for key, _ncc in identified.values()})
-            print(f"\nplayer vision outlines: {n_players} player(s) identified "
+            print(f"\nplayer identification: {n_players} player(s) identified "
                   f"from the Game Stats icon:")
             for n in names:
                 ident = player_of.get(n)
