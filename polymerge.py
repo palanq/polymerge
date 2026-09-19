@@ -3110,20 +3110,53 @@ BUTTON_MIN_CIRCULARITY = 0.70  # contour area vs area of its own enclosing
                               # screenshot cropped mid-button
 
 
-def _button_row_candidates(img):
+def _button_row_blob_candidates(img):
     """Bright, sufficiently circular blobs in the bottom action-button band,
-    as (cx, cy, r) fractions of (w, h, w).
+    as (cx, cy, r) fractions of (w, h, w). The fast, well-tested nominator --
+    tried alone first, and sufficient by itself on the great majority of the
+    corpus.
+
+    **This is one of three independent nominators, and it is deliberately
+    the only one not asked to justify itself beyond its own shape test.**
+    _button_row_hough_candidates and _button_row_blue_candidates below key
+    on the same object from different evidence (a circular edge; a flat
+    button-colored fill) for the shots this test cannot reach, and every
+    candidate *they* produce is checked against _button_fill_is_plausible
+    before it is trusted. This function is not, because its own
+    connected-component + circularity test already implies a real,
+    unbroken ring -- re-deriving that from a handful of sampled pixels
+    would be strictly weaker evidence, not stronger, and this path is
+    exercised on nearly every shot in the corpus, so it is the one place a
+    new, unvalidated test could most easily cost something. All three
+    nominators' candidates are pooled and handed to _fit_button_row
+    together, which is the one place that actually decides what is real:
+    a nominator only ever proposes.
 
     Rejects a blob touching the image's own bottom edge: a screenshot
     physically cropped through the middle of the button row leaves a wide,
     low-circularity arc there rather than a clean ring, and a few real
-    captures in the corpus are cropped exactly that tight."""
+    captures in the corpus are cropped exactly that tight.
+
+    **No morphological close on the threshold mask, and that is deliberate --
+    a 5x5 close used to sit here and it was actively harmful.** A ring is a
+    clean shape on its own; nothing about antialiasing or JPEG noise needs a
+    dilate+erode to read it as one contour (measured: dropping the close
+    moves a passing shot's fitted (cx, cy, r) by at most 1.28/0.04/0.03px
+    across the whole corpus, and costs zero shots an anchor). What it *did*
+    do is bridge a ring to whatever bright board content -- fog, ice, sand,
+    open water, all of them near-white by the same standing decision that
+    keeps color out of fog detection -- happened to sit within a couple of
+    pixels of it, turning a clean circle plus a separate blob into one
+    low-circularity blob that clears neither test. `badland_test/oum.jpg`
+    (0 anchors -> 2) and `star_change/oum2.png` (1 -> 2) are recovered by
+    this alone. It does not touch shots whose ring merges into the board
+    through a single point of contact, or whose whole band is one
+    connected bright region -- see the two nominators below."""
     h, w = img.shape[:2]
     y0 = h - int(h * BUTTON_ROW_BOTTOM_FRAC)
     band = img[y0:, :]
     gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
     bright = (gray > BUTTON_RING_BRIGHTNESS).astype(np.uint8) * 255
-    bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     contours, _ = cv2.findContours(bright, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     out = []
     for c in contours:
@@ -3141,6 +3174,355 @@ def _button_row_candidates(img):
     return out
 
 
+BUTTON_FILL_LO, BUTTON_FILL_HI = 0.62, 0.85  # annulus, in ring radii, sampled
+                                              # to test whether a candidate's
+                                              # own button fill looks real --
+                                              # inside the ring stroke, outside
+                                              # the icon glyph, on every shot
+                                              # measured (see the function below)
+BUTTON_FILL_GRAY_MAX = 90     # the flat black fill measured over 200
+                               # (shot, slot) samples across the whole corpus
+                               # sits at gray 0-2 with a p99 of 19 and a single
+                               # outlier at 44 -- 90 is a >2x margin over that
+                               # outlier, not a knife-edge
+BUTTON_FILL_STD_MAX = 30      # the same fill is *flat*: std 0-2 typically, p99
+                               # 19, one outlier at 44. This is what actually
+                               # separates a real button from dark terrain --
+                               # gray alone does not, see below
+BUTTON_FILL_BLUE_HUE = (90, 115)  # the "not your turn" recolor -- Game Stats'
+                                    # ring and Exit's whole fill turn a
+                                    # saturated blue instead of white/black
+                                    # (perilous_test/xin.png,
+                                    # scorched_earth/bard.png) -- measured
+                                    # hue 96-105 at saturation 130-220 across
+                                    # every such button found in the corpus
+BUTTON_FILL_BLUE_SAT_MIN = 130
+
+
+def _button_fill_is_plausible(img, cx, cy, r):
+    """Is the flat fill just inside this candidate's ring -- between the
+    icon glyph and the stroke, never the icon itself -- a real button's
+    fill (black, or the "not your turn" blue), rather than some patch of
+    board/terrain a noisier detector below mistook for one?
+
+    This is not a brightness test on its own, and cannot be: plenty of
+    ordinary terrain (forest, mountain shadow, deep water) is just as dark
+    as a real button's fill, which is why `basin_treaties/q.png`'s and
+    `perilous_test/xin.png`'s own dark terrain circles pass a bare
+    `gray < 90` cut and have to be caught some other way. What actually
+    separates them is *uniformity* -- a button's fill is one flat UI
+    color and terrain is not, measured at std 0-2 (p99 19) against
+    terrain's 90-103 on the exact false positives this exists to reject.
+    Requiring both catches what either alone misses: gray-but-textured
+    terrain fails the std bar, and the saturated-but-bright blue variant
+    would fail a plain gray cut without the second branch.
+
+    Consulted by _button_row_hough_candidates and
+    _button_row_blue_candidates below -- both noisier than the blob path
+    in ways this catches -- but never by the blob path itself, whose own
+    connected-component test already implies a real ring; re-deriving that
+    here from a handful of sampled pixels would be strictly weaker
+    evidence, not stronger."""
+    h, w = img.shape[:2]
+    y0 = max(0, int(cy - BUTTON_FILL_HI * r))
+    y1 = min(h, int(cy + BUTTON_FILL_HI * r) + 1)
+    x0 = max(0, int(cx - BUTTON_FILL_HI * r))
+    x1 = min(w, int(cx + BUTTON_FILL_HI * r) + 1)
+    if y1 <= y0 or x1 <= x0:
+        return False
+    yy, xx = np.ogrid[y0:y1, x0:x1]
+    d2 = (xx - cx) ** 2 + (yy - cy) ** 2
+    mask = (d2 >= (BUTTON_FILL_LO * r) ** 2) & (d2 <= (BUTTON_FILL_HI * r) ** 2)
+    pixels = img[y0:y1, x0:x1][mask]
+    if len(pixels) < 5:
+        return False
+    if pixels.mean(axis=1).std() > BUTTON_FILL_STD_MAX:
+        return False
+    if pixels.mean() < BUTTON_FILL_GRAY_MAX:
+        return True
+    hsv = cv2.cvtColor(pixels.reshape(-1, 1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3).mean(axis=0)
+    return BUTTON_FILL_BLUE_HUE[0] <= hsv[0] <= BUTTON_FILL_BLUE_HUE[1] and hsv[1] >= BUTTON_FILL_BLUE_SAT_MIN
+
+
+def _button_row_hough_candidates(img):
+    """Circular button rings via Hough transform, for a ring that survives
+    intact but not *isolated* -- the blob path's connected-component test
+    cannot tell a real ring fused to the board from an actual chunk of
+    board, but a ring's edge is still a clean, unbroken circle either way,
+    which is exactly what Hough looks for instead of connectivity.
+
+    Measured on `basin_treaties/q.png`, `test_ss_elyruins/hood.png` and
+    `u_forest2/ely.png` -- shots where every one of the four buttons is
+    plainly visible and the blob path finds zero or one of them. The
+    mechanism is the same tessellated-lattice fact this codebase already
+    relies on for the fog test elsewhere: the board art is one continuous
+    mesh of touching bright facets, its lower boundary is jagged rather
+    than a clean line (the same scalloped-lip shape the fog cube's own
+    silhouette has), and on these particular captures one facet's point
+    happens to reach down far enough to touch a ring's stroke by a pixel
+    or two -- fusing the *entire* board mesh and that ring into one
+    connected component. (On `basin_treaties/q.png` the touch is the
+    board's own silhouette edge doing the same thing at a coarser scale.)
+    Nothing decorative is involved and no game-drawn element is at fault;
+    it is the ordinary lattice boundary's own irregularity meeting a ring
+    by chance, on these specific device/board combinations.
+
+    **Hough alone is not enough -- it is noisy in a way the blob path
+    structurally cannot be, and that is what _button_fill_is_plausible is
+    for.** A tessellated fog/ice pattern is full of circular-ish gradient
+    structure, including at plausible button radii and spacing:
+    `missized_test/z1.jpg`, a screenshot with no button row in frame at
+    all (confirmed with the project owner), produces two Hough circles
+    whose x-fractions happen to sum to 1.00 -- a real button pair's
+    signature, from a board with no buttons. Every one of that shot's
+    circles sits on bright, textured fog and fails the fill check.
+
+    Deliberately only run as a fallback: it costs a Gaussian blur plus a
+    Hough transform on every shot that reaches it, which the blob path's
+    fast case never pays.
+
+    Same (cx, cy, r) fraction convention as _button_row_blob_candidates,
+    so the lists from all three nominators concatenate directly."""
+    h, w = img.shape[:2]
+    y0 = h - int(h * BUTTON_ROW_BOTTOM_FRAC)
+    band = img[y0:, :]
+    gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 1.2)
+    min_r = max(1, int(0.015 * w))
+    max_r = max(min_r + 1, int(0.11 * w))
+    circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, dp=1.5,
+                                minDist=int(0.08 * w), param1=80, param2=40,
+                                minRadius=min_r, maxRadius=max_r)
+    if circles is None:
+        return []
+    out = []
+    for cx, cy, r in circles[0]:
+        cy_abs = cy + y0
+        if cy_abs + r > h - 2:
+            continue
+        if not _button_fill_is_plausible(img, cx, cy_abs, r):
+            continue
+        out.append((cx / w, cy_abs / h, r / w))
+    return out
+
+
+BUTTON_BLUE_MIN_CIRCULARITY = 0.30  # far looser than the blob path's 0.70:
+                                     # Exit's solid recolored disc is as clean
+                                     # a circle as any button (measured
+                                     # circ 0.97), but Game Stats' recolored
+                                     # *ring* is thin and broken by its own
+                                     # tribe glyph reaching the stroke
+                                     # (measured 0.42-0.43) -- geometry this
+                                     # weak is exactly what
+                                     # _button_fill_is_plausible and
+                                     # _fit_button_row's own row model exist
+                                     # to arbitrate, not this test
+
+
+def _button_row_blue_candidates(img):
+    """Saturated-blue blobs in the button band -- Exit's whole fill, or
+    Game Stats' ring -- for the "not your turn" recolor state neither of
+    the other two nominators can see at all.
+
+    This is a different game state, not a capture artifact: per the
+    project owner, Game Stats' ring and Exit's fill both turn a saturated
+    blue instead of white/black while waiting on another player, and nothing
+    about that state is a *ring* the way the other three buttons still are
+    -- Exit becomes a filled disc with no stroke to speak of, so neither
+    the blob path's white-ring threshold nor Hough's circular-edge search
+    has anything to find there regardless of the board behind it. Direct
+    color thresholding is the only nominator that can propose this button
+    at all, on any shot.
+
+    Measured across the corpus at hue 96-105, saturation 130-220 -- the
+    same range `_button_fill_is_plausible` accepts, which is deliberate:
+    both are reading the same paint. Real terrain blue (water, ice) reads
+    nowhere near this saturated: the false candidates this must reject in
+    `perilous_test/xin.png` peak at S=33, one fifth of the real button's
+    floor.
+
+    `perilous_test/xin.png` is the shot in the corpus this recovers. Its
+    one candidate (Exit) joins two Hough-found white rings (Settings, Tech
+    Tree) for a clean 3-point fit, d agreeing to under 0.001 across all
+    three.
+
+    **It does not recover Game Stats, and cannot in general.** Game
+    Stats' own tribe glyph is not a small icon on a mostly-empty fill the
+    way the other three buttons' icons are (see `HEAD_SCALE_LO/HI`'s own
+    note that this icon's size relative to its button varies and is often
+    large) -- so `_button_fill_is_plausible`'s sampling annulus lands on
+    glyph edge, not flat paint, and correctly refuses it. Measured on
+    `scorched_earth/bard.png`: its Game Stats candidate reads std 35 (over
+    `BUTTON_FILL_STD_MAX`) and a mean hue of 82 (outside the blue band),
+    both a direct consequence of the glyph, and that shot is left with
+    only its one verified Exit candidate -- correctly not enough on its
+    own, for the same reason a single anchor from any nominator never is.
+    This is the same fact this codebase has stated since the head-matching
+    feature was built ("Game Stats itself is essentially never a
+    candidate"), showing up again in a new detector rather than a new
+    problem.
+
+    Same (cx, cy, r) fraction convention as the other two nominators."""
+    h, w = img.shape[:2]
+    y0 = h - int(h * BUTTON_ROW_BOTTOM_FRAC)
+    band = img[y0:, :]
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    mask = ((hsv[:, :, 0] >= BUTTON_FILL_BLUE_HUE[0]) & (hsv[:, :, 0] <= BUTTON_FILL_BLUE_HUE[1]) &
+            (hsv[:, :, 1] >= BUTTON_FILL_BLUE_SAT_MIN) & (hsv[:, :, 2] >= 100)).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < 150:
+            continue
+        (cx, cy), r = cv2.minEnclosingCircle(c)
+        if r < 0.015 * w or r > 0.11 * w:
+            continue
+        if area / (np.pi * r * r) < BUTTON_BLUE_MIN_CIRCULARITY:
+            continue
+        cy_abs = cy + y0
+        if cy_abs + r > h - 2:
+            continue
+        if not _button_fill_is_plausible(img, cx, cy_abs, r):
+            continue
+        out.append((cx / w, cy_abs / h, r / w))
+    return out
+
+
+BUTTON_ROW_FIT_MAX_RESID = 0.006  # calibrated below: every genuine fit in
+                                   # the corpus lands under 0.003; this is a
+                                   # 2x margin, not a knife-edge
+BUTTON_ROW_RADIUS_RATIO = 1.35    # every button on the row renders at the
+                                   # same size, so a real triple's radii
+                                   # should barely differ; loose enough for
+                                   # ordinary measurement noise, tight
+                                   # enough to reject a same-brightness blob
+                                   # of a genuinely different size
+
+
+def _fit_button_row(cands):
+    """Explain 2, 3 or 4 of these raw (cx, cy, r) button-row candidates as
+    one evenly-spaced, screen-centered row -- slot i in 0..3 at
+    cx = 0.5 + (i - 1.5) * d for one shared d, confirmed on the calibration
+    corpus (BUTTON_ROW_ANCHOR_X's idx0/idx3 sum to 0.999, and idx2 sits a
+    third as far from center as idx0/idx3 -- exactly the 0.5d/1.5d ratio
+    this model predicts). This is the one place that actually decides what
+    is real: every candidate from every nominator above is a proposal, not
+    a claim, and only a self-consistent subset of them is ever trusted.
+
+    This is a different *kind* of evidence from matching a candidate
+    against BUTTON_ROW_ANCHOR_X's fixed, corpus-averaged fractions: fitting
+    k points to a 1-parameter family (one shared d) is over-determined for
+    any k >= 2, so a tight fit is real corroboration regardless of what
+    this device's own spacing actually is -- which is exactly what a
+    device whose spacing differs from the portrait-calibration corpus
+    needs and the fixed table cannot give it. `test_screenshots/h.jpg` and
+    `test_ss_2/hood.jpg` place Tech Tree and End Turn only 0.084 apart
+    against the corpus's own 0.189 average -- both landed inside idx=2's
+    tolerance window and neither close enough to idx=3, so the fixed-table
+    match silently produced a wrong crop from two buttons crowding one
+    slot (two of the corpus's previously-unexplained mismatches; see
+    CLAUDE.md). Fit on their own three visible buttons instead (Settings,
+    Tech Tree, End Turn -- Game Stats itself is essentially never a
+    candidate, per _button_row_blob_candidates' own note about its
+    interior), this device's real d=0.084 falls out directly, residual
+    0.0002.
+
+    Verified against every shot in the corpus with 3+ raw candidates (66 of
+    77): all 66 fit this model on indices {0, 2, 3} at a residual under
+    0.003, none at any other index triple, and none rejected -- so the
+    threshold below has a 2x margin on the whole corpus, not a fitted
+    edge.
+
+    **k=2 is the same fit, not a separate case, and that is the point of
+    writing it this way.** It used to be special-cased to symmetric slot
+    pairs only ({0,3} or {1,2}), on the reasoning that two points fit
+    *some* 2-slot hypothesis trivially so only a mirror pair -- checkable
+    by nothing but `p + q == 1`, without needing to know d at all -- was
+    real evidence. That reasoning proves too little: the least-squares fit
+    above is *exactly as over-determined* for any two distinct slot
+    indices, symmetric or not, because the model's intercept is fixed at
+    the screen's own center (0.5) rather than fitted -- two equations,
+    one unknown d, one residual to check, whichever pair of slots is
+    tried. Symmetric pairs are simply the case where that check reduces to
+    `p + q ~= 1` by algebra (worked out and confirmed: solving the
+    weighted least squares for u = (-1.5, 1.5) or (-0.5, 0.5) reproduces
+    the old `gap/3` and `gap` formulas exactly), not a different or
+    stronger kind of evidence than an asymmetric pair like {1, 3}.
+
+    That generality is load-bearing on four shots that were previously
+    invisible to the k=2 case entirely: `archers_test2/yad.png` resolves
+    on {2, 3}, `control_c/ai.png` and `scorched_earth/lux.jpg` on {0, 2},
+    none of them symmetric and so none reachable by the old
+    mirror-pair-only special case however tightly the two points agreed.
+    `star_change/oum2.png` still resolves on the one symmetric pair {0, 3}
+    the old case already handled, unchanged. The old case's one real
+    advantage -- deciding between a pair's two symmetric readings (spacing
+    d for {1,2}, or 3d for {0,3}) without an extra assumption -- is now
+    just one more entry in the same `slot_idxs` search the k=3/4 case
+    already runs, resolved as whichever reading actually clears the
+    residual bar rather than by tiebreaking against a corpus average.
+
+    It is *not* what saves `scorched_earth/bard.png`, which is worth
+    recording since it looks like it should be: that shot's board mesh
+    fuses so much of the row into one blob that no nominator recovers a
+    white ring, and while Exit's recolored fill is found and verified,
+    Game Stats' recolored ring is not -- its own tribe glyph is large
+    enough that the fill-plausibility check samples glyph edge rather than
+    flat paint (see `_button_row_blue_candidates`) and correctly refuses
+    it. One verified candidate is exactly as insufficient here as it is
+    anywhere else in this file, so that shot still declines.
+
+    **The best fit wins on (most points, then lowest residual), not the
+    first one found**, which matters most exactly here: with more than a
+    couple of candidates in play (routine once the noisier nominators are
+    in the mix) more than one k=2 reading can clear the residual bar, and
+    there is no basis for preferring whichever `combinations()` happens to
+    reach first.
+
+    Returns (d, {idx: (cx, cy, r)}) for the best fit, or None if nothing
+    fits tightly enough at any k."""
+    cands = sorted(cands, key=lambda c: c[0])
+    n = len(cands)
+    best = None
+    for k in (4, 3, 2):
+        if n < k:
+            continue
+        for cand_idxs in itertools.combinations(range(n), k):
+            pts = [cands[i] for i in cand_idxs]
+            rs = [p[2] for p in pts]
+            if max(rs) > BUTTON_ROW_RADIUS_RATIO * min(rs):
+                continue
+            for slot_idxs in itertools.combinations(range(4), k):
+                u = np.array([i - 1.5 for i in slot_idxs])
+                xs = np.array([p[0] - 0.5 for p in pts])
+                d = float((u * xs).sum() / (u * u).sum())
+                resid = float(np.max(np.abs(0.5 + u * d - np.array([p[0] for p in pts]))))
+                if resid > BUTTON_ROW_FIT_MAX_RESID:
+                    continue
+                if best is None or (k, -resid) > (best[0], -best[1]):
+                    best = (k, resid, d, dict(zip(slot_idxs, pts)))
+    if best is None:
+        return None
+    _, _, d, slot_map = best
+    return d, slot_map
+
+
+def _merge_button_candidates(base, extra):
+    """base + extra, dropping anything in extra that sits within 0.01 (x
+    and y) of a candidate base already has. A second nominator finding the
+    same real button is corroboration, not a second data point for
+    _fit_button_row to weigh -- and without this, a near-duplicate pair
+    both entering the k-search would cost nothing on a correct fit but
+    could let two near-identical readings of the same noise source pass
+    for independent agreement."""
+    out = list(base)
+    for c in extra:
+        if not any(abs(c[0] - b[0]) < 0.01 and abs(c[1] - b[1]) < 0.01 for b in out):
+            out.append(c)
+    return out
+
+
 def locate_game_stats_icon(img):
     """Where the Game Stats button's icon sits in this (raw, unwarped)
     screenshot, as (cx, cy, r) in pixels.
@@ -3150,13 +3532,53 @@ def locate_game_stats_icon(img):
     that a bad guess here is caught later by match_head_icon's confidence
     gate rather than by refusing to look. Callers that need to know whether
     the position is actually trustworthy should count anchors themselves --
-    see how main() gates on it before ever calling this."""
+    see how main() gates on it before ever calling this.
+
+    Tries the row fit above first (see _fit_button_row for why it is
+    stronger evidence than matching against a fixed position table), and
+    only falls back to that fixed table -- BUTTON_ROW_ANCHOR_X, calibrated
+    on 63 portrait screenshots -- when nothing fits at all. **A duplicate
+    index in that fallback must not count as two anchors**: two distinct
+    real buttons can both fall inside one anchor's tolerance window (see
+    _fit_button_row's docstring for the worked case), which would
+    otherwise hand the regression two points sharing one index -- a
+    singular system whose minimum-norm solution silently produces *some*
+    crop rather than raising. Keep only the closer-to-canonical candidate
+    per index before counting or fitting, so two buttons contending for
+    one slot cost this shot an anchor rather than fabricating one from
+    noise.
+
+    **The two noisier nominators run only when the fast blob path's own
+    fit fails, and run together rather than staged one after the other.**
+    There is no ordering reason to prefer Hough's candidates over the blue
+    detector's or the reverse -- they key on different, non-overlapping
+    render states (a merged-but-intact white ring; a "not your turn"
+    recolor with no ring to find at all) -- and `_fit_button_row` is what
+    actually arbitrates whichever of them turn out to be real, exactly as
+    it does for the blob path's own candidates. The fast, well-tested blob
+    path runs and is tried alone first on every shot; the extra cost below
+    is paid only by the minority that reach here with nothing to show for
+    it otherwise."""
     h, w = img.shape[:2]
-    anchors = []
-    for cx, cy, r in _button_row_candidates(img):
+    cands = _button_row_blob_candidates(img)
+    fit = _fit_button_row(cands)
+    if fit is None:
+        cands = _merge_button_candidates(cands, _button_row_hough_candidates(img))
+        cands = _merge_button_candidates(cands, _button_row_blue_candidates(img))
+        fit = _fit_button_row(cands)
+    if fit is not None:
+        d, slot_map = fit
+        cx = 0.5 - 0.5 * d
+        cy = float(np.median([p[1] for p in slot_map.values()]))
+        r = float(np.median([p[2] for p in slot_map.values()]))
+        return int(round(cx * w)), int(round(cy * h)), int(round(r * w)), len(slot_map)
+    by_idx = {}
+    for cx, cy, r in cands:
         idx, canon_x = min(BUTTON_ROW_ANCHOR_X.items(), key=lambda kv: abs(cx - kv[1]))
-        if abs(cx - canon_x) < BUTTON_ROW_MATCH_TOL:
-            anchors.append((idx, cx, cy, r))
+        d = abs(cx - canon_x)
+        if d < BUTTON_ROW_MATCH_TOL and (idx not in by_idx or d < by_idx[idx][0]):
+            by_idx[idx] = (d, cx, cy, r)
+    anchors = [(idx, cx, cy, r) for idx, (d, cx, cy, r) in by_idx.items()]
     if len(anchors) >= 2:
         idxs = np.float32([a[0] for a in anchors])
         xs = np.float32([a[1] for a in anchors])
@@ -3199,6 +3621,53 @@ HEAD_SPRITE_MAX = 256           # catalog sprites are stored no larger than
                                 # this on their long side; they are only ever
                                 # rendered at a fraction of HEAD_ICON_CANON,
                                 # and the assets ship at up to 1024x1024.
+
+# Head scale is a property of the *icon*, not of the screenshot -- each
+# tribe/skin's own art is drawn at a fixed size relative to its button ring,
+# and it is the button-to-button variation across the 29 catalog entries that
+# makes HEAD_SCALE_LO..HI as wide as it is, not variation across captures of
+# one icon. Measured over every confidently-identified corpus shot (NCC>=0.55,
+# margin>=0.15, so a shaky identification cannot poison another tribe's
+# calibration): the within-entry spread across different screenshots -- often
+# different devices -- of the *same* icon is 0.00-0.06 (mean 0.024, n=19
+# entries with 2+ observations), while the entries themselves range center
+# 1.22-1.74. So once an icon's own scale is known, resweeping the full
+# HEAD_SCALE_LO..HI range for it on every shot is paying for per-capture
+# uncertainty that the data says is not there.
+#
+# HEAD_SCALE_BY_ENTRY centers a narrow +-HEAD_SCALE_ENTRY_TOL band on each
+# calibrated entry's own mean instead. The tolerance is 2.7x the largest
+# within-entry spread actually observed (0.06, x.png and y.png), and the band
+# is still searched at HEAD_SCALE_ENTRY_STEPS steps -- 0.053 apart, finer than
+# the old global sweep's ~0.10 -- so a calibrated entry is matched *more*
+# precisely at roughly half the per-entry cost (4 steps against 8). An entry
+# the corpus happens to hold no confident shot of (10 of 29 -- rarer skins:
+# Ai-Mo, Aquarion base and Forgotten, Bardur base and skin, Elyrion's Midnight
+# skin, Vengir's own base render, Vengir's other skin, Luxidoor's skin,
+# Quetzali's skin) keeps the full, unnarrowed sweep, since there is nothing to
+# calibrate it against -- narrowing on no evidence is exactly the mistake
+# HEAD_SCALE_LO/HI itself replaced (see that constant's own history).
+HEAD_SCALE_ENTRY_TOL = 0.08
+HEAD_SCALE_ENTRY_STEPS = 4
+HEAD_SCALE_BY_ENTRY = {
+    "x2.png": 1.220, "ai2.png": 1.270, "i2.png": 1.270, "c.png": 1.292,
+    "x.png": 1.360, "c2.png": 1.390, "y.png": 1.405, "p.png": 1.420,
+    "i.png": 1.440, "z.png": 1.480, "l.png": 1.510, "v2.png": 1.540,
+    "e.png": 1.550, "o.png": 1.571, "q.png": 1.600, "h.png": 1.620,
+    "y2.png": 1.620, "k.png": 1.740, "h2.png": 1.740,
+}
+
+
+def _head_scale_sweep(name):
+    """Scale candidates to try for one catalog entry: a narrow, calibrated
+    band around its own measured scale when one exists, else the full
+    uncalibrated sweep. See HEAD_SCALE_BY_ENTRY above."""
+    center = HEAD_SCALE_BY_ENTRY.get(name)
+    if center is None:
+        return np.linspace(HEAD_SCALE_LO, HEAD_SCALE_HI, HEAD_SCALE_STEPS)
+    lo = max(HEAD_SCALE_LO, center - HEAD_SCALE_ENTRY_TOL)
+    hi = min(HEAD_SCALE_HI, center + HEAD_SCALE_ENTRY_TOL)
+    return np.linspace(lo, hi, HEAD_SCALE_ENTRY_STEPS)
 
 
 def head_icon_region(img, cx, cy, r):
@@ -3310,7 +3779,9 @@ def _head_scores(region, catalog):
         its black fill and the rank badge in the corner are never scored --
         they are simply not part of any candidate head;
       * the head's size is searched rather than assumed, because it is not a
-        fixed fraction of the button (see HEAD_SCALE_LO).
+        fixed fraction of the button (see HEAD_SCALE_LO) -- though it *is*
+        fixed per icon, which is what narrows the search per entry (see
+        HEAD_SCALE_BY_ENTRY).
 
     matchTemplate locates each scale cheaply, then the masked correlation is
     evaluated in a 3x3 window around that peak: the unmasked peak is close but
@@ -3321,7 +3792,7 @@ def _head_scores(region, catalog):
     scores = {}
     for name, (comp, amask) in catalog.items():
         best = -1.0
-        for hr in np.linspace(HEAD_SCALE_LO, HEAD_SCALE_HI, HEAD_SCALE_STEPS):
+        for hr in _head_scale_sweep(name):
             th = int(round(rr * hr))
             if th < 8:
                 continue
