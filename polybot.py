@@ -814,9 +814,9 @@ intents = discord.Intents.default()
 # of this bot go dark differently (see CLAUDE.md for the two failure shapes,
 # one of which is actively misleading rather than silent).
 #
-# Slash commands do *not* relieve this. An interaction carries its own options,
-# but collect_marked_shots reads message.attachments off arbitrary history
-# messages, so the 🗺️ scan needs the intent however the merge was invoked.
+# Slash commands do not relieve this for `!merge`: collect_marked_shots reads
+# message.attachments off arbitrary history messages, so the 🗺️ scan needs the
+# intent. /merge never scans history, so it works without it.
 intents.message_content = True
 
 # Overridable so a second instance can run in a guild that already has one
@@ -1055,10 +1055,10 @@ class Caller:
             # is redundant -- drop it here rather than at the call sites.
             #
             # This is the whole reason clearing lives inside send: do_merge has
-            # seven early returns (missing template, no templates, no history
-            # permission, no screenshots, too many, too large, queue full) and
-            # every one of them posts a message and returns. Clearing at each
-            # was one edit per path and one more to forget on the eighth; the
+            # many early returns (missing template, no history permission, no
+            # screenshots, too many, too large, queue full, ...) and every one
+            # of them posts a message and returns. Clearing at each was one
+            # edit per path and one more to forget on the next; the
             # symptom of forgetting is a spinner that hangs until the
             # interaction expires, which is what happened on "no usable
             # screenshots found".
@@ -1361,7 +1361,9 @@ async def merge(ctx, size: str = None, *extras):
     one queue, one estimate and one set of channel copy whichever way a merge
     was asked for."""
     caller = Caller.from_ctx(ctx)
-    log_invocation(caller, f"{COMMAND_PREFIX}merge {size} {' '.join(extras)}")
+    log_invocation(caller, " ".join([f"{COMMAND_PREFIX}merge"]
+                                    + ([size] if size is not None else [])
+                                    + list(extras)))
     if size is not None and size.lower() in ("help", "?"):
         await caller.send(help_text())
         return

@@ -539,8 +539,7 @@ def _longest_board_angle_run(one, dirs):
         seq = np.concatenate([ok[cut + 1:], ok[:cut + 1]])
         gaps = np.flatnonzero(~seq)
         runs = np.diff(np.concatenate([[-1], gaps])) - 1
-        if len(runs):
-            best = max(best, int(runs.max()))
+        best = max(best, int(runs.max()))
     return best
 
 
@@ -571,10 +570,10 @@ def _board_component(m, dirs=None):
 
     Without `dirs` nothing is filtered; the template call sites pass nothing
     because a render is a single clean component."""
+    if dirs is None:
+        return m
     nc, lab, stats, _ = cv2.connectedComponentsWithStats((m > 0).astype(np.uint8), 8)
     if nc < 3:                            # background plus at most one region
-        return m
-    if dirs is None:
         return m
     big = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
     keep = [big]
@@ -901,9 +900,11 @@ def fog_period_scale(gray, valid, hsv, dir_a, tile_px,
     sub-pixel (parabolic) refinement around the winner: ~0.2% accuracy on the
     shots measured, against the +-3% window joint_register explores.
 
-    Only needed by a shot with no opposite pair of board edges; an edge pair is
-    a cheaper prior of similar quality. Returns (s_it, period_px, ncc) or
-    None if no periodic fog is found."""
+    Supplies the zoom prior only for a shot with no opposite pair of board
+    edges (an edge pair is a cheaper prior of similar quality); a shot that has
+    one still measures its period, as the denominator of the board-size count
+    (see anchor_to_template and detect_map_size). Returns (s_it, period_px,
+    ncc) or None if no periodic fog is found."""
     fogish = fogish_mask(valid, hsv, gray)
     q = 4
     gq = cv2.resize(gray, (gray.shape[1] // q, gray.shape[0] // q),
@@ -1110,8 +1111,11 @@ def _fog_full_score(img_flat, bc_pre, bden, base, shape, off, top_k):
 # (div, zoom half-span, zoom step, pan radius in div-px, pan step in div-px,
 #  how many zoom candidates this level hands to the next).
 # The coarse level explores the whole plausible range around the edge-derived
-# prior (+-3%, and +-24 full-res px of pan); each finer level only has to cover
-# the previous level's step size, which is why the spans shrink so fast.
+# prior (+-3%, and +-24 full-res px of pan), and the spans shrink level by
+# level. Note each finer span is deliberately *wider* than the previous level's
+# step: the coarse optimum is not reliably within one step of the truth, so the
+# finer level re-searches rather than polishes (see CLAUDE.md, "Don't drop or
+# narrow the div=1 level").
 #
 # The last field narrows as the levels sharpen, which is the whole shape of the
 # fix: the blurry level cannot tell its candidates apart and so must not choose,
@@ -1215,8 +1219,7 @@ def joint_register(img, valid, tmpl_gray, origin, u_col, u_row, n,
     beam = [(-2.0, float(scale0), float(trans0[0]), float(trans0[1]))]
     for div, s_span, s_step, p_rad, p_step, emit in JOINT_LEVELS:
       # Timed per level rather than as one total, because the shape of the
-      # taper is the thing worth watching: measured on a 4-shot merge it runs
-      # 0.35s / 1.20s / 1.90s at div=4 / 2 / 1, about 45% of the whole merge.
+      # taper is the thing worth watching (the PHASES report prints each).
       # div=2 is not a cheaper level than div=4 -- it samples the same 160 px
       # per tile (see _tile_sample_grid's floor) and is simply visited more --
       # so a single total would hide which level a change actually moved.
@@ -1902,9 +1905,9 @@ CONFLICT_FRAC_MIN_COMPARABLE = 20
 def cross_check(anchors, sift_edges, t_corners, tile_px):
     """How far independently-anchored shots disagree with each other, in tiles.
 
-    The 4-corner fit residual printed by the group path cannot fail: fitting a
-    4-DOF similarity to 4 corners of a rhombus is near-exactly determined, so it
-    reads ~0.7px whether the anchor is right or 5% off. This can fail. Pairwise
+    A 4-corner fit residual cannot fail: fitting a 4-DOF similarity to 4
+    corners of a rhombus is near-exactly determined, so it reads ~0.7px whether
+    the anchor is right or 5% off. This can fail. Pairwise
     SIFT is trustworthy at the 0.2px level (verified: a homography buys nothing
     over a similarity, so the camera really is pan+zoom), which makes the
     relative geometry between two shots known independently of any anchor. So
@@ -3084,10 +3087,6 @@ HEAD_ICON_CANON = 96          # the size every button crop is normalized to
 # gap(2,3) on every sample) and centered on the screen (index i sits at
 # fraction a + i*d for some a, d, symmetric about 0.5).
 BUTTON_ROW_ANCHOR_X = {0: 0.216, 2: 0.594, 3: 0.783}
-BUTTON_ROW_UNIT = 0.189        # corpus-mean spacing between adjacent buttons
-                              # (std 0.025); used only to place a single lone
-                              # anchor, since two anchors already fix the
-                              # local spacing directly
 BUTTON_ROW_MATCH_TOL = 0.08    # how far a detected circle may sit from one of
                               # the anchors above and still be assigned to it;
                               # comfortably inside the anchors' own spread
@@ -3525,14 +3524,10 @@ def _merge_button_candidates(base, extra):
 
 def locate_game_stats_icon(img):
     """Where the Game Stats button's icon sits in this (raw, unwarped)
-    screenshot, as (cx, cy, r) in pixels.
-
-    Never gives up outright: with no usable anchor at all it falls back to
-    the corpus-mean position (GAME_STATS_*_FALLBACK below), on the theory
-    that a bad guess here is caught later by match_head_icon's confidence
-    gate rather than by refusing to look. Callers that need to know whether
-    the position is actually trustworthy should count anchors themselves --
-    see how main() gates on it before ever calling this.
+    screenshot, as (cx, cy, r) in pixels, or None when fewer than two
+    buttons were found to place it from. Zero anchors would be a corpus-average
+    guess and one an extrapolation from an average spacing; both were measured
+    producing confident wrong matches no score threshold could catch.
 
     Tries the row fit above first (see _fit_button_row for why it is
     stronger evidence than matching against a fixed position table), and
@@ -3571,7 +3566,7 @@ def locate_game_stats_icon(img):
         cx = 0.5 - 0.5 * d
         cy = float(np.median([p[1] for p in slot_map.values()]))
         r = float(np.median([p[2] for p in slot_map.values()]))
-        return int(round(cx * w)), int(round(cy * h)), int(round(r * w)), len(slot_map)
+        return int(round(cx * w)), int(round(cy * h)), int(round(r * w))
     by_idx = {}
     for cx, cy, r in cands:
         idx, canon_x = min(BUTTON_ROW_ANCHOR_X.items(), key=lambda kv: abs(cx - kv[1]))
@@ -3579,29 +3574,16 @@ def locate_game_stats_icon(img):
         if d < BUTTON_ROW_MATCH_TOL and (idx not in by_idx or d < by_idx[idx][0]):
             by_idx[idx] = (d, cx, cy, r)
     anchors = [(idx, cx, cy, r) for idx, (d, cx, cy, r) in by_idx.items()]
-    if len(anchors) >= 2:
-        idxs = np.float32([a[0] for a in anchors])
-        xs = np.float32([a[1] for a in anchors])
-        A = np.stack([idxs, np.ones_like(idxs)], 1)
-        d, a0 = np.linalg.lstsq(A, xs, rcond=None)[0]
-        cx = a0 + d
-        cy = float(np.median([a[2] for a in anchors]))
-        r = float(np.median([a[3] for a in anchors]))
-    elif len(anchors) == 1:
-        idx, x, y, r0 = anchors[0]
-        cx = x + (1 - idx) * BUTTON_ROW_UNIT
-        cy, r = y, r0
-    else:
-        cx, cy, r = (GAME_STATS_X_FALLBACK, GAME_STATS_Y_FALLBACK,
-                    GAME_STATS_R_FALLBACK)
-    return int(round(cx * w)), int(round(cy * h)), int(round(r * w)), len(anchors)
-
-
-# Corpus means for the fallback above (std 0.012, 0.02 and n/a respectively
-# over the same 63 shots) -- used only when zero buttons were found at all.
-GAME_STATS_X_FALLBACK = 0.405
-GAME_STATS_Y_FALLBACK = 0.90
-GAME_STATS_R_FALLBACK = 0.065
+    if len(anchors) < 2:
+        return None
+    idxs = np.float32([a[0] for a in anchors])
+    xs = np.float32([a[1] for a in anchors])
+    A = np.stack([idxs, np.ones_like(idxs)], 1)
+    d, a0 = np.linalg.lstsq(A, xs, rcond=None)[0]
+    cx = a0 + d
+    cy = float(np.median([a[2] for a in anchors]))
+    r = float(np.median([a[3] for a in anchors]))
+    return int(round(cx * w)), int(round(cy * h)), int(round(r * w))
 
 
 # The crop handed to the matcher, as a multiple of the button's own ring
@@ -3707,8 +3689,8 @@ HEAD_SAME_ICON_NCC = 0.98       # ...and this alike are the *same icon*, so the
                                 # catalog at all. That matters because the two
                                 # costs are nothing like each other: correlating
                                 # two shots is 0.2ms for every pair in a merge,
-                                # while one catalog match is ~480ms (29 sprites
-                                # x 8 scales). Sitting far above the 0.926 of
+                                # while one catalog match sweeps every sprite at
+                                # several scales. Sitting far above the 0.926 of
                                 # the closest genuinely-different pair in the
                                 # corpus, this can only ever collapse work.
 
@@ -3864,28 +3846,10 @@ def match_head_icon(region, catalog):
 def player_icon_region(img):
     """This screenshot's own Game Stats icon, canonically framed, or None.
 
-    Requires at least two real button-row anchors (see locate_game_stats_icon)
-    before believing the position. Zero anchors means it is a corpus-average
-    guess with no evidence behind it, and one anchor is barely better -- the
-    position is extrapolated from an average spacing rather than anything
-    measured on this shot, and can land on a neighbouring button entirely.
-    Both were measured producing confident wrong matches that no score
-    threshold could catch, so both are excluded up front."""
-    cx, cy, r, n_anchors = locate_game_stats_icon(img)
-    if n_anchors < 2:
-        return None
-    return head_icon_region(img, cx, cy, r)
-
-
-def identify_player(img, catalog):
-    """(player_key, ncc) for one raw screenshot, or None if it cannot be
-    identified with any confidence."""
-    if not catalog:
-        return None
-    region = player_icon_region(img)
-    if region is None:
-        return None
-    return match_head_icon(region, catalog)
+    None when locate_game_stats_icon cannot place the button (it needs at
+    least two real button-row anchors)."""
+    loc = locate_game_stats_icon(img)
+    return None if loc is None else head_icon_region(img, *loc)
 
 
 def icon_similarity(a, b):
@@ -3920,8 +3884,9 @@ def group_shots_by_icon(region_of):
     is vengir_cultist's, at 0.926 -- two *different* players on the same tribe
     wearing different skins. A threshold tight enough to split them would sit
     0.031 below the worst genuine same-player pair, calibrated on one sample;
-    the catalog splits that case cleanly instead (see split_group_by_catalog),
-    so this bar is set where both margins are comfortable.
+    the catalog splits that case cleanly instead (see the group split in
+    main's player-identification phase), so this bar is set where both margins
+    are comfortable.
 
     Note what no method can separate: two players on the same tribe *and* the
     same skin render identically, so they are one group here and there is no
@@ -4258,8 +4223,8 @@ def render_vision_each(out, unseen_mask, color=VISION_EACH_WASH_BGR,
 def vision_each_slug(key):
     """Filesystem-safe stem for a vision-each output filename. `key` is a
     by_player key: either a head-catalog filename ("i2.png") or the
-    "unnamed player N" fallback identify_player uses when no shot in that
-    group could be matched to the catalog at all."""
+    "unnamed player N" fallback main assigns when no shot in that group could
+    be matched to the catalog at all."""
     if key.endswith(".png"):
         return key[:-4]
     digits = "".join(ch for ch in key if ch.isdigit())
@@ -4378,9 +4343,11 @@ def load_overlay(path, shape):
 
     Rejects a layer whose canvas is not the template's. The layers are rendered
     in the same frame as their blank -- verified: per board size every variant
-    shares the blank's canvas and the grid lines land exactly on the fog tile
-    boundaries -- so no registration or warping is needed, and a mismatch means
-    the wrong file rather than something to resample."""
+    shares the blank's canvas -- so no registration or warping is needed, and a
+    mismatch means the wrong file rather than something to resample. (The grid
+    lines of large-gridded and tiny-gridded are slightly sheared against their
+    blanks' tiles; see CLAUDE.md. That is a defect in those two files, not a
+    registration question.)"""
     im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
     if im is None:
         return None
@@ -4542,9 +4509,10 @@ class ShotCache:
     """Per-shot measurements several parts of a run all want: the board
     outline, and the fog's repeat period.
 
-    Both are computed twice today -- once by `detect_map_size` before the board
-    size is known, and again by `anchor_to_template` afterwards -- at ~85-250ms
-    a shot (outline 18-68ms, period 66-186ms). They are the same measurement
+    Both are wanted twice in a run with no --map-size -- once by
+    `detect_map_size` before the board size is known, and again by
+    `anchor_to_template` afterwards -- at ~85-250ms a shot (outline 18-68ms,
+    period 66-186ms). They are the same measurement
     only when they are made under the same *parameters*, and that is the whole
     design of this class: **the key carries every input that can change the
     answer**, so a hit returns the same bits and a miss recomputes exactly what
@@ -4659,17 +4627,13 @@ class Shot:
     have local aliases for those constants lying around, not because the
     values are actually per-run. A method only belongs on Shot when the shot
     has everything it needs to compute the thing itself; these two are the
-    ones that qualify. build_masks and detect_badge are not that -- they
-    take args and rects because darkness thresholds and crop bands really
-    are per-run -- which is why __init__ takes them too rather than reading
-    them off nothing. The backing fields for sift_mask/terrain_mask are
+    ones that qualify. build_masks is not that -- it takes args and rects
+    because darkness thresholds and crop bands really are per-run -- which is
+    why __init__ takes them too rather than reading them off nothing. The backing fields for sift_mask/terrain_mask are
     private (a leading underscore) because the method, not the field, is
     the interface -- same shape as Python's own cached_property, just
     written out by hand since __slots__ has no instance __dict__ for
-    cached_property to use.
-
-    __slots__ avoids a per-attribute dict for state read at every tile of
-    every anchor candidate, the same reasoning behind polybot's _Queued."""
+    cached_property to use."""
     __slots__ = ("img", "hsv", "valid", "valid_raw", "frame", "frame_raw",
                  "edge_mask", "badge_mask", "badge_halo",
                  "to_template", "zoom_source", "implied_n", "prior",
@@ -4694,7 +4658,6 @@ class Shot:
         self.fogpix = None
         self.bars = None
         self.ruins = None
-        self._sift_mask = None
         self._terrain_mask = None
         self.sift_features = None
         self.to_template = None
@@ -4729,6 +4692,8 @@ class Shot:
         self.edge_mask = build_valid_mask(self.img, rects, args.dark_thresh,
                                           0, args.top_crop, args.bottom_crop,
                                           drop_sky=drop_sky)
+        # sift_mask() is derived from the masks just replaced.
+        self._sift_mask = None
         self._subtract_badges()
 
     def _subtract_badges(self):
@@ -4748,7 +4713,7 @@ class Shot:
         if self.badge_halo is not None:
             self.edge_mask = self.edge_mask & ~self.badge_halo
 
-    def detect_badge(self, args):
+    def detect_badge(self):
         """Find this shot's capture badge, if any, and exclude it from the
         masks that must not see it.
 
@@ -4896,21 +4861,21 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     template loaded and 17.96/17.99 with the 20, the difference being only
     fog_period_scale's slightly different sweep window.
 
-    It is safe here for a reason that does not hold for the general guard: this
-    only has to separate 18 from 20, which are 2 tiles apart, and across the
-    corpus's 30 edge-pair shots every measurement lands within 0.20 tiles of
-    the truth. That is a 5x margin on the rounding, 10x in practice. (Note the
-    18-boards all read slightly low -- 17.80 to 17.93 -- so BOARD_SPAN_WALL_TILES
+    It is safe here for a reason that does not hold for the general guard: the
+    supported sizes are at least 2 tiles apart, and across the corpus every
+    measurement lands within 0.32 tiles of the truth, a 1.6x margin on the
+    rounding. (Note the 18-boards read slightly low, so BOARD_SPAN_WALL_TILES
     is a touch large there; nowhere near enough to matter, but that is the
     direction to look if a size is ever misread.)
 
     The phantom-edge rejections are replicated from anchor_to_template rather
     than skipped, and they are what makes the failure case honest: a sole edge
     pair must clear min_support on *both* sides, and two pairs must agree.
-    pol_archi_test is the set with no measurement at all -- kick.png's only
-    pair is the phantom-sided one -- and the right answer there is to ask,
-    which is why this raises rather than falling back to a default. A guessed
-    size is the most destructive mistake available in this program.
+    pol_archi_test is the set with no measurement at all -- both its shots
+    need the sunrise-sky fallback, which this pre-pass does not have -- and the
+    right answer there is to ask, which is why this raises rather than falling
+    back to a default. A guessed size is the most destructive mistake available
+    in this program.
 
     Costs one edge fit and one fog_period_scale per shot (~0.22s). That used to
     be duplicated work -- anchor_to_template measures both again -- and `cache`
@@ -5161,7 +5126,7 @@ def main():
                          "skipped and reported, never an error. `vision` and "
                          "`vision-each` are computed rather than loaded: both "
                          "identify each shot's own player from its Game "
-                         "Stats icon (see identify_player). `vision` outlines "
+                         "Stats icon (see player_icon_region). `vision` outlines "
                          "what each identified player's shot(s) alone "
                          "witnessed as explored, in a different color per "
                          "player, on the one composite --out writes. "
@@ -5251,7 +5216,10 @@ def main():
             f"Choose from {', '.join(sorted(known))}, or 'none'.")
 
     with PHASES("load images + masks + badges"):
-        ui = json.load(open(args.ui_mask)) if args.ui_mask else {}
+        ui = {}
+        if args.ui_mask:
+            with open(args.ui_mask) as fh:
+                ui = json.load(fh)
         names = [os.path.basename(p) for p in args.images]
         shots = {}
         badge_found = set()
@@ -5263,7 +5231,7 @@ def main():
                 raise SystemExit(f"cannot read {name} -- it appears invalid")
             shots[name] = Shot(im, args, ui.get(name, []))
             if not args.no_badge_filter:
-                found = shots[name].detect_badge(args)
+                found = shots[name].detect_badge()
                 if found:
                     print(f"{name}: excluding {len(found)} capture-badge "
                           f"blob(s) {found}")
@@ -5331,6 +5299,8 @@ def main():
         raise SystemExit(f"too many screenshots: {len(names)} of these show the "
                          f"map, and the limit is {args.max_shots}. Please retry "
                          f"with fewer.")
+    if args.single and len(names) != 1:
+        raise SystemExit(f"--single takes exactly one image, got {len(names)}")
 
     # Only when the caller omitted it: an explicit --map-size is always obeyed,
     # so this can never override a size someone actually meant. A --base image
@@ -5549,9 +5519,6 @@ def main():
         worst = max(r[4] for r in rows)
         print(f"\nworst disagreement: {worst:.3f} tiles")
         return
-
-    if args.single and len(names) != 1:
-        raise SystemExit(f"--single takes exactly one image, got {len(names)}")
 
     # Every image is anchored to the template independently -- zoom from its own
     # fog artwork, pan from its own board edges (anchor_to_template) -- and never
@@ -5930,14 +5897,13 @@ def main():
     # change here; exercise it deliberately. CLAUDE.md has the worked case.
     if args.min_fog_lock > 0:
         lenders = [m for m in names if fog_lock[m] >= args.min_fog_lock]
-        for n in [n for n in names if fog_lock[n] == 0 and n not in lenders]:
+        for n in [n for n in names if fog_lock[n] == 0]:
             keep_M, keep_lock, best = shots[n].to_template, fog_lock[n], None
             for inl, m, A, gap in sift_hops(n, lenders):
                 shots[n].to_template = A
                 warp_shot(n)
                 sample_shot(n)
-                lock = sum(1 for s in samples.values()
-                           if s.get(n, {}).get("fog_ncc", 0.0) >= FOG_LOCK_NCC)
+                lock = locked(n)
                 print(f"    {n} anchored from {m} ({inl} SIFT inliers, moves "
                       f"{gap:.3f} tiles) locks {lock} fog tiles")
                 if best is None or lock > best[0]:
@@ -6063,9 +6029,9 @@ def main():
         Sharpness is *ascending* shot.scale. Mind the direction: scale is the
         factor that blows a shot up to template size, so the smallest value is
         the shot that already had the most of its own pixels on the tile. The
-        zoomed-out shots are the ones being upscaled, and they lose twice over
-        -- fewer source pixels per tile, and constant-screen-size UI (city
-        labels, health bars) covering more board area per tile.
+        zoomed-out shots are the ones being upscaled, so they have fewer
+        source pixels per tile. (City UI scales with board zoom, so it is not
+        a further penalty -- see CLAUDE.md.)
 
         Fog evidence outranks sharpness, because a sharp shot that cannot
         actually see the tile is worse than a blurry one that can. Sources
@@ -6486,7 +6452,7 @@ def main():
         # their real terrain is already in the composite and is strictly better
         # information than either a marker or a copy.
         #
-        # Two details make the copy sit right:
+        # Three details make the copy sit right:
         #  * It runs *after* the decorative overlays, so `shade` cannot dull the
         #    flames -- the same reason the outline is drawn last.
         #  * The source is carried back through its own illumination fit
@@ -6577,9 +6543,9 @@ def main():
         won = sum(1 for w in winner.values() if w == n)
         print(f"  {n:40s} witnessed-explored={seen:4d}  won={won:4d}")
     if args.city_bars:
-        total = sum(len(shots[n].bars) for n in names)
-        if total:
-            print(f"\ncity population bars: {total} found (owner-only, so each "
+        n_bars = sum(len(shots[n].bars) for n in names)
+        if n_bars:
+            print(f"\ncity population bars: {n_bars} found (owner-only, so each "
                   f"marks that shot as the city's owner):")
             for n in names:
                 for (ci, cj), bbox, width_class, _pl in sorted(shots[n].bars):
@@ -6865,7 +6831,7 @@ def main():
                   f"  provenance.png       winner per tile\n"
                   f"  conflicts.png        tiles whose sources disagree, outlined\n"
                   f"  grid_overlay.png     the tile lattice on the composite\n"
-                  f"  anchor.json          per-shot transforms and tile counts\n"
+                  f"  anchor.json          lattice, per-shot scale, tiles, fog gain\n"
                   f"  warped_<n>.png       each shot on the template canvas\n"
                   f"  explored_<n>.png     what each shot witnessed as explored\n"
                   f"  badges_<n>.png       capture-badge pixels excluded, in red\n"

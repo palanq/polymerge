@@ -75,7 +75,7 @@ So pair the harness with a name check, which costs a second and catches exactly
 the class `--compare` cannot:
 
 ```bash
-.venv/Scripts/python.exe -m pyflakes polymerge.py polybot.py tools/*.py shoreline/*.py
+.venv/Scripts/python.exe -m pyflakes polymerge.py polybot.py tools/*.py shoreline/*.py shoreline/tools/*.py
 ```
 
 It is not in `requirements.txt` and must not be: the image does not need it.
@@ -413,7 +413,7 @@ per-file rects, key them on something unambiguous.
   per-tile, in the same way the three sets above are: two turns of one board,
   so any per-tile claim can be made twice and compared.
 
-  Twenty-four sets but fewer distinct boards — `test_screenshots`, `test_ss_2` and
+  Twenty-seven sets but fewer distinct boards — `test_screenshots`, `test_ss_2` and
   `beautiful_test3` are all the same map, which is worth remembering when
   judging whether a change generalizes (it also gives ruin-vision detection
   three independent looks at the same ruins; see below). Mixed aspect ratios,
@@ -2817,7 +2817,7 @@ there is nothing for the table to track. It is the same treatment
 should be run against those three plus the full corpus.
 
 **SIFT takes its features from the board, not from whatever else survived the
-crop** (`board_region`, `sift_mask_for`). Every SIFT consumer — the zoom borrow,
+crop** (`board_region`, `Shot.sift_mask`). Every SIFT consumer — the zoom borrow,
 the `pan_hint`, `corroborate_anchor` and `--cross-check` — used to build features
 from `valid`, which includes chrome. That is harmless on ordinary gameplay shots
 because their HUD *differs* between captures (score, turn, whose go it is), and
@@ -3294,7 +3294,7 @@ its two segments fused into one blob — so requiring them is what made the old
 detector miss it entirely. The old reports' "N segments" meant "segments the
 detector resolved", which was never the bar's true subdivision count.
 
-The claim ranking's `span_of` therefore now asks the question it actually wants:
+The claim ranking's width test (`_capped` in `main`) therefore asks the question it actually wants:
 does this bar physically reach its S/SW/SE neighbors? That is exactly the
 capped width, and the short one does not.
 
@@ -3762,7 +3762,7 @@ positives' 18.9 and 18.3 — a 20x separation. It fails twice over anyway:
   **35 of the 52 complete bars** — it clips real bars before impostors.
 - **As a claim tiebreak**, because a genuine fragment is off-center by
   construction (seeing half a bar puts its bbox center half a bar off), so
-  offset really separates complete-from-narrow, which `span_of` already does
+  offset really separates complete-from-narrow, which the width class already does
   directly and better. Wired in after completeness it left every tracked
   baseline identical and every complete bar intact, moving one contested tile
   between two *competing false positives* where nothing says which should win.
@@ -3775,7 +3775,7 @@ enforces. What remains genuinely untried is the **differential** idea below — 
 bar is present in exactly one source and absent from the others at the same
 template location.
 
-### 6. Player identification and vision outlines (`identify_player`, `--overlays vision`, off by default)
+### 6. Player identification and vision outlines (`player_icon_region`, `group_shots_by_icon`, `match_head_icon`, `--overlays vision`/`vision-each`, off by default)
 
 **The bottom action row's second button, Game Stats, always shows the
 viewing player's own tribe/skin head icon, circled** — confirmed by the
@@ -3822,10 +3822,10 @@ The four buttons are evenly spaced and centered on the screen, though
 (confirmed: gap(0,2) is 2× gap(2,3) on every sample, and index *i* sits at a
 fixed fraction *a + i·d* symmetric about 0.5), so Game Stats' position is
 always **interpolated** from whichever of the other three are found
-(`locate_game_stats_icon`) — never guessed at directly. A shot with *zero*
-usable anchors falls back to the corpus-mean position, but `identify_player`
-refuses to trust a match built on that fallback at all (see below): measured
-on the nine corpus shots that reach it, the resulting crop matches
+(`locate_game_stats_icon`) — never guessed at directly. With fewer than two
+usable anchors it returns None and the shot gets no identity (see below). The
+corpus-mean fallback position that used to stand in for zero anchors is gone:
+measured on the nine corpus shots that reached it, the resulting crop matched
 *something* in the catalog with a confidence a genuinely well-placed crop
 would clear, just the wrong thing, and no score threshold on the match
 itself can tell the two cases apart.
@@ -3860,12 +3860,15 @@ contain a genuine duplicate, confirm it with the project owner before
 building anything to merge it — visual similarity alone was already wrong
 once here.
 
-**Both gate bounds are loosely calibrated, and that is stated rather than
-hidden.** `PLAYER_HEAD_MIN_CORR` (0.25) and `PLAYER_HEAD_MIN_MARGIN` (0.02)
-were set by hand against real corpus matches rather than swept the way
-`RUIN_MATCH_MIN_CORR` was: a genuinely correct match runs anywhere from 0.29
-to 0.61 with a margin from 0.006 to 0.29 over its runner-up, so there is no
-clean gap to sit in the middle of the way ruin detection has. Two catalog
+**The gate is `PLAYER_HEAD_MIN_CORR` (0.55) and `PLAYER_HEAD_MIN_MARGIN`
+(0.10).** Correct matches now run 0.83–0.99 at margins of 0.20–0.59 (see
+`match_head_icon`), since the sprite keeps its aspect, is compared only under
+its own alpha, and its scale is searched (`_head_scores`). The 0.25/0.02 gate
+this paragraph used to record belonged to the earlier fixed-circle matcher,
+whose correct matches ran only 0.29–0.61 at margins down to 0.006.
+**Which shots belong to one player is decided before naming, by comparing the
+shots' own icons with each other** (`group_shots_by_icon`); the catalog only
+names each group, which decides its color. Two catalog
 entries turn up as runners-up far more often than the rest across the whole
 corpus (one of them the closest thing to a false-positive attractor this
 feature has), which is at least partly a fact about the corpus rather than
@@ -3915,8 +3918,12 @@ color/shape math this file otherwise argues against generalizing from — see
 the standing decision below on cataloging terrain; the sprite-match approach
 itself does not change, only its completeness and its use of color).
 
-**A second, distinct source of confusion was found the same day and it is
-not a visual-similarity limit — it is a mask-sizing bug, now fixed.**
+**Historical: `head_icon_patch`, its fixed interior circle and
+`HEAD_ICON_BLACK_FLOOR` no longer exist** — `head_icon_region` applies no
+circle and `_head_scores` compares only the pixels under each sprite's own
+alpha, which removes the black-gap problem below at its source. Kept for the
+measurements. **A second, distinct source of confusion was found the same day
+and it is not a visual-similarity limit — it was a mask-sizing bug.**
 `head_icon_patch`'s interior circle is a fixed 0.78 of the measured
 button-ring radius, and that fraction does not hold on every capture: on
 some the rendered icon glyph is smaller relative to its ring than that
@@ -3942,8 +3949,8 @@ them, gated as it is behind `"vision" in overlays`), and a fresh
 
 **A related, rarer failure surfaced at the same time: single-anchor
 localization is not reliable enough to trust at all.**
-`locate_game_stats_icon` places Game Stats from a *single* found anchor by
-extrapolating with `BUTTON_ROW_UNIT`, a corpus-average spacing rather than
+`locate_game_stats_icon` used to place Game Stats from a *single* found anchor by
+extrapolating with a corpus-average spacing (`BUTTON_ROW_UNIT`, now removed) rather than
 anything measured on that shot — and a real per-shot spacing that differs
 from the average silently shifts the crop. The corpus has exactly two shots
 this happens on (`n_anchors == 1`, out of 74 total), and both produced a
@@ -3953,8 +3960,8 @@ loses to `c.png` (Cymanti) even after the black-floor fix above;
 `basin_treaties/q.png` crops almost entirely dark background with no real
 icon color at all, yet still cleared both gates in `match_head_icon` purely
 because `c2.png` happened to correlate with the noise once it was added to
-the catalog. `identify_player` now requires **two** anchors, not one, the
-same way it already refused the zero-anchor case — costing exactly those
+the catalog. `locate_game_stats_icon` now requires **two** anchors, not one,
+and returns None otherwise — costing exactly those
 two shots their outline, and turning two confident wrong matches into two
 honest non-matches.
 
@@ -5065,19 +5072,6 @@ here runs unless asked for.
   that actually failed, and they are the ones to look at first.
 
 ## Deferred (known, deliberately not handled yet)
-
-### Player detection via tribe heads in the bottom UI
-
-The bottom-of-screen UI shows a row of tribe head icons, one per player in the
-game. Detecting and identifying them per screenshot would let the merge
-attribute a shot to a specific player without relying on the reaction-based
-workflow's bookkeeping, and — the more interesting use — let the composite draw
-each player's own visible-territory boundary rather than just the union.
-Unexplored territory: whether the icon set is a fixed, cataloguable sprite per
-tribe (closer to the ruin-flame sprite match, which this codebase trusts) or
-varies enough per skin/level to need something looser. Also open: whether the
-row is cropped by `--top-crop`/`--bottom-crop` today, and if so whether reading
-it needs a separate uncropped pass the same way `--ui-mask` does.
 
 ### `/merge`: merge screenshots directly, optionally updating a prior map
 
