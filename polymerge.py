@@ -1526,6 +1526,15 @@ SIFT_TERRAIN_MIN_INLIERS = 60
 # tools/baseline.py -- exercise a change here deliberately.
 MISANCHOR_CORROBORATE_MAX_TILES = 0.20
 
+# --cross-check flags a pair past this many tiles apart. Healthy sets sit
+# under ~0.05; see CLAUDE.md for the pairs that exceed it without being wrong.
+CROSS_CHECK_FLAG_TILES = 0.10
+
+# How far the shots' own tile count may sit from a *stated* --map-size before
+# the run is refused as the wrong size. Every honest measurement in the corpus
+# lands within 0.32 of the truth and neighbouring sizes are 2 apart.
+MAP_SIZE_STATED_TOL = 0.4
+
 # How far two opposite edge pairs may disagree on the zoom before neither is
 # believed. Both measure the same board, so they should agree closely -- over
 # the whole corpus the observed spreads run 0.00% to 1.24%, and the one shot
@@ -1633,6 +1642,7 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
     cache = cache if cache is not None else ShotCache()
 
     tags = ["a-min", "a-max", "b-min", "b-max"]
+    basis_inv = np.linalg.inv(np.stack([dir_a, dir_b], axis=1))
 
     def fit_edges(m):
         with PHASES("anchor: board outline + edge fit"):
@@ -1728,8 +1738,7 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
             reg = board_region(mask, (dir_a, dir_b))
             ys, xs = np.where(reg > 0)
             if len(xs) >= 100:
-                b_inv = np.linalg.inv(np.stack([dir_a, dir_b], axis=1))
-                ab = np.stack([xs, ys], axis=1) @ b_inv.T
+                ab = np.stack([xs, ys], axis=1) @ basis_inv.T
                 other = float(ab[:, 1 - k].max() - ab[:, 1 - k].min())
                 if other > 1.0:
                     ratio = (off[hi] - off[lo]) / other
@@ -1818,7 +1827,6 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
     # as zoom_hint, and the two must agree or the borrowed offset would be
     # measured against a different zoom than it is used at.
     if borrow_pan:
-        basis_inv = np.linalg.inv(np.stack([dir_a, dir_b], axis=1))
         hint_shift = basis_inv @ np.array([pan_hint[0, 2], pan_hint[1, 2]])
     # Blend the two edges of a pair by support -- deliberately, even though the
     # bottom lip (a-max = SE, b-max = SW) is the individually more accurate edge
@@ -2289,13 +2297,9 @@ _ruin_sprite_cache = {}
 def ruin_sprite_path():
     """Assets/Rainbowflame.png: the working directory, else next to this script.
 
-    Same order as overlay_path and for the same reason -- the Discord bot runs
-    polymerge with cwd set to a per-merge temp dir, so the script-relative
-    fallback is what makes the asset findable there.
+    See _asset_path for why the script-relative fallback exists.
     """
-    rel = os.path.join(RUIN_SPRITE_DIR, RUIN_SPRITE)
-    return _first_existing(
-        rel, os.path.join(os.path.dirname(os.path.abspath(__file__)), rel))
+    return _asset_path(os.path.join(RUIN_SPRITE_DIR, RUIN_SPRITE))
 
 
 def load_ruin_sprite():
@@ -2818,6 +2822,15 @@ BAR_BOX_HALVES = (0.40, 0.62)
 # runs, so the tiles a skip would remove are the cheap ones.
 CITY_MIN_GAP = 2
 
+# How strongly a shot claims a tile of a city's 3x3 block, strongest first.
+# "Strong" tiles are the city's own and its S/SW/SE neighbours -- the only ones
+# a bar can reach -- and "weak" the rest of the block. A detected bar outranks
+# the vision rule at each strength. See promote_city_bars for the tiebreaks.
+CLAIM_BAR_STRONG = 3        # detected bar, on a tile its bar can occupy
+CLAIM_VISION_STRONG = 2     # sole seer of the block, same tiles
+CLAIM_BAR_WEAK = 1          # detected bar, rest of the block
+CLAIM_VISION_WEAK = 0       # sole seer of the block, rest of the block
+
 
 def _bar_edges(bgr):
     """Signed horizontal-edge strength per pixel.
@@ -3132,10 +3145,8 @@ def _button_row_blob_candidates(img):
     together, which is the one place that actually decides what is real:
     a nominator only ever proposes.
 
-    Rejects a blob touching the image's own bottom edge: a screenshot
-    physically cropped through the middle of the button row leaves a wide,
-    low-circularity arc there rather than a clean ring, and a few real
-    captures in the corpus are cropped exactly that tight.
+    Blobs cut off by the image's own bottom edge are rejected (see
+    _button_blob_circles); a few real captures are cropped exactly that tight.
 
     **No morphological close on the threshold mask, and that is deliberate --
     a 5x5 close used to sit here and it was actively harmful.** A ring is a
@@ -3152,12 +3163,31 @@ def _button_row_blob_candidates(img):
     this alone. It does not touch shots whose ring merges into the board
     through a single point of contact, or whose whole band is one
     connected bright region -- see the two nominators below."""
-    h, w = img.shape[:2]
-    y0 = h - int(h * BUTTON_ROW_BOTTOM_FRAC)
-    band = img[y0:, :]
+    band, y0 = _button_band(img)
     gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
     bright = (gray > BUTTON_RING_BRIGHTNESS).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(bright, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return _button_blob_circles(img, bright, y0, BUTTON_MIN_CIRCULARITY,
+                                verify_fill=False)
+
+
+def _button_band(img):
+    """The bottom band the button row sits in, and the row it starts at."""
+    h = img.shape[0]
+    y0 = h - int(h * BUTTON_ROW_BOTTOM_FRAC)
+    return img[y0:, :], y0
+
+
+def _button_blob_circles(img, mask, y0, min_circularity, verify_fill):
+    """Button candidates from the blobs of `mask` (a mask of the bottom band
+    starting at row y0), as (cx, cy, r) fractions of (w, h, w).
+
+    The shape tests both blob-based nominators share: big enough, a radius in
+    a button's range, round enough, and not cut off by the image's own bottom
+    edge -- a screenshot cropped through the button row leaves a wide,
+    low-circularity arc there rather than a clean ring. `verify_fill` adds
+    _button_fill_is_plausible, for the nominator that needs it."""
+    h, w = img.shape[:2]
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     out = []
     for c in contours:
         area = cv2.contourArea(c)
@@ -3166,11 +3196,14 @@ def _button_row_blob_candidates(img):
         (cx, cy), r = cv2.minEnclosingCircle(c)
         if r < 0.015 * w or r > 0.11 * w:
             continue
-        if area / (np.pi * r * r) < BUTTON_MIN_CIRCULARITY:
+        if area / (np.pi * r * r) < min_circularity:
             continue
-        if cy + y0 + r > h - 2:
+        cy_abs = cy + y0
+        if cy_abs + r > h - 2:
             continue
-        out.append((cx / w, (cy + y0) / h, r / w))
+        if verify_fill and not _button_fill_is_plausible(img, cx, cy_abs, r):
+            continue
+        out.append((cx / w, cy_abs / h, r / w))
     return out
 
 
@@ -3284,8 +3317,7 @@ def _button_row_hough_candidates(img):
     Same (cx, cy, r) fraction convention as _button_row_blob_candidates,
     so the lists from all three nominators concatenate directly."""
     h, w = img.shape[:2]
-    y0 = h - int(h * BUTTON_ROW_BOTTOM_FRAC)
-    band = img[y0:, :]
+    band, y0 = _button_band(img)
     gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 1.2)
     min_r = max(1, int(0.015 * w))
@@ -3363,30 +3395,12 @@ def _button_row_blue_candidates(img):
     problem.
 
     Same (cx, cy, r) fraction convention as the other two nominators."""
-    h, w = img.shape[:2]
-    y0 = h - int(h * BUTTON_ROW_BOTTOM_FRAC)
-    band = img[y0:, :]
+    band, y0 = _button_band(img)
     hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
     mask = ((hsv[:, :, 0] >= BUTTON_FILL_BLUE_HUE[0]) & (hsv[:, :, 0] <= BUTTON_FILL_BLUE_HUE[1]) &
             (hsv[:, :, 1] >= BUTTON_FILL_BLUE_SAT_MIN) & (hsv[:, :, 2] >= 100)).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    out = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < 150:
-            continue
-        (cx, cy), r = cv2.minEnclosingCircle(c)
-        if r < 0.015 * w or r > 0.11 * w:
-            continue
-        if area / (np.pi * r * r) < BUTTON_BLUE_MIN_CIRCULARITY:
-            continue
-        cy_abs = cy + y0
-        if cy_abs + r > h - 2:
-            continue
-        if not _button_fill_is_plausible(img, cx, cy_abs, r):
-            continue
-        out.append((cx / w, cy_abs / h, r / w))
-    return out
+    return _button_blob_circles(img, mask, y0, BUTTON_BLUE_MIN_CIRCULARITY,
+                                verify_fill=True)
 
 
 BUTTON_ROW_FIT_MAX_RESID = 0.006  # calibrated below: every genuine fit in
@@ -3699,11 +3713,9 @@ _head_catalog_cache = None
 
 
 def head_icon_dir():
-    """Assets/Heads: the working directory, else next to this script -- same
-    resolution order as ruin_sprite_path/overlay_path and for the same
-    reason (the bot runs this with cwd set to a per-merge temp dir)."""
-    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), HEAD_ICON_DIR)
-    return HEAD_ICON_DIR if os.path.isdir(HEAD_ICON_DIR) else here
+    """Assets/Heads: the working directory, else next to this script (see
+    _asset_path)."""
+    return _asset_path(HEAD_ICON_DIR)
 
 
 def load_head_catalog():
@@ -4239,31 +4251,38 @@ def vision_each_slug(key):
 OVERLAY_DIR = "Overlays"
 
 
-def _first_existing(*paths):
-    """The first of these paths that exists, else the last one.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    Returning the last rather than None keeps the caller's error message
-    pointing at a real filename instead of "None"."""
-    for p in paths:
-        if p and os.path.exists(p):
-            return p
-    return paths[-1]
+
+def _asset_path(rel):
+    """`rel` under the working directory if it exists there, else under this
+    script's directory -- whether or not it exists there either, so a
+    caller's error message names a real filename rather than "None".
+
+    The cwd is checked first so a set can keep its own renders alongside its
+    screenshots; the script-relative fallback is what makes the assets
+    findable from the Discord bot, which runs polymerge with cwd set to a
+    per-merge temp dir."""
+    return rel if os.path.exists(rel) else os.path.join(_SCRIPT_DIR, rel)
+
+
+def _asset_glob(pattern):
+    """The first match of `pattern` under the working directory, else under
+    this script's directory, or None. Same search order as _asset_path."""
+    for base in (os.curdir, _SCRIPT_DIR):
+        hits = sorted(glob.glob(os.path.join(base, pattern)))
+        if hits:
+            return hits[0]
+    return None
 
 
 def overlay_path(n, layer):
-    """Where Overlays/<name>-<layer>.png lives: the working directory, else
-    next to this script. None when the board size has no such name.
-
-    The cwd is checked first so a set can keep its own renders alongside its
-    screenshots, but the script-relative fallback is what makes an omitted
-    --map-size work from the Discord bot, which runs polymerge with cwd set to
-    a per-merge temp dir."""
+    """Where Overlays/<name>-<layer>.png lives (see _asset_path). None when
+    the board size has no such name."""
     name = BOARD_SIZE_NAMES.get(n)
     if name is None:
         return None
-    rel = os.path.join(OVERLAY_DIR, f"{name}-{layer}.png")
-    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), rel)
-    return _first_existing(rel, here)
+    return _asset_path(os.path.join(OVERLAY_DIR, f"{name}-{layer}.png"))
 
 
 def template_path_for(n):
@@ -4331,12 +4350,17 @@ def overlay_layer_path(n, stem):
     name = BOARD_SIZE_NAMES.get(n)
     if name is None:
         return None
-    for base in (os.curdir, os.path.dirname(os.path.abspath(__file__))):
-        hits = sorted(glob.glob(os.path.join(base, OVERLAY_DIR,
-                                             f"{name}-{stem}.png")))
-        if hits:
-            return hits[0]
-    return None
+    return _asset_glob(os.path.join(OVERLAY_DIR, f"{name}-{stem}.png"))
+
+
+def _read_png(path):
+    """An image with any alpha channel kept, 16-bit normalized to 8, or None.
+
+    normal-*.png in Overlays/ is 16-bit; everything else is 8."""
+    im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if im is not None and im.dtype == np.uint16:
+        im = (im / 257.0).astype(np.uint8)
+    return im
 
 
 def load_overlay(path, shape):
@@ -4349,11 +4373,9 @@ def load_overlay(path, shape):
     lines of large-gridded and tiny-gridded are slightly sheared against their
     blanks' tiles; see CLAUDE.md. That is a defect in those two files, not a
     registration question.)"""
-    im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    im = _read_png(path)
     if im is None:
         return None
-    if im.dtype == np.uint16:
-        im = (im / 257.0).astype(np.uint8)
     if im.ndim != 3 or im.shape[2] != 4 or im.shape[:2] != shape[:2]:
         return None
     return im[:, :, :3].astype(np.float32), \
@@ -4408,11 +4430,9 @@ def load_template(path, dark_thresh, erode_px):
     reason to want this and belongs to detect_corners, which handles it."""
     if not path:
         return None, None, None      # a board size with no render of its own
-    im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    im = _read_png(path)
     if im is None:
         return None, None, None
-    if im.dtype == np.uint16:
-        im = (im / 257.0).astype(np.uint8)
     if im.ndim == 2:
         bgr = cv2.cvtColor(im, cv2.COLOR_GRAY2BGR)
     else:
@@ -4428,7 +4448,7 @@ _template_cache = {}
 def template_geometry(path, dark_thresh, erode_px):
     """One render's pixels plus everything geometric derived from them, once.
 
-    Every consumer of a board render wants the same six things off it, and a
+    Every consumer of a board render wants the same five things off it, and a
     run has two consumers: the size pre-pass (_probe_basis) and the merge
     itself. They ask at different times and used to each pay in full -- a load,
     a corner fit, an outline and an edge fit, which is 294ms at 20x20 (164 load,
@@ -4449,10 +4469,9 @@ def template_geometry(path, dark_thresh, erode_px):
             _template_cache[key] = None
         else:
             corners = detect_corners(edge_t)
-            dirs = (BOARD_DIR_A, BOARD_DIR_B)
             _template_cache[key] = {
                 "bgr": bgr, "valid": valid_t, "edge": edge_t,
-                "corners": corners, "dirs": dirs,
+                "corners": corners,
                 "edges": edge_lines(board_boundary(edge_t)),
             }
     return _template_cache[key]
@@ -4795,7 +4814,7 @@ def _probe_basis(dark_thresh, erode_px=0):
         if g is None:
             continue
         t_top, t_right, _, t_left, _ = g["corners"]
-        dir_a, dir_b = g["dirs"]
+        dir_a, dir_b = BOARD_DIR_A, BOARD_DIR_B
         _, u_col, _ = build_lattice(t_top, t_right, t_left, n)
         t_off, _ = g["edges"]
         span = [t_off[1] - t_off[0], t_off[3] - t_off[2]]
@@ -5012,6 +5031,10 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
 # lattice itself is right, and a correct anchor puts genuine fog tiles at
 # 0.95+ rather than merely above 0.4.
 FOG_LOCK_NCC = 0.7
+
+# Fog-locked pixels a shot needs before its illumination is fitted; below it
+# the shot gets no fog-pixel evidence (see fit_fog_pixels).
+FOG_GAIN_MIN_PX = 5000
 
 
 class Run:
@@ -5726,7 +5749,7 @@ def load_board(run):
     print(f"template corners: top={tuple(t_top.round(0))} right={tuple(t_right.round(0))} "
           f"bottom={tuple(t_bottom.round(0))} left={tuple(t_left.round(0))} "
           f"(residual {t_residual:.1f}px, should be tiny)")
-    dir_a, dir_b = tgeom["dirs"]
+    dir_a, dir_b = BOARD_DIR_A, BOARD_DIR_B
     origin, u_col, u_row = build_lattice(t_top, t_right, t_left, args.map_size)
     t_corners = (t_top, t_right, t_bottom, t_left)
     t_edge_off, _t_edge_sup = tgeom["edges"]
@@ -5793,7 +5816,7 @@ def run_cross_check(run):
     if not rows:
         raise SystemExit("no pair has both an anchor and a SIFT transform")
     for a, b, n_inl, err, tiles in rows:
-        flag = "" if tiles < 0.10 else "   <-- ANCHORS DISAGREE"
+        flag = "" if tiles < CROSS_CHECK_FLAG_TILES else "   <-- ANCHORS DISAGREE"
         print(f"  {a[:30]:30s} vs {b[:30]:30s} inliers={n_inl:5d} "
               f"corner gap={err:7.1f}px = {tiles:.3f} tiles{flag}")
     worst = max(r[4] for r in rows)
@@ -5959,7 +5982,7 @@ def check_board_size(run):
         print(implausible_note(implied_n_bad))
     if implied_n_of:
         med = float(np.median(list(implied_n_of.values())))
-        if abs(med - args.map_size) > 0.4:
+        if abs(med - args.map_size) > MAP_SIZE_STATED_TOL:
             # One sentence, no method and no per-shot table: this goes straight
             # to a Discord channel, where the reader is a player who wants the
             # answer and the fix. The evidence is already on stdout -- every
@@ -6207,7 +6230,7 @@ def fit_fog_pixels(run):
             # illumination on. A shot with no fog in frame also cannot be the one
             # smuggling a fog fringe in, so an all-false mask is the right answer:
             # it simply never disqualifies that source.
-            if int(sel.sum()) >= 5000:
+            if int(sel.sum()) >= FOG_GAIN_MIN_PX:
                 s.gain = fog_illumination(s.warped, template, sel)
                 s.fogpix = fog_pixel_mask(s.warped, template, s.gain)
             else:
@@ -6398,11 +6421,12 @@ def promote_city_bars(run):
                     if len(seers) == 1:
                         seen_of[(ci, cj)] = seers[0]
 
-        # claim strength: 3 = detected bar, on tiles its bar can occupy;
-        # 2 = vision, same tiles; 1 = detected bar, rest of the block;
-        # 0 = vision, rest of the block. Strongest wins, sharpest breaks ties.
+        # tile -> (rank, claiming shot, whether a detected bar made the claim).
+        # Lowest rank wins; see the CLAIM_* strengths.
         claims = {}
-        for source, strong_w, weak_w in ((owner_of, 3, 1), (seen_of, 2, 0)):
+        for source, strong_w, weak_w, from_bar in (
+                (owner_of, CLAIM_BAR_STRONG, CLAIM_BAR_WEAK, True),
+                (seen_of, CLAIM_VISION_STRONG, CLAIM_VISION_WEAK, False)):
             for (ci, cj), n in source.items():
                 for di in (-1, 0, 1):
                     for dj in (-1, 0, 1):
@@ -6435,13 +6459,10 @@ def promote_city_bars(run):
                         d = max(abs(di), abs(dj))
                         full = 0 if capped_of.get((ci, cj), False) else 1
                         plate = plate_of.get((ci, cj), 0.0)
-                        best = claims.get(key)
-                        cand = (-w, full, -plate, d, shots[n].scale, n)
-                        if best is None or cand < (-best[0], best[1], -best[2],
-                                                   best[3], shots[best[4]].scale,
-                                                   best[4]):
-                            claims[key] = (w, full, plate, d, n)
-        for key, (w, _f, _p, _d, n) in claims.items():
+                        rank = (-w, full, -plate, d, shots[n].scale, n)
+                        if key not in claims or rank < claims[key][0]:
+                            claims[key] = (rank, n, from_bar)
+        for key, (_rank, n, from_bar) in claims.items():
             if key not in priority:
                 continue
             order, raw = priority[key]
@@ -6449,7 +6470,7 @@ def promote_city_bars(run):
                 continue
             priority[key] = ([n] + [m for m in order if m != n], raw)
             if winner.get(key) != n:
-                (bar_promoted if w >= 3 or (w == 1) else vision_promoted).append(key)
+                (bar_promoted if from_bar else vision_promoted).append(key)
             winner[key] = n
     run.bar_promoted = bar_promoted
     run.vision_promoted = vision_promoted
