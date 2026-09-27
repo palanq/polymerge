@@ -52,7 +52,7 @@ N must match the board or nothing works: the tile lattice period comes straight
 from it, and a wrong N puts every tile's fog art out of phase with the template,
 which makes the fog test call the whole board explored. That failure used to be
 silent. Three checks now catch it, in descending strength: the board-size check
-in main (span / fog period, owing nothing to N), --min-fog-lock, and the
+(check_board_size: span / fog period, owing nothing to N), --min-fog-lock, and the
 post-merge conflict fraction (CONFLICT_FRAC_SUSPECT) for a stated size the other
 two cannot reach.
 
@@ -207,7 +207,7 @@ def build_valid_mask(img, ui_rects, dark_thresh, erode_px, top_crop=0.0,
     # lightened it (see sky_mask), but it is not free: it also nibbles the
     # silhouette wherever the board's own rim is smooth, shifting a
     # weakly-supported board edge. See the sky_rebuild call site (below, in
-    # anchor_to_template) for why main only turns this on as a last resort,
+    # anchor_to_template) for why it is only turned on as a last resort,
     # and CLAUDE.md for the case where applying it unconditionally regressed
     # a set.
     if drop_sky:
@@ -1516,7 +1516,7 @@ SIFT_TERRAIN_MIN_INLIERS = 60
 
 # How far a shot may sit from where an anchored shot's SIFT geometry puts it and
 # still count as corroborated, when the per-image fog-lock guard would otherwise
-# drop it (see the drop site in main). In tiles, the same quantity --cross-check
+# drop it (see drop_misanchored). In tiles, the same quantity --cross-check
 # prints. Every set at its correct map size reports well under this, and the
 # failures it must still catch are far coarser -- a shot anchored a few percent
 # off is displaced by a few percent of the whole board -- so 0.20 sits clear.
@@ -1603,13 +1603,13 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
 
     Returns (affine, zoom_source, implied_n, prior). `prior` is the
     unrefined edge/fog-period transform, or None when the returned affine *is*
-    that prior because refinement was skipped. main keeps it so a refinement
-    that cannot prove itself on the shot's own fog can be undone -- see the
-    zero-lock block there. zoom_source is "edges" or
+    that prior because refinement was skipped. It is kept (Shot.prior) so a
+    refinement that cannot prove itself on the shot's own fog can be undone --
+    see fog_lock_guards. zoom_source is "edges" or
     "fog-period", so the caller can hold fog-period-anchored shots to the extra
     fog-lock check that their anchoring path warrants. implied_n is this shot's
     own independent estimate of the board size, or None -- see
-    BOARD_SPAN_WALL_TILES and the map-size check in main.
+    BOARD_SPAN_WALL_TILES and check_board_size.
 
     `top_crop`/`bottom_crop` must be the same values `mask` was already built
     with -- they change nothing about the mask here, only tell board_boundary
@@ -1774,7 +1774,7 @@ def anchor_to_template(img, mask, valid, hsv, tmpl_gray, t_off, dir_a, dir_b,
         # This shot spans the whole board in at least one direction, so it can
         # also *count* the tiles across it: measure the fog's repeat period in
         # its own pixels and divide. Costs one extra fog_period_scale (~0.2s)
-        # and is what catches a wrong --map-size (see main).
+        # and is what catches a wrong --map-size (see check_board_size).
         with PHASES("anchor: board-size check"):
             got = cache.period(label, img, valid, hsv, dir_a,
                                np.linalg.norm(u_col))
@@ -1992,7 +1992,7 @@ def tile_mask_bbox(origin, u_col, u_row, i, j, W, H, inset=0.0):
     """tile_poly + poly_mask_bbox in one call -- the mask and slice bounds for
     one tile's rhombus on the canvas, or None if it falls entirely outside it.
 
-    Four call sites in main built this by hand at inset 0.0 (the composite
+    Four call sites built this by hand at inset 0.0 (the composite
     paste, the provenance/explored debug overlays, and the per-tile fog-area
     scan), always with the same origin/u_col/u_row/W/H already in scope."""
     return poly_mask_bbox(tile_poly(origin, u_col, u_row, i, j, inset), W, H)
@@ -2302,7 +2302,7 @@ def load_ruin_sprite():
     """The flame as (bgr float, alpha 0..1) cropped to its alpha extent, or None.
 
     None is not an error to swallow: it means ruin detection cannot run at all,
-    and main reports NO-RUIN-SPRITE rather than quietly detecting nothing. There
+    and report() prints NO-RUIN-SPRITE rather than quietly detecting nothing. There
     is deliberately no fallback detector to degrade into: a second, unmeasured
     detector that runs only once something has already gone wrong degrades
     silently, which is worse than not running at all.
@@ -2809,7 +2809,8 @@ BAR_BOX_HALVES = (0.40, 0.62)
 # against the 50 confirmed cities in the ground-truth table: the minimum
 # Chebyshev separation is exactly 3 on every labeled set, never 1 or 2.
 #
-# Used as a contradiction when two detections land too close (see main). Using
+# Used as a contradiction when two detections land too close (see
+# promote_city_bars). Using
 # it the other way -- to skip scanning near a confident detection, since the
 # rule says nothing can be there -- was tried and is **not** worth it: measured
 # 0.44s against 0.46s on a 5-shot merge, which is noise. There is little to save
@@ -4283,7 +4284,7 @@ def template_path_for(n):
 #
 # Order matters and is bottom-up: shading is a wash and must go under the grid
 # rather than dull it; spawn zones and push arrows are content and sit on top.
-# Ruin markers are drawn after all of these (see main), so a marker is never
+# Ruin markers are drawn after all of these (see paste_composite), so a marker is never
 # dimmed by the shading it happens to land on.
 OVERLAY_LAYERS = (("shade", "shaded"),
                   ("grid", "gridded"),
@@ -4458,8 +4459,8 @@ def template_geometry(path, dark_thresh, erode_px):
 
 
 def output_crop(origin, u_col, u_row, n, W, Hc, pad=10):
-    """The exact pixel rectangle main() crops the canvas to before writing
-    the composite -- factored out of the tail of main() so --base's size
+    """The exact pixel rectangle paste_composite crops the canvas to before
+    writing the composite -- factored out of it so --base's size
     check and detection (base_output_size, below) can share the exact
     arithmetic that decides a finished composite's on-disk dimensions,
     rather than risk drifting from it."""
@@ -4537,7 +4538,7 @@ class ShotCache:
     common case and cannot cost the rest.
 
     A mask is not hashable and identity is not enough (`sky_rebuild` writes new
-    masks into main's dicts in place), so a generation counter per shot stands
+    masks into a Shot in place), so a generation counter per shot stands
     in for it and `invalidate` bumps it. Getting that wrong would be the one way
     this could return a stale answer, so it is the caller's single obligation:
     anything that replaces a shot's masks must invalidate."""
@@ -4573,7 +4574,7 @@ class ShotCache:
 
 
 class Shot:
-    """One screenshot: its image, masks, anchor and warp -- everything main
+    """One screenshot: its image, masks, anchor and warp -- everything the merge
     computes about it that is read more than once.
 
     valid/valid_raw/edge_mask/frame/frame_raw and hsv are built at
@@ -4592,7 +4593,7 @@ class Shot:
     construction (unless --no-badge-filter) but kept a separate method
     rather than folded into __init__: the badge is detected *from* valid,
     so it is not known until after the first mask build, and the caller
-    needs the blob list back to log and bookkeep it, which is main()'s
+    needs the blob list back to log and bookkeep it, which is load_inputs'
     business and not this object's. Both stay None on a shot with no
     capture badge; every shot still gets a Shot, badge or not, the same way
     badge_mask_of used to give every shot an entry.
@@ -4618,12 +4619,12 @@ class Shot:
     there is no caching topology to disturb by moving where the memo lives.
 
     sift_mask() and terrain_mask() are genuine methods rather than fields
-    filed in from main, and that split is deliberate: everything above needs
+    filed in from outside, and that split is deliberate: everything above needs
     something from the run (the template, the board lattice, an args
-    threshold) and so is computed by main and handed in, but these two need
+    threshold) and so is computed by the merge and handed in, but these two need
     nothing but the shot's own valid/edge_mask/hsv plus fixed constants of
     the game's projection (BOARD_DIR_A/BOARD_DIR_B, PIXEL_FOG_SAT) -- they
-    were only ever passed dir_a/dir_b as parameters because main happened to
+    were only ever passed dir_a/dir_b as parameters because main() happened to
     have local aliases for those constants lying around, not because the
     values are actually per-run. A method only belongs on Shot when the shot
     has everything it needs to compute the thing itself; these two are the
@@ -5013,7 +5014,343 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
 FOG_LOCK_NCC = 0.7
 
 
-def main():
+class Run:
+    """The state main()'s phases share, one attribute per cross-phase value.
+
+    Each phase reads what it needs off this and stores what later phases
+    need; see main() for the order. Attributes start as None (or empty) and
+    are filled in by the phase named beside them."""
+
+    def __init__(self, args, overlays):
+        self.args = args
+        self.overlays = overlays
+        # load_inputs
+        self.ui = self.shots = self.names = self.badge_found = None
+        self.base_bgr = None
+        # select_map_shots
+        self.all_names = None
+        # resolve_map_size
+        self.size_was_detected = None
+        self.shot_cache = None
+        # load_board
+        self.template_path = self.template = self.tmpl_gray = None
+        self.dir_a = self.dir_b = None
+        self.origin = self.u_col = self.u_row = None
+        self.t_corners = self.t_edge_off = self.tile_px = None
+        self.base_rect = None
+        self.W = self.Hc = self.N = None
+        # sample_tiles onward
+        self.samples = {}
+        self.fog_lock = None
+        self.size_unverified = False
+        self.player_of = {}
+        self.no_head_catalog = False
+        self.winner = self.priority = None
+        self.badge_fallback = self.fog_demoted = None
+        self.bar_promoted = self.vision_promoted = None
+        self.capped_of = {}
+        self.ruin_hits = {}
+        self.n_raw = 0
+        self.no_ruin_sprite = False
+        self.ruin_no_fog = []
+        self.conflicts = None
+        self.comparable = 0
+        self.out = None
+        self.thick = None
+        self.by_player = {}
+        self.crop = None
+
+
+def sky_rebuild_for(run, n):
+    """Rebuild one shot's masks with the sunrise-sky test.
+
+    Handed to anchor_to_template and called *lazily* -- only when that
+    shot's ordinary masks yield no usable board edge. A black-sky
+    screenshot therefore never builds these at all, which is why the
+    fallback costs the common case nothing.
+
+    It writes back into the Shot's own masks as well as returning,
+    because everything downstream -- the warp, tile sampling, SIFT --
+    has to see the same masks the anchor was fitted on."""
+    args, ui, shots = run.args, run.ui, run.shots
+    def rebuild():
+        shots[n].build_masks(args, ui.get(n, []), drop_sky=True)
+        return shots[n].edge_mask, shots[n].valid
+    return rebuild
+
+
+def anchor_all(run):
+    """Anchor every shot, in two passes: independently first, then a SIFT
+    zoom hint for whatever could not manage it alone.
+
+    Shared by --cross-check and the merge so the two cannot diverge --
+    they did once, and the symptom was cross-check reporting a set
+    unanchorable that the merge handled fine (pol_archi_test)."""
+    (args, names, shots, shot_cache, tmpl_gray, dir_a, dir_b, origin, u_col,
+     u_row, t_edge_off) = (
+        run.args, run.names, run.shots, run.shot_cache, run.tmpl_gray, run.dir_a,
+        run.dir_b, run.origin, run.u_col, run.u_row, run.t_edge_off)
+    M_of, src_of, implied_of, scale_of, failed = {}, {}, {}, {}, []
+    prior_of = {}
+
+    def _record(n, M, implied):
+        """File one shot's anchor into M_of/scale_of/implied_of. Run once
+        per shot in each of the two passes below."""
+        M_of[n] = M
+        scale_of[n] = float(np.hypot(M[0, 0], M[1, 0]))
+        if implied is not None:
+            implied_of[n] = implied
+
+    for n in names:
+        print(f"anchoring {n}:")
+        try:
+            s = shots[n]
+            M, src_of[n], implied, prior_of[n] = anchor_to_template(
+                s.img, s.edge_mask, s.valid, s.hsv, tmpl_gray, t_edge_off,
+                dir_a, dir_b, origin, u_col, u_row, args.map_size,
+                args.min_edge_support, n, refine=not args.no_refine,
+                min_scale_support=args.min_scale_support,
+                sky_rebuild=sky_rebuild_for(run, n), cache=shot_cache,
+                top_crop=args.top_crop, bottom_crop=args.bottom_crop)
+            _record(n, M, implied)
+        except SystemExit as e:
+            print(f"  no self-anchor: {e}")
+            failed.append(n)
+    if failed and M_of:
+        # Timed around the SIFT work only. The re-anchor below must stay
+        # *outside* this context: anchor_to_template opens phases of its
+        # own, and nesting them double-counts, which drives the report's
+        # "(unattributed)" line negative and makes the whole timing block
+        # untrustworthy.
+        with PHASES("anchor: SIFT zoom fallback"):
+            feats = {n: sift_features(shots[n].img, shots[n].sift_mask(), args.nfeatures,
+                                      args.contrast)
+                     for n in list(M_of) + failed}
+            hints = {}
+            for n in failed:
+                # Ranked by terrain inliers, and gated on them: a match
+                # made of fog is the failure this guards against, so the
+                # fog-borne inliers should neither elect a lender nor count
+                # toward the bar. See SIFT_TERRAIN_MIN_INLIERS.
+                best = (0, 0, None, None)
+                for m in M_of:
+                    M_nm, inl, terr = pair_transform(
+                        *feats[n], *feats[m], args.ratio, args.reproj,
+                        terrain=(shots[n].terrain_mask(), shots[m].terrain_mask()))
+                    if M_nm is not None and terr > best[0]:
+                        best = (terr, inl, m, M_nm)
+                hints[n] = best
+        for n in list(failed):
+            print(f"re-anchoring {n} from an already-anchored shot:")
+            terr, inl, m, M_nm = hints[n]
+            if terr < SIFT_TERRAIN_MIN_INLIERS:
+                print(f"  dropped -- best SIFT match has only {terr} "
+                      f"inliers on terrain (need "
+                      f"{SIFT_TERRAIN_MIN_INLIERS}; {inl} counting fog)")
+                continue
+            k = float(np.hypot(M_nm[0, 0], M_nm[1, 0]))
+            print(f"  {inl} SIFT inliers against {m}, {terr} of them on "
+                  f"terrain (relative scale {k:.4f})")
+            # m's anchor composed with the hop onto m is a complete
+            # image-n -> template transform. Its scale is what zoom_hint
+            # has always been; its *translation* is what anchor_to_template
+            # falls back on for a direction with no board edge in frame.
+            # Pass both, so the borrowed offset is measured at the same zoom
+            # it is used at -- see pan_hint in anchor_to_template.
+            borrowed = (to_h(M_of[m]) @ to_h(M_nm))[:2]
+            try:
+                s = shots[n]
+                M, src_of[n], implied, prior_of[n] = anchor_to_template(
+                    s.img, s.edge_mask, s.valid, s.hsv, tmpl_gray,
+                    t_edge_off, dir_a, dir_b, origin, u_col, u_row,
+                    args.map_size, args.min_edge_support, n,
+                    refine=not args.no_refine,
+                    min_scale_support=args.min_scale_support,
+                    # M_nm maps n's pixels to m's, so 1 n-px = k m-px,
+                    # and m's own anchor converts those to template px
+                    zoom_hint=scale_of[m] * k,
+                    sky_rebuild=sky_rebuild_for(run, n),
+                    pan_hint=borrowed, cache=shot_cache,
+                    top_crop=args.top_crop, bottom_crop=args.bottom_crop)
+                _record(n, M, implied)
+                failed.remove(n)
+            except SystemExit as e:
+                print(f"  dropped -- {e}")
+    return M_of, src_of, implied_of, prior_of
+
+
+def warp_shot(run, n):
+    """Put one shot on the canvas, in all four mask flavors. Factored out
+    so a shot whose anchor is revised later (the SIFT pan borrow below) can
+    be redone on its own rather than re-running the whole phase."""
+    shots, W, Hc = run.shots, run.W, run.Hc
+    s = shots[n]
+    Mn = s.to_template
+    s.warped = cv2.warpAffine(s.img, Mn[:2], (W, Hc), flags=cv2.INTER_LANCZOS4)
+    s.wmask = cv2.warpAffine(s.valid, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
+    s.wmask_raw = cv2.warpAffine(s.valid_raw, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
+    s.pmask = cv2.warpAffine(s.frame, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
+    s.pmask_raw = cv2.warpAffine(s.frame_raw, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
+    s.scale = float(np.hypot(Mn[0, 0], Mn[1, 0]))
+
+
+def sample_shot(run, n):
+    """Classify every tile for one shot, replacing whatever it said before."""
+    args, shots, tmpl_gray, origin, u_col, u_row, N, samples = (
+        run.args, run.shots, run.tmpl_gray, run.origin, run.u_col, run.u_row,
+        run.N, run.samples)
+    shot = shots[n]
+    for i in range(N):
+        for j in range(N):
+            s = sample_tile(shot.warped, shot.wmask, tmpl_gray,
+                            tile_poly(origin, u_col, u_row, i, j,
+                                      args.tile_inset),
+                            args.fog_ncc, args.min_valid_frac,
+                            wedge_poly=tile_top_wedge(origin, u_col, u_row,
+                                                      i, j),
+                            fog_wedge_ncc=args.fog_wedge_ncc)
+            per = samples.setdefault((i, j), {})
+            per.pop(n, None)
+            if s is not None:
+                per[n] = s
+
+
+# Fog art is a fixed render, so a correctly anchored shot lands a large
+# number of its fog tiles almost exactly on the template's -- NCC 0.95+,
+# with the explored ones down near 0.0 and very little in between. When the
+# tile lattice is wrong the whole distribution collapses into a blob around
+# 0.0 instead, nothing locks, and every tile gets called explored: the
+# composite then looks plausible but is really each source's fog pasted
+# over every other source's terrain. Measured across the then-four test
+# sets, the best-locking shot in a run scores 105-211 locked tiles when
+# --map-size is right and 2-4 when it is wrong, so this separates them with
+# room to spare. It is a whole-run check because a single shot can honestly
+# have almost no fog in frame (a zoomed-in view of explored territory:
+# test_ss_2/cym1.jpg locks only 15 tiles and is anchored correctly).
+def locked(run, n):
+    samples = run.samples
+    return sum(1 for s in samples.values()
+               if s.get(n, {}).get("fog_ncc", 0.0) >= FOG_LOCK_NCC)
+
+
+def sift_hops(run, n, witnesses):
+    """Where each anchored shot's SIFT geometry says n belongs.
+
+    One (inliers, m, anchor implied for n, gap from n's own anchor in
+    tiles) per witness that matches well enough, best-matching first. The
+    gap is exactly --cross-check's measurement: hop template -> n -> m ->
+    template and see how far you land from where you started.
+
+    Features are cached on the Shot because both callers below can want
+    the same shot, and neither runs on an ordinary merge. Deliberately its
+    own cache rather than sharing anchor_all's separate feats dict: that
+    one is local to a fallback pass that never overlaps this one in a
+    single run, and the two must not start deduping into each other on a
+    path CLAUDE.md notes the corpus does not exercise."""
+    args, shots, t_corners, tile_px = (
+        run.args, run.shots, run.t_corners, run.tile_px)
+    with PHASES("SIFT anchor hop"):
+        for m in witnesses + [n]:
+            s = shots[m]
+            if s.sift_features is None:
+                s.sift_features = sift_features(s.img, s.sift_mask(),
+                                                args.nfeatures, args.contrast)
+        out = []
+        for m in witnesses:
+            M_nm, inl, terr = pair_transform(
+                *shots[n].sift_features, *shots[m].sift_features,
+                args.ratio, args.reproj,
+                terrain=(shots[n].terrain_mask(), shots[m].terrain_mask()))
+            if M_nm is None or terr < SIFT_TERRAIN_MIN_INLIERS:
+                continue
+            A = shots[m].to_template @ to_h(M_nm)   # n's pixels -> template
+            via = A @ np.linalg.inv(shots[n].to_template)
+            got = cv2.transform(np.float32(t_corners).reshape(-1, 1, 2),
+                                via[:2]).reshape(-1, 2)
+            gap = float(np.max(np.linalg.norm(
+                got - np.float32(t_corners), axis=1))) / tile_px
+            out.append((inl, m, A, gap))
+        return sorted(out, key=lambda r: -r[0])
+
+
+def corroborate_anchor(run, n, witnesses):
+    """Is n's anchor confirmed by an already-anchored shot's SIFT geometry?
+
+    Both bars have to be cleared, and they guard different failures: the
+    terrain-inlier floor (SIFT_TERRAIN_MIN_INLIERS, applied inside
+    sift_hops) rejects fog matching the wrong repeat of itself -- the
+    confident, high-scoring, badly wrong match -- and the gap bar rejects a
+    genuine match that simply disagrees. Returns a phrase describing the
+    evidence, or None.
+
+    *Some* anchored shot has to agree, not the best-matching one: sift_hops
+    ranks by inlier count, and inlier count is not what decides here (the
+    same reasoning as the anchor borrow above -- a near-identical view of
+    the same player's own board out-matches every other shot whether or not
+    it is anchored well). So every hop that cleared the inlier floor gets
+    to corroborate, and the first that also agrees is enough."""
+    for inl, m, _A, gap in sift_hops(run, n, witnesses):
+        if gap <= MISANCHOR_CORROBORATE_MAX_TILES:
+            return (f"sits {gap:.3f} tiles from where {m}'s SIFT geometry "
+                    f"puts it, on {inl} inliers")
+    return None
+
+
+def tile_predicate_mask(run, n, keep, inset=0.0):
+    """Boolean canvas of every tile whose sample for n satisfies `keep`.
+
+    Two phases use it -- the fog-lock mask that picks a
+    shot's illumination-fitting tiles below, and the fog-area mask that
+    picks a shot's own-witnessed-fog tiles for ruin detection -- differing
+    only in `keep` and the inset."""
+    origin, u_col, u_row, W, Hc, samples = (
+        run.origin, run.u_col, run.u_row, run.W, run.Hc, run.samples)
+    canvas = np.zeros((Hc, W), bool)
+    for (i, j), per in samples.items():
+        s = per.get(n)
+        if s is None or not keep(s):
+            continue
+        r = tile_mask_bbox(origin, u_col, u_row, i, j, W, Hc, inset)
+        if r is None:
+            continue
+        m, (x0, y0, x1, y1) = r
+        canvas[y0:y1, x0:x1] |= (m > 0)
+    return canvas
+
+
+def rank(run, cands, key):
+    """Eligible sources, best first: least fog on the tile, then sharpest.
+
+    Sharpness is *ascending* shot.scale. Mind the direction: scale is the
+    factor that blows a shot up to template size, so the smallest value is
+    the shot that already had the most of its own pixels on the tile. The
+    zoomed-out shots are the ones being upscaled, so they have fewer
+    source pixels per tile. (City UI scales with board zoom, so it is not
+    a further penalty -- see CLAUDE.md.)
+
+    Fog evidence outranks sharpness, because a sharp shot that cannot
+    actually see the tile is worse than a blurry one that can. Sources
+    carrying clearly more fog than the best available are pushed to the
+    back rather than dropped, so they can still fill pixels no cleaner
+    source photographed -- the same reasoning as the badge fallback below.
+    The margin is well clear of ordinary disagreement: across test_ss_3's
+    186 multi-source tiles the fog-fraction spread between co-eligible
+    sources is a median 0.001 and a 95th percentile of 0.019."""
+    args, shots, origin, u_col, u_row, W, Hc = (
+        run.args, run.shots, run.origin, run.u_col, run.u_row, run.W, run.Hc)
+    poly = tile_poly(origin, u_col, u_row, key[0], key[1], 0.0)
+    frac = {n: (tile_fog_fraction(shots[n].fogpix, shots[n].wmask, poly, W, Hc) or 0.0)
+            for n in cands}
+    lo = min(frac.values())
+    clean = sorted([n for n in cands if frac[n] <= lo + args.fog_frac_margin],
+                   key=lambda n: shots[n].scale)
+    foggy = sorted([n for n in cands if frac[n] > lo + args.fog_frac_margin],
+                   key=lambda n: shots[n].scale)
+    return clean + foggy, len(foggy)
+
+
+def parse_args():
+    """The command line, with the one check that needs argparse's own error."""
     ap = argparse.ArgumentParser()
     ap.add_argument("images", nargs="*",
                     help="screenshots to merge. May be omitted entirely when "
@@ -5181,7 +5518,11 @@ def main():
     if not args.images and not args.base:
         ap.error("no screenshots given, and no --base to update either -- "
                  "nothing to merge")
+    return args
 
+
+def resolve_overlays(args):
+    """The --overlays set, defaulted and validated."""
     if args.overlays is None:
         # --base's own default is "none", not OVERLAY_DEFAULT ("shade"),
         # simply so an update run stays a quiet continuation of the prior
@@ -5205,7 +5546,7 @@ def main():
     # instead of after the ~20s of work that produced the composite.
     # `vision`/`vision-each` are not in OVERLAY_LAYERS -- neither has an
     # Overlays/ file, so neither is ever handed to paint_overlays; both are
-    # drawn/written by their own code in main().
+    # drawn/written by paste_composite and write_vision_each.
     known = {name for name, _ in OVERLAY_LAYERS} | {"vision", "vision-each"}
     overlays = {p.strip().lower() for p in args.overlays.split(",") if p.strip()}
     overlays.discard("none")
@@ -5214,7 +5555,12 @@ def main():
         raise SystemExit(
             f"unknown overlay(s): {', '.join(sorted(unknown))}. "
             f"Choose from {', '.join(sorted(known))}, or 'none'.")
+    return overlays
 
+
+def load_inputs(run):
+    """Read every screenshot into a Shot, and the --base image."""
+    args = run.args
     with PHASES("load images + masks + badges"):
         ui = {}
         if args.ui_mask:
@@ -5253,7 +5599,16 @@ def main():
         base_bgr = cv2.imread(args.base) if args.base else None
         if args.base and base_bgr is None:
             raise SystemExit("cannot read --base image -- it appears invalid")
+    run.ui = ui
+    run.names = names
+    run.shots = shots
+    run.badge_found = badge_found
+    run.base_bgr = base_bgr
 
+
+def select_map_shots(run):
+    """Drop menu screenshots, then apply --max-shots and --single."""
+    args, names, shots = run.args, run.names, run.shots
     # A score screen is a menu drawn over a dimmed copy of the map, and it
     # anchors well enough to poison a merge (see board_angle_fraction). Dropped
     # here, before anything else looks at these shots -- in particular before
@@ -5278,7 +5633,7 @@ def main():
         # Guarded on all_names, not just "not names": a --base-only run with
         # no new screenshots at all starts with names already empty, and that
         # is not a menu-screen refusal -- see the "no screenshots given" check
-        # near the top of main.
+        # in parse_args.
         #
         # Cause and remedy on the one line, as every refusal here does: polybot
         # promotes only the first line to the channel. No mention of edge angles
@@ -5301,7 +5656,12 @@ def main():
                          f"with fewer.")
     if args.single and len(names) != 1:
         raise SystemExit(f"--single takes exactly one image, got {len(names)}")
+    run.all_names = all_names
 
+
+def resolve_map_size(run):
+    """Settle args.map_size: stated, read off --base, or measured."""
+    args, names, shots, base_bgr = run.args, run.names, run.shots, run.base_bgr
     # Only when the caller omitted it: an explicit --map-size is always obeyed,
     # so this can never override a size someone actually meant. A --base image
     # answers this on its own terms (its pixel dimensions name the board
@@ -5332,7 +5692,7 @@ def main():
     elif size_was_detected:
         # detect_map_size takes plain per-shot dicts rather than Shot objects,
         # since shoreline/polyshore.py calls it directly too -- this adapts
-        # main's shots without spending that boundary on this refactor.
+        # the Shots without spending that boundary on this refactor.
         args.map_size = detect_map_size(
             names, {n: s.img for n, s in shots.items()},
             {n: s.edge_mask for n, s in shots.items()},
@@ -5343,7 +5703,13 @@ def main():
             erode_px=args.erode_px,
             cache=shot_cache,
             top_crop=args.top_crop, bottom_crop=args.bottom_crop)
+    run.size_was_detected = size_was_detected
+    run.shot_cache = shot_cache
 
+
+def load_board(run):
+    """Load the template and derive the board lattice from it."""
+    args, base_bgr = run.args, run.base_bgr
     template_path = args.template or template_path_for(args.map_size)
     tgeom = template_geometry(template_path, args.dark_thresh, args.erode_px)
     template = tgeom["bgr"] if tgeom else None
@@ -5389,137 +5755,54 @@ def main():
                 f"output at this size.")
         base_rect = (x0c, y0c, x1c, y1c)
 
-    def sky_rebuild_for(n):
-        """Rebuild one shot's masks with the sunrise-sky test.
+    # The composite is built in the template's own frame, so the canvas *is*
+    # the template. These were two pairs of names for one size back when the
+    # canvas was a computed union of wherever the shots landed.
+    W, Hc = template.shape[1], template.shape[0]
+    N = args.map_size
+    run.template_path = template_path
+    run.template = template
+    run.tmpl_gray = tmpl_gray
+    run.dir_a = dir_a
+    run.dir_b = dir_b
+    run.origin = origin
+    run.u_col = u_col
+    run.u_row = u_row
+    run.t_corners = t_corners
+    run.t_edge_off = t_edge_off
+    run.tile_px = tile_px
+    run.base_rect = base_rect
+    run.W = W
+    run.Hc = Hc
+    run.N = N
 
-        Handed to anchor_to_template and called *lazily* -- only when that
-        shot's ordinary masks yield no usable board edge. A black-sky
-        screenshot therefore never builds these at all, which is why the
-        fallback costs the common case nothing.
 
-        It writes back into the Shot's own masks as well as returning,
-        because everything downstream -- the warp, tile sampling, SIFT --
-        has to see the same masks the anchor was fitted on."""
-        def rebuild():
-            shots[n].build_masks(args, ui.get(n, []), drop_sky=True)
-            return shots[n].edge_mask, shots[n].valid
-        return rebuild
+def run_cross_check(run):
+    """--cross-check: report anchors against SIFT geometry, and stop."""
+    args, names, shots, t_corners, tile_px = (
+        run.args, run.names, run.shots, run.t_corners, run.tile_px)
+    anchors = anchor_all(run)[0]
+    feats = {n: sift_features(shots[n].img, shots[n].sift_mask(), args.nfeatures, args.contrast)
+             for n in names}
+    sift_edges = {(a, b): pair_transform(*feats[a], *feats[b], args.ratio,
+                                         args.reproj)
+                  for a, b in itertools.combinations(names, 2)}
+    print(f"\nindependent anchors vs SIFT relative geometry "
+          f"({len(anchors)}/{len(names)} shots anchorable):")
+    rows = cross_check(anchors, sift_edges, t_corners, tile_px)
+    if not rows:
+        raise SystemExit("no pair has both an anchor and a SIFT transform")
+    for a, b, n_inl, err, tiles in rows:
+        flag = "" if tiles < 0.10 else "   <-- ANCHORS DISAGREE"
+        print(f"  {a[:30]:30s} vs {b[:30]:30s} inliers={n_inl:5d} "
+              f"corner gap={err:7.1f}px = {tiles:.3f} tiles{flag}")
+    worst = max(r[4] for r in rows)
+    print(f"\nworst disagreement: {worst:.3f} tiles")
 
-    def anchor_all():
-        """Anchor every shot, in two passes: independently first, then a SIFT
-        zoom hint for whatever could not manage it alone.
 
-        Shared by --cross-check and the merge so the two cannot diverge --
-        they did once, and the symptom was cross-check reporting a set
-        unanchorable that the merge handled fine (pol_archi_test)."""
-        M_of, src_of, implied_of, scale_of, failed = {}, {}, {}, {}, []
-        prior_of = {}
-
-        def _record(n, M, implied):
-            """File one shot's anchor into M_of/scale_of/implied_of. Run once
-            per shot in each of the two passes below."""
-            M_of[n] = M
-            scale_of[n] = float(np.hypot(M[0, 0], M[1, 0]))
-            if implied is not None:
-                implied_of[n] = implied
-
-        for n in names:
-            print(f"anchoring {n}:")
-            try:
-                s = shots[n]
-                M, src_of[n], implied, prior_of[n] = anchor_to_template(
-                    s.img, s.edge_mask, s.valid, s.hsv, tmpl_gray, t_edge_off,
-                    dir_a, dir_b, origin, u_col, u_row, args.map_size,
-                    args.min_edge_support, n, refine=not args.no_refine,
-                    min_scale_support=args.min_scale_support,
-                    sky_rebuild=sky_rebuild_for(n), cache=shot_cache,
-                    top_crop=args.top_crop, bottom_crop=args.bottom_crop)
-                _record(n, M, implied)
-            except SystemExit as e:
-                print(f"  no self-anchor: {e}")
-                failed.append(n)
-        if failed and M_of:
-            # Timed around the SIFT work only. The re-anchor below must stay
-            # *outside* this context: anchor_to_template opens phases of its
-            # own, and nesting them double-counts, which drives the report's
-            # "(unattributed)" line negative and makes the whole timing block
-            # untrustworthy.
-            with PHASES("anchor: SIFT zoom fallback"):
-                feats = {n: sift_features(shots[n].img, shots[n].sift_mask(), args.nfeatures,
-                                          args.contrast)
-                         for n in list(M_of) + failed}
-                hints = {}
-                for n in failed:
-                    # Ranked by terrain inliers, and gated on them: a match
-                    # made of fog is the failure this guards against, so the
-                    # fog-borne inliers should neither elect a lender nor count
-                    # toward the bar. See SIFT_TERRAIN_MIN_INLIERS.
-                    best = (0, 0, None, None)
-                    for m in M_of:
-                        M_nm, inl, terr = pair_transform(
-                            *feats[n], *feats[m], args.ratio, args.reproj,
-                            terrain=(shots[n].terrain_mask(), shots[m].terrain_mask()))
-                        if M_nm is not None and terr > best[0]:
-                            best = (terr, inl, m, M_nm)
-                    hints[n] = best
-            for n in list(failed):
-                print(f"re-anchoring {n} from an already-anchored shot:")
-                terr, inl, m, M_nm = hints[n]
-                if terr < SIFT_TERRAIN_MIN_INLIERS:
-                    print(f"  dropped -- best SIFT match has only {terr} "
-                          f"inliers on terrain (need "
-                          f"{SIFT_TERRAIN_MIN_INLIERS}; {inl} counting fog)")
-                    continue
-                k = float(np.hypot(M_nm[0, 0], M_nm[1, 0]))
-                print(f"  {inl} SIFT inliers against {m}, {terr} of them on "
-                      f"terrain (relative scale {k:.4f})")
-                # m's anchor composed with the hop onto m is a complete
-                # image-n -> template transform. Its scale is what zoom_hint
-                # has always been; its *translation* is what anchor_to_template
-                # falls back on for a direction with no board edge in frame.
-                # Pass both, so the borrowed offset is measured at the same zoom
-                # it is used at -- see pan_hint in anchor_to_template.
-                borrowed = (to_h(M_of[m]) @ to_h(M_nm))[:2]
-                try:
-                    s = shots[n]
-                    M, src_of[n], implied, prior_of[n] = anchor_to_template(
-                        s.img, s.edge_mask, s.valid, s.hsv, tmpl_gray,
-                        t_edge_off, dir_a, dir_b, origin, u_col, u_row,
-                        args.map_size, args.min_edge_support, n,
-                        refine=not args.no_refine,
-                        min_scale_support=args.min_scale_support,
-                        # M_nm maps n's pixels to m's, so 1 n-px = k m-px,
-                        # and m's own anchor converts those to template px
-                        zoom_hint=scale_of[m] * k,
-                        sky_rebuild=sky_rebuild_for(n),
-                        pan_hint=borrowed, cache=shot_cache,
-                        top_crop=args.top_crop, bottom_crop=args.bottom_crop)
-                    _record(n, M, implied)
-                    failed.remove(n)
-                except SystemExit as e:
-                    print(f"  dropped -- {e}")
-        return M_of, src_of, implied_of, prior_of
-
-    if args.cross_check:
-        anchors = anchor_all()[0]
-        feats = {n: sift_features(shots[n].img, shots[n].sift_mask(), args.nfeatures, args.contrast)
-                 for n in names}
-        sift_edges = {(a, b): pair_transform(*feats[a], *feats[b], args.ratio,
-                                             args.reproj)
-                      for a, b in itertools.combinations(names, 2)}
-        print(f"\nindependent anchors vs SIFT relative geometry "
-              f"({len(anchors)}/{len(names)} shots anchorable):")
-        rows = cross_check(anchors, sift_edges, t_corners, tile_px)
-        if not rows:
-            raise SystemExit("no pair has both an anchor and a SIFT transform")
-        for a, b, n_inl, err, tiles in rows:
-            flag = "" if tiles < 0.10 else "   <-- ANCHORS DISAGREE"
-            print(f"  {a[:30]:30s} vs {b[:30]:30s} inliers={n_inl:5d} "
-                  f"corner gap={err:7.1f}px = {tiles:.3f} tiles{flag}")
-        worst = max(r[4] for r in rows)
-        print(f"\nworst disagreement: {worst:.3f} tiles")
-        return
-
+def adopt_anchors(run):
+    """Anchor every shot and file the results onto the Shots."""
+    names, all_names, shots = run.names, run.all_names, run.shots
     # Every image is anchored to the template independently -- zoom from its own
     # fog artwork, pan from its own board edges (anchor_to_template) -- and never
     # against each other. Registering the shots to one another first and
@@ -5528,7 +5811,7 @@ def main():
     # has no precision check that can fail (see cross_check's docstring).
     # Per-image anchoring gives each shot its own independent failure mode,
     # which --cross-check verifies shot-by-shot against SIFT's geometry.
-    M_of, src_of, implied_of, prior_M_of = anchor_all()
+    M_of, src_of, implied_of, prior_M_of = anchor_all(run)
     # Filed onto each Shot rather than kept as parallel dicts: to_template is
     # revised in place later (the zero-lock revert, the SIFT pan/zoom borrow),
     # the same pattern build_masks already uses for a shot's masks. Same
@@ -5566,7 +5849,12 @@ def main():
         print(f"DROPPED {len(dropped_names)}/{len(all_names)}: "
               + ", ".join(dropped_names))
     names = [n for n in names if shots[n].to_template is not None]
+    run.names = names
 
+
+def identify_players(run):
+    """--overlays vision/vision-each: who took each shot."""
+    overlays, names, shots = run.overlays, run.names, run.shots
     # Identifying a shot's player needs nothing but its own raw pixels -- no
     # anchor, no board size -- so it could run before any of the above. It
     # runs here instead, once `names` is final, so a dropped shot (which
@@ -5644,7 +5932,14 @@ def main():
                         player_of[n] = best
             for n in names:
                 player_of.setdefault(n, None)
+    run.player_of = player_of
+    run.no_head_catalog = no_head_catalog
 
+
+def check_board_size(run):
+    """Refuse a stated size the shots' own tile count contradicts."""
+    args, shots, size_was_detected = (
+        run.args, run.shots, run.size_was_detected)
     # Any shot spanning the whole board counts the tiles across it directly
     # (span / fog repeat period), which is an estimate of the board size owing
     # nothing to --map-size. This is the guard that --min-fog-lock alone cannot
@@ -5681,46 +5976,13 @@ def main():
                 f"{args.map_size}x{args.map_size}. Please retry with size "
                 f"{got} or without a size.")
 
-    # The composite is built in the template's own frame, so the canvas *is*
-    # the template. These were two pairs of names for one size back when the
-    # canvas was a computed union of wherever the shots landed.
-    W, Hc = template.shape[1], template.shape[0]
-    N = args.map_size
-    samples = {}
 
-    def warp_shot(n):
-        """Put one shot on the canvas, in all four mask flavors. Factored out
-        so a shot whose anchor is revised later (the SIFT pan borrow below) can
-        be redone on its own rather than re-running the whole phase."""
-        s = shots[n]
-        Mn = s.to_template
-        s.warped = cv2.warpAffine(s.img, Mn[:2], (W, Hc), flags=cv2.INTER_LANCZOS4)
-        s.wmask = cv2.warpAffine(s.valid, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
-        s.wmask_raw = cv2.warpAffine(s.valid_raw, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
-        s.pmask = cv2.warpAffine(s.frame, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
-        s.pmask_raw = cv2.warpAffine(s.frame_raw, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
-        s.scale = float(np.hypot(Mn[0, 0], Mn[1, 0]))
-
-    def sample_shot(n):
-        """Classify every tile for one shot, replacing whatever it said before."""
-        shot = shots[n]
-        for i in range(N):
-            for j in range(N):
-                s = sample_tile(shot.warped, shot.wmask, tmpl_gray,
-                                tile_poly(origin, u_col, u_row, i, j,
-                                          args.tile_inset),
-                                args.fog_ncc, args.min_valid_frac,
-                                wedge_poly=tile_top_wedge(origin, u_col, u_row,
-                                                          i, j),
-                                fog_wedge_ncc=args.fog_wedge_ncc)
-                per = samples.setdefault((i, j), {})
-                per.pop(n, None)
-                if s is not None:
-                    per[n] = s
-
+def sample_tiles(run):
+    """Warp every shot onto the canvas and classify every tile."""
+    names, W, Hc, N, samples = run.names, run.W, run.Hc, run.N, run.samples
     with PHASES("warp to canvas"):
         for n in names:
-            warp_shot(n)
+            warp_shot(run, n)
         print(f"canvas: {W} x {Hc} (template)")
 
     with PHASES("tile sampling"):
@@ -5728,25 +5990,14 @@ def main():
             for j in range(N):
                 samples[(i, j)] = {}
         for n in names:
-            sample_shot(n)
+            sample_shot(run, n)
 
-    # Fog art is a fixed render, so a correctly anchored shot lands a large
-    # number of its fog tiles almost exactly on the template's -- NCC 0.95+,
-    # with the explored ones down near 0.0 and very little in between. When the
-    # tile lattice is wrong the whole distribution collapses into a blob around
-    # 0.0 instead, nothing locks, and every tile gets called explored: the
-    # composite then looks plausible but is really each source's fog pasted
-    # over every other source's terrain. Measured across the then-four test
-    # sets, the best-locking shot in a run scores 105-211 locked tiles when
-    # --map-size is right and 2-4 when it is wrong, so this separates them with
-    # room to spare. It is a whole-run check because a single shot can honestly
-    # have almost no fog in frame (a zoomed-in view of explored territory:
-    # test_ss_2/cym1.jpg locks only 15 tiles and is anchored correctly).
-    def locked(n):
-        return sum(1 for s in samples.values()
-                   if s.get(n, {}).get("fog_ncc", 0.0) >= FOG_LOCK_NCC)
 
-    fog_lock = {n: locked(n) for n in names}
+def fog_lock_guards(run):
+    """Count fog lock, undo fog-blind refinements, and apply --min-fog-lock."""
+    args, names, shots, size_was_detected, N = (
+        run.args, run.names, run.shots, run.size_was_detected, run.N)
+    fog_lock = {n: locked(run, n) for n in names}
     # A refinement that locked nothing had nothing to refine against.
     # joint_register scores candidates by fog alignment, so with no fog in frame
     # it is walking to the argmax of noise rather than refining -- the same
@@ -5767,9 +6018,9 @@ def main():
     # to pass 0 to reach here at all.
     for n in [n for n in names if not fog_lock[n] and shots[n].prior is not None]:
         shots[n].to_template = shots[n].prior
-        warp_shot(n)
-        sample_shot(n)
-        fog_lock[n] = locked(n)
+        warp_shot(run, n)
+        sample_shot(run, n)
+        fog_lock[n] = locked(run, n)
         print(f"  {n}: refining it locked no fog, so its edge anchor stands "
               f"unrefined (that prior locks {fog_lock[n]})")
     print("\nfog lock (tiles matching the template's fog art at NCC >= "
@@ -5817,60 +6068,14 @@ def main():
               f"there is none to compare. If the board really has no fog left "
               f"(a replay, or a finished game) that is expected; otherwise "
               f"check the size.")
+    run.fog_lock = fog_lock
+    run.size_unverified = size_unverified
 
-    # Per-image counterpart of the run-level guard, applicable only to shots
-    # whose zoom came from the fog-period fallback. That fallback measures zoom
-    # on a large expanse of the shot's own fog, so if none of its tiles then
-    # lock onto the template's fog art, the anchor is wrong -- and a
-    # misanchored shot calls its own fog "explored" and pastes it over every
-    # other source's terrain. Dropping it keeps the rest of the merge alive.
-    #
-    # That premise is not airtight: the whole board is periodic at the tile
-    # step, not just the fog, so a shot with almost no fog in frame can measure
-    # a correct period off crop fields and tile borders and still lock nothing
-    # (star_change/oum.png -- see CLAUDE.md). Such a shot is perfectly
-    # mergeable, so before dropping it, ask for a second opinion that owes
-    # nothing to fog: SIFT against a shot that anchored on its own. This can
-    # only ever *save* a shot, never drop one that would have survived -- a
-    # spurious SIFT match (fog matching fog) fails the inlier floor or the
-    # agreement bar and leaves the drop exactly as it was.
-    def sift_hops(n, witnesses):
-        """Where each anchored shot's SIFT geometry says n belongs.
 
-        One (inliers, m, anchor implied for n, gap from n's own anchor in
-        tiles) per witness that matches well enough, best-matching first. The
-        gap is exactly --cross-check's measurement: hop template -> n -> m ->
-        template and see how far you land from where you started.
-
-        Features are cached on the Shot because both callers below can want
-        the same shot, and neither runs on an ordinary merge. Deliberately its
-        own cache rather than sharing anchor_all's separate feats dict: that
-        one is local to a fallback pass that never overlaps this one in a
-        single run, and the two must not start deduping into each other on a
-        path CLAUDE.md notes the corpus does not exercise."""
-        with PHASES("SIFT anchor hop"):
-            for m in witnesses + [n]:
-                s = shots[m]
-                if s.sift_features is None:
-                    s.sift_features = sift_features(s.img, s.sift_mask(),
-                                                    args.nfeatures, args.contrast)
-            out = []
-            for m in witnesses:
-                M_nm, inl, terr = pair_transform(
-                    *shots[n].sift_features, *shots[m].sift_features,
-                    args.ratio, args.reproj,
-                    terrain=(shots[n].terrain_mask(), shots[m].terrain_mask()))
-                if M_nm is None or terr < SIFT_TERRAIN_MIN_INLIERS:
-                    continue
-                A = shots[m].to_template @ to_h(M_nm)   # n's pixels -> template
-                via = A @ np.linalg.inv(shots[n].to_template)
-                got = cv2.transform(np.float32(t_corners).reshape(-1, 1, 2),
-                                    via[:2]).reshape(-1, 2)
-                gap = float(np.max(np.linalg.norm(
-                    got - np.float32(t_corners), axis=1))) / tile_px
-                out.append((inl, m, A, gap))
-            return sorted(out, key=lambda r: -r[0])
-
+def borrow_anchors(run):
+    """Give a shot with no fog lock a lender's anchor, if its own fog agrees."""
+    args, names, shots, fog_lock = (
+        run.args, run.names, run.shots, run.fog_lock)
     # A shot with *no* fog locked has had no say in its own refinement:
     # joint_register scores candidates by fog alignment, so with nothing to
     # align it keeps the edge-derived prior, bias and all. For such a shot
@@ -5899,11 +6104,11 @@ def main():
         lenders = [m for m in names if fog_lock[m] >= args.min_fog_lock]
         for n in [n for n in names if fog_lock[n] == 0]:
             keep_M, keep_lock, best = shots[n].to_template, fog_lock[n], None
-            for inl, m, A, gap in sift_hops(n, lenders):
+            for inl, m, A, gap in sift_hops(run, n, lenders):
                 shots[n].to_template = A
-                warp_shot(n)
-                sample_shot(n)
-                lock = locked(n)
+                warp_shot(run, n)
+                sample_shot(run, n)
+                lock = locked(run, n)
                 print(f"    {n} anchored from {m} ({inl} SIFT inliers, moves "
                       f"{gap:.3f} tiles) locks {lock} fog tiles")
                 if best is None or lock > best[0]:
@@ -5912,8 +6117,8 @@ def main():
                 continue
             lock, m, A, inl, gap = best
             shots[n].to_template = A if lock > keep_lock else keep_M
-            warp_shot(n)
-            sample_shot(n)
+            warp_shot(run, n)
+            sample_shot(run, n)
             if lock > keep_lock:
                 fog_lock[n] = lock
                 print(f"  re-anchored {n} from {m}'s SIFT geometry ({inl} "
@@ -5921,34 +6126,33 @@ def main():
                       f"its own, so its refinement had nothing to correct the "
                       f"edge fit against. Now locks {lock}")
 
-    def corroborate_anchor(n, witnesses):
-        """Is n's anchor confirmed by an already-anchored shot's SIFT geometry?
 
-        Both bars have to be cleared, and they guard different failures: the
-        terrain-inlier floor (SIFT_TERRAIN_MIN_INLIERS, applied inside
-        sift_hops) rejects fog matching the wrong repeat of itself -- the
-        confident, high-scoring, badly wrong match -- and the gap bar rejects a
-        genuine match that simply disagrees. Returns a phrase describing the
-        evidence, or None.
-
-        *Some* anchored shot has to agree, not the best-matching one: sift_hops
-        ranks by inlier count, and inlier count is not what decides here (the
-        same reasoning as the anchor borrow above -- a near-identical view of
-        the same player's own board out-matches every other shot whether or not
-        it is anchored well). So every hop that cleared the inlier floor gets
-        to corroborate, and the first that also agrees is enough."""
-        for inl, m, _A, gap in sift_hops(n, witnesses):
-            if gap <= MISANCHOR_CORROBORATE_MAX_TILES:
-                return (f"sits {gap:.3f} tiles from where {m}'s SIFT geometry "
-                        f"puts it, on {inl} inliers")
-        return None
-
+def drop_misanchored(run):
+    """Drop a fog-period shot that locks no fog and nothing corroborates."""
+    # Per-image counterpart of the run-level guard, applicable only to shots
+    # whose zoom came from the fog-period fallback. That fallback measures zoom
+    # on a large expanse of the shot's own fog, so if none of its tiles then
+    # lock onto the template's fog art, the anchor is wrong -- and a
+    # misanchored shot calls its own fog "explored" and pastes it over every
+    # other source's terrain. Dropping it keeps the rest of the merge alive.
+    #
+    # That premise is not airtight: the whole board is periodic at the tile
+    # step, not just the fog, so a shot with almost no fog in frame can measure
+    # a correct period off crop fields and tile borders and still lock nothing
+    # (star_change/oum.png -- see CLAUDE.md). Such a shot is perfectly
+    # mergeable, so before dropping it, ask for a second opinion that owes
+    # nothing to fog: SIFT against a shot that anchored on its own. This can
+    # only ever *save* a shot, never drop one that would have survived -- a
+    # spurious SIFT match (fog matching fog) fails the inlier floor or the
+    # agreement bar and leaves the drop exactly as it was.
+    args, names, all_names, shots, samples, fog_lock = (
+        run.args, run.names, run.all_names, run.shots, run.samples, run.fog_lock)
     if args.min_fog_lock > 0:
         suspect = [n for n in names
                    if shots[n].zoom_source == "fog-period" and fog_lock[n] == 0]
         witnesses = [n for n in names if n not in suspect]
         for n in suspect:
-            keep = corroborate_anchor(n, witnesses)
+            keep = corroborate_anchor(run, n, witnesses)
             if keep is not None:
                 print(f"  keeping {n}: zero fog tiles locked, but it has almost "
                       f"no fog in frame and {keep} -- the anchor is corroborated "
@@ -5978,6 +6182,9 @@ def main():
                 "Check they are all of the same board, and that the size is "
                 "right.")
 
+
+def fit_fog_pixels(run):
+    """Per-pixel fog evidence for each shot."""
     # Per-pixel fog evidence, used to rank sources against each other on the
     # *same* tile. A tall city can fill a tile's inset center in every shot, so
     # the fog test sees only towers and calls the tile explored even in a shot
@@ -5987,29 +6194,12 @@ def main():
     # matters. Confirmed on the tile north of Ichphy (test_ss_3 tile (9,8)):
     # 0.089/0.084 for the two yad shots, where it is genuinely fog, against
     # 0.000/0.000 for the two cym shots, where it is genuinely grass.
-    def tile_predicate_mask(n, keep, inset=0.0):
-        """Boolean canvas of every tile whose sample for n satisfies `keep`.
-
-        Two sites in main build this by hand -- the fog-lock mask that picks a
-        shot's illumination-fitting tiles below, and the fog-area mask that
-        picks a shot's own-witnessed-fog tiles for ruin detection -- differing
-        only in `keep` and the inset."""
-        canvas = np.zeros((Hc, W), bool)
-        for (i, j), per in samples.items():
-            s = per.get(n)
-            if s is None or not keep(s):
-                continue
-            r = tile_mask_bbox(origin, u_col, u_row, i, j, W, Hc, inset)
-            if r is None:
-                continue
-            m, (x0, y0, x1, y1) = r
-            canvas[y0:y1, x0:x1] |= (m > 0)
-        return canvas
-
+    args, names, shots, template, W, Hc = (
+        run.args, run.names, run.shots, run.template, run.W, run.Hc)
     with PHASES("fog pixel masks"):
         for n in names:
             s = shots[n]
-            locked_mask = tile_predicate_mask(
+            locked_mask = tile_predicate_mask(run, 
                 n, lambda s: s.get("fog_ncc", 0.0) >= FOG_LOCK_NCC,
                 args.tile_inset)
             sel = locked_mask & (s.wmask > 0)
@@ -6023,34 +6213,13 @@ def main():
             else:
                 s.fogpix = np.zeros((Hc, W), bool)
 
-    def rank(cands, key):
-        """Eligible sources, best first: least fog on the tile, then sharpest.
 
-        Sharpness is *ascending* shot.scale. Mind the direction: scale is the
-        factor that blows a shot up to template size, so the smallest value is
-        the shot that already had the most of its own pixels on the tile. The
-        zoomed-out shots are the ones being upscaled, so they have fewer
-        source pixels per tile. (City UI scales with board zoom, so it is not
-        a further penalty -- see CLAUDE.md.)
-
-        Fog evidence outranks sharpness, because a sharp shot that cannot
-        actually see the tile is worse than a blurry one that can. Sources
-        carrying clearly more fog than the best available are pushed to the
-        back rather than dropped, so they can still fill pixels no cleaner
-        source photographed -- the same reasoning as the badge fallback below.
-        The margin is well clear of ordinary disagreement: across test_ss_3's
-        186 multi-source tiles the fog-fraction spread between co-eligible
-        sources is a median 0.001 and a 95th percentile of 0.019."""
-        poly = tile_poly(origin, u_col, u_row, key[0], key[1], 0.0)
-        frac = {n: (tile_fog_fraction(shots[n].fogpix, shots[n].wmask, poly, W, Hc) or 0.0)
-                for n in cands}
-        lo = min(frac.values())
-        clean = sorted([n for n in cands if frac[n] <= lo + args.fog_frac_margin],
-                       key=lambda n: shots[n].scale)
-        foggy = sorted([n for n in cands if frac[n] > lo + args.fog_frac_margin],
-                       key=lambda n: shots[n].scale)
-        return clean + foggy, len(foggy)
-
+def select_winners(run):
+    """Rank the sources for every explored tile."""
+    (args, names, shots, badge_found, tmpl_gray, origin, u_col, u_row, N,
+     samples) = (
+        run.args, run.names, run.shots, run.badge_found, run.tmpl_gray,
+        run.origin, run.u_col, run.u_row, run.N, run.samples)
     # A tile with no clean (badge-excluded) witness falls back to raw witnessing
     # -- i.e. a source may win using content that includes a capture badge --
     # rather than showing template fog. Excluding badge pixels is meant to
@@ -6069,7 +6238,7 @@ def main():
                 key = (i, j)
                 eligible = [n for n, s in samples[key].items() if s["explored"]]
                 if eligible:
-                    order, n_foggy = rank(eligible, key)
+                    order, n_foggy = rank(run, eligible, key)
                     if n_foggy:
                         fog_demoted.append(key)
                     winner[key] = order[0]
@@ -6094,11 +6263,22 @@ def main():
                     if s is not None and s["explored"]:
                         raw_eligible.append(n)
                 if raw_eligible:
-                    order, _ = rank(raw_eligible, key)
+                    order, _ = rank(run, raw_eligible, key)
                     winner[key] = order[0]
                     priority[key] = (order, True)  # True: use each shot's pmask_raw
                     badge_fallback.append(key)
+    run.winner = winner
+    run.priority = priority
+    run.badge_fallback = badge_fallback
+    run.fog_demoted = fog_demoted
 
+
+def promote_city_bars(run):
+    """--city-bars: give a city's owner its 3x3 block."""
+    (args, names, shots, origin, u_col, u_row, N, samples, winner, priority,
+     capped_of) = (
+        run.args, run.names, run.shots, run.origin, run.u_col, run.u_row, run.N,
+        run.samples, run.winner, run.priority, run.capped_of)
     # The population bar is owner-only, so the shot showing one *is* that
     # city's owner's shot -- no ownership has to be inferred, which is what
     # makes this immune to "* N" also appearing on embassy'd foreign cities.
@@ -6271,7 +6451,16 @@ def main():
             if winner.get(key) != n:
                 (bar_promoted if w >= 3 or (w == 1) else vision_promoted).append(key)
             winner[key] = n
+    run.bar_promoted = bar_promoted
+    run.vision_promoted = vision_promoted
+    run.capped_of = capped_of
 
+
+def detect_ruins(run):
+    """--ruin-vision: find Elyrion ruin markers on each shot's own fog."""
+    args, names, shots, template, origin, u_col, u_row, N = (
+        run.args, run.names, run.shots, run.template, run.origin, run.u_col,
+        run.u_row, run.N)
     # Ruin-vision detection runs on the same per-source fog classification the
     # merge already produced: a sprite is only searched for inside tiles this
     # source itself witnessed as fog, which is what keeps saturated explored
@@ -6285,7 +6474,7 @@ def main():
             sprite = load_ruin_sprite()
             no_ruin_sprite = sprite is None
             for n in names:
-                fog_area = tile_predicate_mask(
+                fog_area = tile_predicate_mask(run, 
                     n, lambda s: s.get("witness") and not s["explored"])
                 fog_area &= shots[n].wmask > 0
                 # The fog this shot would show if nothing were drawn on it. The
@@ -6321,7 +6510,15 @@ def main():
                         ruin_hits.setdefault((i, j), []).append((n, area, mask))
             n_raw = len(ruin_hits)
             ruin_hits = cluster_ruin_tiles(ruin_hits, origin, u_col, u_row)
+    run.ruin_hits = ruin_hits
+    run.n_raw = n_raw
+    run.no_ruin_sprite = no_ruin_sprite
+    run.ruin_no_fog = ruin_no_fog
 
+
+def check_conflicts(run):
+    """Tiles whose sources disagree about their content."""
+    args, samples = run.args, run.samples
     with PHASES("conflict check"):
         conflicts = []
         comparable = 0          # tiles where two sources can be compared at all
@@ -6336,7 +6533,19 @@ def main():
                       for a, b in itertools.combinations(colors, 2))
             if maxd > args.consistency_thresh:
                 conflicts.append((key, maxd, witnesses))
+    run.conflicts = conflicts
+    run.comparable = comparable
 
+
+def paste_composite(run):
+    """Build the composite and write --out."""
+    (args, overlays, shots, base_bgr, template, tmpl_gray, origin, u_col,
+     u_row, base_rect, W, Hc, N, samples, player_of, winner, priority,
+     ruin_hits) = (
+        run.args, run.overlays, run.shots, run.base_bgr, run.template,
+        run.tmpl_gray, run.origin, run.u_col, run.u_row, run.base_rect, run.W,
+        run.Hc, run.N, run.samples, run.player_of, run.winner, run.priority,
+        run.ruin_hits)
     with PHASES("paste composite"):
         out = template.copy()
         # --base's whole contribution: seed the canvas with its pixels before
@@ -6490,7 +6699,19 @@ def main():
     x0c, y0c, x1c, y1c = output_crop(origin, u_col, u_row, N, W, Hc)
     with PHASES("encode + write output"):
         cv2.imwrite(args.out, out[y0c:y1c, x0c:x1c])
+    run.crop = (x0c, y0c, x1c, y1c)
+    run.out = out
+    run.thick = thick
+    run.by_player = by_player
 
+
+def write_vision_each(run):
+    """--overlays vision-each: one extra composite per player."""
+    x0c, y0c, x1c, y1c = run.crop
+    (args, overlays, origin, u_col, u_row, W, Hc, samples, winner, out, thick,
+     by_player) = (
+        run.args, run.overlays, run.origin, run.u_col, run.u_row, run.W, run.Hc,
+        run.samples, run.winner, run.out, run.thick, run.by_player)
     # One additional composite per identified player, each the finished
     # composite above with a white wash laid back over any tile the union
     # explored that this one player's own shot(s) did not -- what somebody
@@ -6522,6 +6743,19 @@ def main():
         print(f"VISION-EACH {len(vision_each_paths)}: "
               + " ".join(vision_each_paths))
 
+
+def report(run):
+    """The run's summary on stdout."""
+    (args, overlays, names, shots, origin, u_col, u_row, N, samples,
+     size_unverified, player_of, no_head_catalog, winner, badge_fallback,
+     fog_demoted, bar_promoted, vision_promoted, capped_of, ruin_hits, n_raw,
+     no_ruin_sprite, ruin_no_fog, conflicts, comparable) = (
+        run.args, run.overlays, run.names, run.shots, run.origin, run.u_col,
+        run.u_row, run.N, run.samples, run.size_unverified, run.player_of,
+        run.no_head_catalog, run.winner, run.badge_fallback, run.fog_demoted,
+        run.bar_promoted, run.vision_promoted, run.capped_of, run.ruin_hits,
+        run.n_raw, run.no_ruin_sprite, run.ruin_no_fog, run.conflicts,
+        run.comparable)
     total = N * N
     print(f"\nmap: {N}x{N} = {total} tiles")
     print(f"explored (union): {len(winner)}/{total} ({100 * len(winner) / total:.1f}%)")
@@ -6698,6 +6932,14 @@ def main():
 
     print(f"\nwrote {args.out}")
 
+
+def write_debug(run):
+    """--debug-dir output."""
+    (args, names, shots, template_path, template, origin, u_col, u_row, W, Hc,
+     N, samples, winner, conflicts, out) = (
+        run.args, run.names, run.shots, run.template_path, run.template,
+        run.origin, run.u_col, run.u_row, run.W, run.Hc, run.N, run.samples,
+        run.winner, run.conflicts, run.out)
     if args.debug_dir:
         with PHASES("debug overlays"):
             os.makedirs(args.debug_dir, exist_ok=True)
@@ -6840,6 +7082,34 @@ def main():
                      if args.city_bars else "")
                   + ("  ruins_<n>.png        ruin-vision pixels accepted, in red\n"
                      if args.ruin_vision else ""))
+
+
+def main():
+    args = parse_args()
+    run = Run(args, resolve_overlays(args))
+    load_inputs(run)
+    select_map_shots(run)
+    resolve_map_size(run)
+    load_board(run)
+    if args.cross_check:
+        run_cross_check(run)
+        return
+    adopt_anchors(run)
+    identify_players(run)
+    check_board_size(run)
+    sample_tiles(run)
+    fog_lock_guards(run)
+    borrow_anchors(run)
+    drop_misanchored(run)
+    fit_fog_pixels(run)
+    select_winners(run)
+    promote_city_bars(run)
+    detect_ruins(run)
+    check_conflicts(run)
+    paste_composite(run)
+    write_vision_each(run)
+    report(run)
+    write_debug(run)
 
 
 if __name__ == "__main__":

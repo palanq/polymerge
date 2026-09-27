@@ -545,7 +545,7 @@ per-file rects, key them on something unambiguous.
   It is where the chrome filter is load-bearing (the replay turn-timeline strip
   takes an edge off *both* shots, so the whole merge fails rather than one shot
   dropping), and it is the only set exercising the zero-lock un-refinement in
-  `main` — with nothing to score against, `joint_register` walks both anchors
+  `fog_lock_guards` — with nothing to score against, `joint_register` walks both anchors
   1.1 tiles apart and the composite comes out visibly seamed.
 
   Two properties are worth knowing before judging it. Its **edge-only anchors
@@ -638,7 +638,7 @@ per-file rects, key them on something unambiguous.
   drop.) `--cross-check` returns before the merge path, so it reports
   the *refined* anchors, and on a board with no fog the merge discards those in
   favor of each shot's own unrefined edge anchor (see the zero-lock block in
-  `main`). Those agree to **0.023 tiles**. Same shape as `star_change` below:
+  `fog_lock_guards`). Those agree to **0.023 tiles**. Same shape as `star_change` below:
   the number is the quality of an anchor nothing uses. Judge the set on its
   union (256/256) and conflicts (0). It has read 16.6, 13.5, 0.511, 0.253, 0.378
   and 0.035 across changes that left that union and those conflicts untouched,
@@ -1772,7 +1772,7 @@ Facts about these files worth knowing before touching them:
   against black), so a plain `cv2.imread` yields exactly the black-sky image the
   pipeline expects. `normal-*.png` are **16-bit** and are normalized on load.
 - **Every layer shares its blank's exact pixel frame.** Verified per size: same
-  canvas. So overlays need **no warping or registration at all** — `main`
+  canvas. So overlays need **no warping or registration at all** — `paste_composite`
   builds the composite in template space and the layers alpha-blend straight
   on. (This bullet used to add "and the grid lines land exactly on the blank's
   fog tile boundaries"; that is false for two files — see the two bullets
@@ -2021,6 +2021,15 @@ The pipeline has two halves that are easy to conflate but solve different
 problems: **per-image anchoring** (where does this screenshot sit on the
 board?) and **per-tile compositing** (given all anchored images, what does
 each tile actually show?).
+
+**`main()` is a list of phase functions in pipeline order**, from `load_inputs`
+through `write_debug`, sharing one `Run` object. Each phase unpacks the `Run`
+attributes it reads at its top and stores what later phases need at its end.
+`Run.__init__` names every shared value and the phase that sets it. The helpers
+that used to be closures inside `main` (`anchor_all`, `warp_shot`,
+`sample_shot`, `locked`, `sift_hops`, `corroborate_anchor`,
+`tile_predicate_mask`, `rank`, `sky_rebuild_for`) are module-level functions
+taking the `Run` first.
 
 ### 1. Anchoring (`anchor_to_template`, `joint_register`)
 
@@ -2289,7 +2298,7 @@ check rather than being filtered apart here. Verified: `goon_test2/imp.jpg` +
 `test_ss_2/cym1.jpg` still report the 1.91-tile disagreement.
 
 It applies in **both** consumers, and the second is the one that needed it
-most. `main`'s board-size check takes a median specifically "so one odd shot
+most. `check_board_size` takes a median specifically "so one odd shot
 cannot fail an otherwise good run" — but a median only delivers that from three
 measurements up. With two it *is* their mean, so one broken number drags it half
 way, which is exactly how 17.93 and 8.60 produced a 13x13 board. Two-measurement
@@ -2357,7 +2366,7 @@ candidates by fog alignment, so a shot with no fog in frame is not being refined
 at all — it is walking to the argmax of noise. This is the same reasoning that
 already stops a borrowed pan being refined (`borrow_pan`, below); the difference
 is that a fogless board cannot be recognized *up front* the way `borrow_pan` can,
-so the check has to be after the fact. In `main`, any shot whose refined anchor
+so the check has to be after the fact. In `fog_lock_guards`, any shot whose refined anchor
 locks **zero** fog tiles is put back on its own unrefined edge/fog-period prior.
 
 `tests/fogless` is the case and the only set that reaches it: a replay of a
@@ -2883,7 +2892,7 @@ class of subtle bug in this codebase:
   non-`_raw` variants have detected badge pixels subtracted
   (`detect_capture_badges`). Both exist because a tile with no *clean*
   witness should still fall back to a badge-covered source rather than show
-  nothing — see `badge_fallback` in `main`.
+  nothing — see `badge_fallback` in `select_winners`.
 - `edge_mask`: erosion-free version used specifically for `board_boundary`/
   edge fitting, since `--erode-px` erosion eats a different amount of board
   in each image's own pixels depending on zoom, which would bias the fit.
@@ -3295,7 +3304,7 @@ its two segments fused into one blob — so requiring them is what made the old
 detector miss it entirely. The old reports' "N segments" meant "segments the
 detector resolved", which was never the bar's true subdivision count.
 
-The claim ranking's width test (`_capped` in `main`) therefore asks the question it actually wants:
+The claim ranking's width test (`_capped` in `promote_city_bars`) therefore asks the question it actually wants:
 does this bar physically reach its S/SW/SE neighbors? That is exactly the
 capped width, and the short one does not.
 
@@ -3399,7 +3408,7 @@ hurts.** On both contested pairs the separation is 2x or better:
 | `beautiful_test3` (18,11) | false positive | 59 | **69** |
 
 **Built** — `plate_edge_run`, ranked *after* completeness and before the
-own-tile proximity rule, in `main`'s claim comparison:
+own-tile proximity rule, in `promote_city_bars`' claim comparison:
 
 ```
 cand = (-w, full, -plate, d, scale[n], n)
@@ -5092,7 +5101,7 @@ anchoring at all, and its content is already fully resolved, so it needs no
 classification either.
 
 **The base is the paste canvas's *starting state*, not a source.**
-`main()`'s canvas init (`out = template.copy()`, right before the paste loop)
+`paste_composite`'s canvas init (`out = template.copy()`, right before the paste loop)
 becomes `out[by0:by1, bx0:bx1] = base_bgr` first when `--base` is given, at
 the exact rectangle `output_crop` computes for the resolved board size — no
 warp, no sampling. Everything else — `anchor_all`, `rank`, the conflict-check,
@@ -5419,9 +5428,10 @@ adopt a candidate only by proving it against that shot's own fog. A shot
 dropped this way is dropped for failing to match the board, not for losing a
 headcount.
 
-The obstacle is structural rather than algorithmic: `main` loads the template
-once and `anchor_all` closes over it, so step 2 needs the span from template
-load through the fog-lock computation extracted into a function of `map_size`.
+The obstacle is structural rather than algorithmic: `load_board` loads the
+template once and every later phase reads it off the shared `Run`, so step 2
+needs the phases from `load_board` through `fog_lock_guards` re-run per
+candidate `map_size`.
 That refactor is the bulk of the work and it touches the registration path, so
 it wants the full 16-set before/after even though the new branch should be
 unreachable on every one of them.
