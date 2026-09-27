@@ -6730,10 +6730,9 @@ def paste_composite(run):
 def write_vision_each(run):
     """--overlays vision-each: one extra composite per player."""
     x0c, y0c, x1c, y1c = run.crop
-    (args, overlays, origin, u_col, u_row, W, Hc, samples, winner, out, thick,
-     by_player) = (
-        run.args, run.overlays, run.origin, run.u_col, run.u_row, run.W, run.Hc,
-        run.samples, run.winner, run.out, run.thick, run.by_player)
+    args, overlays, samples, winner, out, thick, by_player, board = (
+        run.args, run.overlays, run.samples, run.winner, run.out, run.thick,
+        run.by_player, run.board)
     # One additional composite per identified player, each the finished
     # composite above with a white wash laid back over any tile the union
     # explored that this one player's own shot(s) did not -- what somebody
@@ -6751,11 +6750,11 @@ def write_vision_each(run):
             out_ext = out_ext or ".png"
             for key in sorted(by_player):
                 explored_self = _player_explored_tiles(samples, by_player[key])
-                unseen = _vision_each_unseen_mask(winner, explored_self, origin,
-                                                   u_col, u_row, W, Hc)
+                unseen = _vision_each_unseen_mask(
+                    winner, explored_self, *board.lattice, board.W, board.Hc)
                 per_out = render_vision_each(out, unseen)
                 draw_player_vision(per_out, samples, {key: by_player[key]},
-                                    origin, u_col, u_row, thick)
+                                   *board.lattice, thick)
                 path = f"{out_stem}_vision_{vision_each_slug(key)}{out_ext}"
                 cv2.imwrite(path, per_out[y0c:y1c, x0c:x1c])
                 vision_each_paths.append(path)
