@@ -5037,6 +5037,39 @@ FOG_LOCK_NCC = 0.7
 FOG_GAIN_MIN_PX = 5000
 
 
+
+class Board(collections.namedtuple(
+        "Board", "template_path template tmpl_gray dir_a dir_b origin u_col "
+                 "u_row N W Hc t_corners t_edge_off tile_px base_rect")):
+    """The board this run merges onto: its template and the tile lattice
+    derived from it. Built once by load_board and never replaced afterwards
+    (the fields cannot be reassigned; the arrays they hold are not copied, so
+    do not write into them).
+
+    The methods are the module-level lattice helpers with this board's
+    geometry filled in. Those helpers keep their own signatures because
+    shoreline/ imports them."""
+    __slots__ = ()
+
+    @property
+    def lattice(self):
+        """(origin, u_col, u_row), for helpers that take the three."""
+        return self.origin, self.u_col, self.u_row
+
+    def tile_poly(self, i, j, inset=0.0):
+        return tile_poly(self.origin, self.u_col, self.u_row, i, j, inset)
+
+    def tile_top_wedge(self, i, j):
+        return tile_top_wedge(self.origin, self.u_col, self.u_row, i, j)
+
+    def tile_mask_bbox(self, i, j, inset=0.0):
+        return tile_mask_bbox(self.origin, self.u_col, self.u_row, i, j,
+                              self.W, self.Hc, inset)
+
+    def tile_of_point(self, xy):
+        return tile_of_point(xy, self.origin, self.u_col, self.u_row)
+
+
 class Run:
     """The state main()'s phases share, one attribute per cross-phase value.
 
@@ -5056,12 +5089,7 @@ class Run:
         self.size_was_detected = None
         self.shot_cache = None
         # load_board
-        self.template_path = self.template = self.tmpl_gray = None
-        self.dir_a = self.dir_b = None
-        self.origin = self.u_col = self.u_row = None
-        self.t_corners = self.t_edge_off = self.tile_px = None
-        self.base_rect = None
-        self.W = self.Hc = self.N = None
+        self.board = None
         # sample_tiles onward
         self.samples = {}
         self.fog_lock = None
@@ -5109,10 +5137,8 @@ def anchor_all(run):
     Shared by --cross-check and the merge so the two cannot diverge --
     they did once, and the symptom was cross-check reporting a set
     unanchorable that the merge handled fine (pol_archi_test)."""
-    (args, names, shots, shot_cache, tmpl_gray, dir_a, dir_b, origin, u_col,
-     u_row, t_edge_off) = (
-        run.args, run.names, run.shots, run.shot_cache, run.tmpl_gray, run.dir_a,
-        run.dir_b, run.origin, run.u_col, run.u_row, run.t_edge_off)
+    args, names, shots, shot_cache, board = (
+        run.args, run.names, run.shots, run.shot_cache, run.board)
     M_of, src_of, implied_of, scale_of, failed = {}, {}, {}, {}, []
     prior_of = {}
 
@@ -5129,8 +5155,9 @@ def anchor_all(run):
         try:
             s = shots[n]
             M, src_of[n], implied, prior_of[n] = anchor_to_template(
-                s.img, s.edge_mask, s.valid, s.hsv, tmpl_gray, t_edge_off,
-                dir_a, dir_b, origin, u_col, u_row, args.map_size,
+                s.img, s.edge_mask, s.valid, s.hsv, board.tmpl_gray,
+                board.t_edge_off, board.dir_a, board.dir_b, *board.lattice,
+                args.map_size,
                 args.min_edge_support, n, refine=not args.no_refine,
                 min_scale_support=args.min_scale_support,
                 sky_rebuild=sky_rebuild_for(run, n), cache=shot_cache,
@@ -5184,8 +5211,8 @@ def anchor_all(run):
             try:
                 s = shots[n]
                 M, src_of[n], implied, prior_of[n] = anchor_to_template(
-                    s.img, s.edge_mask, s.valid, s.hsv, tmpl_gray,
-                    t_edge_off, dir_a, dir_b, origin, u_col, u_row,
+                    s.img, s.edge_mask, s.valid, s.hsv, board.tmpl_gray,
+                    board.t_edge_off, board.dir_a, board.dir_b, *board.lattice,
                     args.map_size, args.min_edge_support, n,
                     refine=not args.no_refine,
                     min_scale_support=args.min_scale_support,
@@ -5206,31 +5233,28 @@ def warp_shot(run, n):
     """Put one shot on the canvas, in all four mask flavors. Factored out
     so a shot whose anchor is revised later (the SIFT pan borrow below) can
     be redone on its own rather than re-running the whole phase."""
-    shots, W, Hc = run.shots, run.W, run.Hc
+    shots, board = run.shots, run.board
     s = shots[n]
     Mn = s.to_template
-    s.warped = cv2.warpAffine(s.img, Mn[:2], (W, Hc), flags=cv2.INTER_LANCZOS4)
-    s.wmask = cv2.warpAffine(s.valid, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
-    s.wmask_raw = cv2.warpAffine(s.valid_raw, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
-    s.pmask = cv2.warpAffine(s.frame, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
-    s.pmask_raw = cv2.warpAffine(s.frame_raw, Mn[:2], (W, Hc), flags=cv2.INTER_NEAREST)
+    size = (board.W, board.Hc)
+    s.warped = cv2.warpAffine(s.img, Mn[:2], size, flags=cv2.INTER_LANCZOS4)
+    s.wmask = cv2.warpAffine(s.valid, Mn[:2], size, flags=cv2.INTER_NEAREST)
+    s.wmask_raw = cv2.warpAffine(s.valid_raw, Mn[:2], size, flags=cv2.INTER_NEAREST)
+    s.pmask = cv2.warpAffine(s.frame, Mn[:2], size, flags=cv2.INTER_NEAREST)
+    s.pmask_raw = cv2.warpAffine(s.frame_raw, Mn[:2], size, flags=cv2.INTER_NEAREST)
     s.scale = float(np.hypot(Mn[0, 0], Mn[1, 0]))
 
 
 def sample_shot(run, n):
     """Classify every tile for one shot, replacing whatever it said before."""
-    args, shots, tmpl_gray, origin, u_col, u_row, N, samples = (
-        run.args, run.shots, run.tmpl_gray, run.origin, run.u_col, run.u_row,
-        run.N, run.samples)
+    args, shots, samples, board = run.args, run.shots, run.samples, run.board
     shot = shots[n]
-    for i in range(N):
-        for j in range(N):
-            s = sample_tile(shot.warped, shot.wmask, tmpl_gray,
-                            tile_poly(origin, u_col, u_row, i, j,
-                                      args.tile_inset),
+    for i in range(board.N):
+        for j in range(board.N):
+            s = sample_tile(shot.warped, shot.wmask, board.tmpl_gray,
+                            board.tile_poly(i, j, args.tile_inset),
                             args.fog_ncc, args.min_valid_frac,
-                            wedge_poly=tile_top_wedge(origin, u_col, u_row,
-                                                      i, j),
+                            wedge_poly=board.tile_top_wedge(i, j),
                             fog_wedge_ncc=args.fog_wedge_ncc)
             per = samples.setdefault((i, j), {})
             per.pop(n, None)
@@ -5270,8 +5294,7 @@ def sift_hops(run, n, witnesses):
     one is local to a fallback pass that never overlaps this one in a
     single run, and the two must not start deduping into each other on a
     path CLAUDE.md notes the corpus does not exercise."""
-    args, shots, t_corners, tile_px = (
-        run.args, run.shots, run.t_corners, run.tile_px)
+    args, shots, board = run.args, run.shots, run.board
     with PHASES("SIFT anchor hop"):
         for m in witnesses + [n]:
             s = shots[m]
@@ -5288,10 +5311,10 @@ def sift_hops(run, n, witnesses):
                 continue
             A = shots[m].to_template @ to_h(M_nm)   # n's pixels -> template
             via = A @ np.linalg.inv(shots[n].to_template)
-            got = cv2.transform(np.float32(t_corners).reshape(-1, 1, 2),
+            got = cv2.transform(np.float32(board.t_corners).reshape(-1, 1, 2),
                                 via[:2]).reshape(-1, 2)
             gap = float(np.max(np.linalg.norm(
-                got - np.float32(t_corners), axis=1))) / tile_px
+                got - np.float32(board.t_corners), axis=1))) / board.tile_px
             out.append((inl, m, A, gap))
         return sorted(out, key=lambda r: -r[0])
 
@@ -5326,14 +5349,13 @@ def tile_predicate_mask(run, n, keep, inset=0.0):
     shot's illumination-fitting tiles below, and the fog-area mask that
     picks a shot's own-witnessed-fog tiles for ruin detection -- differing
     only in `keep` and the inset."""
-    origin, u_col, u_row, W, Hc, samples = (
-        run.origin, run.u_col, run.u_row, run.W, run.Hc, run.samples)
-    canvas = np.zeros((Hc, W), bool)
+    samples, board = run.samples, run.board
+    canvas = np.zeros((board.Hc, board.W), bool)
     for (i, j), per in samples.items():
         s = per.get(n)
         if s is None or not keep(s):
             continue
-        r = tile_mask_bbox(origin, u_col, u_row, i, j, W, Hc, inset)
+        r = board.tile_mask_bbox(i, j, inset)
         if r is None:
             continue
         m, (x0, y0, x1, y1) = r
@@ -5359,10 +5381,10 @@ def rank(run, cands, key):
     The margin is well clear of ordinary disagreement: across test_ss_3's
     186 multi-source tiles the fog-fraction spread between co-eligible
     sources is a median 0.001 and a 95th percentile of 0.019."""
-    args, shots, origin, u_col, u_row, W, Hc = (
-        run.args, run.shots, run.origin, run.u_col, run.u_row, run.W, run.Hc)
-    poly = tile_poly(origin, u_col, u_row, key[0], key[1], 0.0)
-    frac = {n: (tile_fog_fraction(shots[n].fogpix, shots[n].wmask, poly, W, Hc) or 0.0)
+    args, shots, board = run.args, run.shots, run.board
+    poly = board.tile_poly(key[0], key[1], 0.0)
+    frac = {n: (tile_fog_fraction(shots[n].fogpix, shots[n].wmask, poly,
+                                  board.W, board.Hc) or 0.0)
             for n in cands}
     lo = min(frac.values())
     clean = sorted([n for n in cands if frac[n] <= lo + args.fog_frac_margin],
@@ -5783,27 +5805,16 @@ def load_board(run):
     # canvas was a computed union of wherever the shots landed.
     W, Hc = template.shape[1], template.shape[0]
     N = args.map_size
-    run.template_path = template_path
-    run.template = template
-    run.tmpl_gray = tmpl_gray
-    run.dir_a = dir_a
-    run.dir_b = dir_b
-    run.origin = origin
-    run.u_col = u_col
-    run.u_row = u_row
-    run.t_corners = t_corners
-    run.t_edge_off = t_edge_off
-    run.tile_px = tile_px
-    run.base_rect = base_rect
-    run.W = W
-    run.Hc = Hc
-    run.N = N
+    run.board = Board(
+        template_path=template_path, template=template, tmpl_gray=tmpl_gray,
+        dir_a=dir_a, dir_b=dir_b, origin=origin, u_col=u_col, u_row=u_row,
+        N=N, W=W, Hc=Hc, t_corners=t_corners, t_edge_off=t_edge_off,
+        tile_px=tile_px, base_rect=base_rect)
 
 
 def run_cross_check(run):
     """--cross-check: report anchors against SIFT geometry, and stop."""
-    args, names, shots, t_corners, tile_px = (
-        run.args, run.names, run.shots, run.t_corners, run.tile_px)
+    args, names, shots, board = run.args, run.names, run.shots, run.board
     anchors = anchor_all(run)[0]
     feats = {n: sift_features(shots[n].img, shots[n].sift_mask(), args.nfeatures, args.contrast)
              for n in names}
@@ -5812,7 +5823,7 @@ def run_cross_check(run):
                   for a, b in itertools.combinations(names, 2)}
     print(f"\nindependent anchors vs SIFT relative geometry "
           f"({len(anchors)}/{len(names)} shots anchorable):")
-    rows = cross_check(anchors, sift_edges, t_corners, tile_px)
+    rows = cross_check(anchors, sift_edges, board.t_corners, board.tile_px)
     if not rows:
         raise SystemExit("no pair has both an anchor and a SIFT transform")
     for a, b, n_inl, err, tiles in rows:
@@ -6002,15 +6013,15 @@ def check_board_size(run):
 
 def sample_tiles(run):
     """Warp every shot onto the canvas and classify every tile."""
-    names, W, Hc, N, samples = run.names, run.W, run.Hc, run.N, run.samples
+    names, samples, board = run.names, run.samples, run.board
     with PHASES("warp to canvas"):
         for n in names:
             warp_shot(run, n)
-        print(f"canvas: {W} x {Hc} (template)")
+        print(f"canvas: {board.W} x {board.Hc} (template)")
 
     with PHASES("tile sampling"):
-        for i in range(N):
-            for j in range(N):
+        for i in range(board.N):
+            for j in range(board.N):
                 samples[(i, j)] = {}
         for n in names:
             sample_shot(run, n)
@@ -6018,8 +6029,8 @@ def sample_tiles(run):
 
 def fog_lock_guards(run):
     """Count fog lock, undo fog-blind refinements, and apply --min-fog-lock."""
-    args, names, shots, size_was_detected, N = (
-        run.args, run.names, run.shots, run.size_was_detected, run.N)
+    args, names, shots, size_was_detected, board = (
+        run.args, run.names, run.shots, run.size_was_detected, run.board)
     fog_lock = {n: locked(run, n) for n in names}
     # A refinement that locked nothing had nothing to refine against.
     # joint_register scores candidates by fog alignment, so with no fog in frame
@@ -6086,7 +6097,7 @@ def fog_lock_guards(run):
         size_unverified = True
         print(f"\nWARNING: no shot locked onto the fog artwork (best "
               f"{max(fog_lock.values())} tiles). Merging as "
-              f"{N}x{N} because that is what was asked for, but nothing here "
+              f"{board.N}x{board.N} because that is what was asked for, but nothing here "
               f"can confirm it -- fog is what this check compares against, and "
               f"there is none to compare. If the board really has no fog left "
               f"(a replay, or a finished game) that is expected; otherwise "
@@ -6217,8 +6228,7 @@ def fit_fog_pixels(run):
     # matters. Confirmed on the tile north of Ichphy (test_ss_3 tile (9,8)):
     # 0.089/0.084 for the two yad shots, where it is genuinely fog, against
     # 0.000/0.000 for the two cym shots, where it is genuinely grass.
-    args, names, shots, template, W, Hc = (
-        run.args, run.names, run.shots, run.template, run.W, run.Hc)
+    args, names, shots, board = run.args, run.names, run.shots, run.board
     with PHASES("fog pixel masks"):
         for n in names:
             s = shots[n]
@@ -6231,18 +6241,16 @@ def fit_fog_pixels(run):
             # smuggling a fog fringe in, so an all-false mask is the right answer:
             # it simply never disqualifies that source.
             if int(sel.sum()) >= FOG_GAIN_MIN_PX:
-                s.gain = fog_illumination(s.warped, template, sel)
-                s.fogpix = fog_pixel_mask(s.warped, template, s.gain)
+                s.gain = fog_illumination(s.warped, board.template, sel)
+                s.fogpix = fog_pixel_mask(s.warped, board.template, s.gain)
             else:
-                s.fogpix = np.zeros((Hc, W), bool)
+                s.fogpix = np.zeros((board.Hc, board.W), bool)
 
 
 def select_winners(run):
     """Rank the sources for every explored tile."""
-    (args, names, shots, badge_found, tmpl_gray, origin, u_col, u_row, N,
-     samples) = (
-        run.args, run.names, run.shots, run.badge_found, run.tmpl_gray,
-        run.origin, run.u_col, run.u_row, run.N, run.samples)
+    args, names, shots, badge_found, samples, board = (
+        run.args, run.names, run.shots, run.badge_found, run.samples, run.board)
     # A tile with no clean (badge-excluded) witness falls back to raw witnessing
     # -- i.e. a source may win using content that includes a capture badge --
     # rather than showing template fog. Excluding badge pixels is meant to
@@ -6256,8 +6264,8 @@ def select_winners(run):
     # out-of-frame black into the composite.
     winner, priority, badge_fallback, fog_demoted = {}, {}, [], []
     with PHASES("winner selection"):
-        for i in range(N):
-            for j in range(N):
+        for i in range(board.N):
+            for j in range(board.N):
                 key = (i, j)
                 eligible = [n for n, s in samples[key].items() if s["explored"]]
                 if eligible:
@@ -6275,11 +6283,11 @@ def select_winners(run):
                 # unexplored tile of every merge.
                 if not badge_found:
                     continue
-                poly = tile_poly(origin, u_col, u_row, i, j, args.tile_inset)
-                wedge = tile_top_wedge(origin, u_col, u_row, i, j)
+                poly = board.tile_poly(i, j, args.tile_inset)
+                wedge = board.tile_top_wedge(i, j)
                 raw_eligible = []
                 for n in names:
-                    s = sample_tile(shots[n].warped, shots[n].wmask_raw, tmpl_gray, poly,
+                    s = sample_tile(shots[n].warped, shots[n].wmask_raw, board.tmpl_gray, poly,
                                     args.fog_ncc, args.min_valid_frac,
                                     wedge_poly=wedge,
                                     fog_wedge_ncc=args.fog_wedge_ncc)
@@ -6298,10 +6306,9 @@ def select_winners(run):
 
 def promote_city_bars(run):
     """--city-bars: give a city's owner its 3x3 block."""
-    (args, names, shots, origin, u_col, u_row, N, samples, winner, priority,
-     capped_of) = (
-        run.args, run.names, run.shots, run.origin, run.u_col, run.u_row, run.N,
-        run.samples, run.winner, run.priority, run.capped_of)
+    args, names, shots, samples, winner, priority, capped_of, board = (
+        run.args, run.names, run.shots, run.samples, run.winner, run.priority,
+        run.capped_of, run.board)
     # The population bar is owner-only, so the shot showing one *is* that
     # city's owner's shot -- no ownership has to be inferred, which is what
     # makes this immune to "* N" also appearing on embassy'd foreign cities.
@@ -6338,7 +6345,7 @@ def promote_city_bars(run):
         with PHASES("city-bar detection"):
             for n in names:
                 shots[n].bars = detect_population_bars(shots[n].warped, shots[n].wmask,
-                                                        origin, u_col, u_row, N)
+                                                        *board.lattice, board.N)
 
             # Does this bar physically reach its S/SW/SE neighbors? Only the
             # capped width does; the short one stops on its own tile. Asked
@@ -6410,11 +6417,11 @@ def promote_city_bars(run):
 
         with PHASES("vision-based promotion"):
             seen_of = {}
-            for ci in range(N):
-                for cj in range(N):
+            for ci in range(board.N):
+                for cj in range(board.N):
                     block = [(ci + di, cj + dj) for di in (-1, 0, 1)
                              for dj in (-1, 0, 1)
-                             if 0 <= ci + di < N and 0 <= cj + dj < N]
+                             if 0 <= ci + di < board.N and 0 <= cj + dj < board.N]
                     seers = [n for n in names
                              if all(samples.get(k, {}).get(n, {}).get("explored")
                                     for k in block)]
@@ -6479,9 +6486,7 @@ def promote_city_bars(run):
 
 def detect_ruins(run):
     """--ruin-vision: find Elyrion ruin markers on each shot's own fog."""
-    args, names, shots, template, origin, u_col, u_row, N = (
-        run.args, run.names, run.shots, run.template, run.origin, run.u_col,
-        run.u_row, run.N)
+    args, names, shots, board = run.args, run.names, run.shots, run.board
     # Ruin-vision detection runs on the same per-source fog classification the
     # merge already produced: a sprite is only searched for inside tiles this
     # source itself witnessed as fog, which is what keeps saturated explored
@@ -6523,14 +6528,14 @@ def detect_ruins(run):
                 # which drags genuine matches down: measured, u_forest drops
                 # from 9 ruins to 7 on that change alone.
                 found = detect_ruin_vision(shots[n].warped, shots[n].wmask, fog_area,
-                                           template, shots[n].gain, origin,
-                                           u_col, u_row, sprite)
+                                           board.template, shots[n].gain,
+                                           *board.lattice, sprite)
                 shots[n].ruins = found
                 for i, j, area, mask in found:
-                    if 0 <= i < N and 0 <= j < N:
+                    if 0 <= i < board.N and 0 <= j < board.N:
                         ruin_hits.setdefault((i, j), []).append((n, area, mask))
             n_raw = len(ruin_hits)
-            ruin_hits = cluster_ruin_tiles(ruin_hits, origin, u_col, u_row)
+            ruin_hits = cluster_ruin_tiles(ruin_hits, *board.lattice)
     run.ruin_hits = ruin_hits
     run.n_raw = n_raw
     run.no_ruin_sprite = no_ruin_sprite
@@ -6560,15 +6565,12 @@ def check_conflicts(run):
 
 def paste_composite(run):
     """Build the composite and write --out."""
-    (args, overlays, shots, base_bgr, template, tmpl_gray, origin, u_col,
-     u_row, base_rect, W, Hc, N, samples, player_of, winner, priority,
-     ruin_hits) = (
-        run.args, run.overlays, run.shots, run.base_bgr, run.template,
-        run.tmpl_gray, run.origin, run.u_col, run.u_row, run.base_rect, run.W,
-        run.Hc, run.N, run.samples, run.player_of, run.winner, run.priority,
-        run.ruin_hits)
+    (args, overlays, shots, base_bgr, samples, player_of, winner, priority,
+     ruin_hits, board) = (
+        run.args, run.overlays, run.shots, run.base_bgr, run.samples,
+        run.player_of, run.winner, run.priority, run.ruin_hits, run.board)
     with PHASES("paste composite"):
-        out = template.copy()
+        out = board.template.copy()
         # --base's whole contribution: seed the canvas with its pixels before
         # the paste loop runs, completely unmodified below. priority[key] and
         # winner[key] are only ever set together (winner selection, and the
@@ -6578,10 +6580,10 @@ def paste_composite(run):
         # seeded. New content therefore always wins wherever a new screenshot
         # shows any, with no ranking or demotion rule needed for the base.
         if args.base:
-            bx0, by0, bx1, by1 = base_rect
+            bx0, by0, bx1, by1 = board.base_rect
             out[by0:by1, bx0:bx1] = base_bgr
         for (i, j), (order, raw) in priority.items():
-            r = tile_mask_bbox(origin, u_col, u_row, i, j, W, Hc)
+            r = board.tile_mask_bbox(i, j)
             if r is None:
                 continue
             m, (x0, y0, x1, y1) = r
@@ -6619,43 +6621,43 @@ def paste_composite(run):
         base_explored = set()
         if args.base and overlays & OVERLAY_FOG_ONLY:
             with PHASES("base fog classification"):
-                base_canvas = np.zeros_like(template)
-                bx0, by0, bx1, by1 = base_rect
+                base_canvas = np.zeros_like(board.template)
+                bx0, by0, bx1, by1 = board.base_rect
                 base_canvas[by0:by1, bx0:bx1] = base_bgr
-                base_valid = np.zeros((Hc, W), np.uint8)
+                base_valid = np.zeros((board.Hc, board.W), np.uint8)
                 base_valid[by0:by1, bx0:bx1] = 255
-                for i in range(N):
-                    for j in range(N):
+                for i in range(board.N):
+                    for j in range(board.N):
                         if (i, j) in winner:
                             continue
                         s = sample_tile(
-                            base_canvas, base_valid, tmpl_gray,
-                            tile_poly(origin, u_col, u_row, i, j, args.tile_inset),
+                            base_canvas, base_valid, board.tmpl_gray,
+                            board.tile_poly(i, j, args.tile_inset),
                             args.fog_ncc, args.min_valid_frac,
-                            wedge_poly=tile_top_wedge(origin, u_col, u_row, i, j),
+                            wedge_poly=board.tile_top_wedge(i, j),
                             fog_wedge_ncc=args.fog_wedge_ncc)
                         if s is not None and s["explored"]:
                             base_explored.add((i, j))
         fog_only = None
         if overlays & OVERLAY_FOG_ONLY:
-            fog_only = np.zeros((Hc, W), np.uint8)
-            for i in range(N):
-                for j in range(N):
+            fog_only = np.zeros((board.Hc, board.W), np.uint8)
+            for i in range(board.N):
+                for j in range(board.N):
                     if (i, j) in winner or (i, j) in base_explored:
                         continue
-                    poly = tile_poly(origin, u_col, u_row, i, j, 0.0)
+                    poly = board.tile_poly(i, j, 0.0)
                     cv2.fillConvexPoly(fog_only,
                                        np.round(poly).astype(np.int32), 1)
             fog_only = fog_only.astype(np.float32)[:, :, None]
-        missing_overlays = paint_overlays(out, overlays, N, fog_only)
+        missing_overlays = paint_overlays(out, overlays, board.N, fog_only)
         if missing_overlays:
             # Named on stdout in the same shape as DROPPED so polybot can lift
             # it into the merge caption -- a player who asked for the grid and
             # silently did not get it would reasonably assume the merge failed.
             print(f"NO-OVERLAY {len(missing_overlays)}: "
                   f"{' '.join(sorted(missing_overlays))} -- not available on a "
-                  f"{N}x{N} board")
-        thick = max(3, int(round(np.linalg.norm(u_col) * 0.075)))
+                  f"{board.N}x{board.N} board")
+        thick = max(3, int(round(np.linalg.norm(board.u_col) * 0.075)))
         # Drawn after the decorative overlays (so shade cannot dull an
         # outline) and before the ruin markers (so those stay the topmost
         # thing on the composite, as the comment below already promises).
@@ -6664,7 +6666,7 @@ def paste_composite(run):
             if ident is not None:
                 by_player.setdefault(ident[0], []).append(n)
         if by_player and "vision" in overlays:
-            draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick)
+            draw_player_vision(out, samples, by_player, *board.lattice, thick)
         # A fogged tile carrying a ruin gets two things: the Elyrion player's
         # own view of that tile, and a violet outline around it.
         #
@@ -6698,8 +6700,7 @@ def paste_composite(run):
             # Sharpest witness first (ascending scale, as everywhere else),
             # then the one that saw most of the cluster.
             src = min(hits, key=lambda h: (shots[h[0]].scale, -h[1]))[0]
-            r = poly_mask_bbox(tile_poly(origin, u_col, u_row, key[0], key[1],
-                                         0.0), W, Hc)
+            r = board.tile_mask_bbox(key[0], key[1])
             if r is not None:
                 m, (x0, y0, x1, y1) = r
                 sel = (m > 0) & (shots[src].pmask[y0:y1, x0:x1] > 0)
@@ -6711,13 +6712,13 @@ def paste_composite(run):
                             np.abs(g[:, 0]) < 1e-3, 1.0, g[:, 0])
                     out[y0:y1, x0:x1][sel] = np.clip(
                         patch, 0, 255).astype(np.uint8)[sel]
-            poly = tile_poly(origin, u_col, u_row, key[0], key[1], 0.08)
+            poly = board.tile_poly(key[0], key[1], 0.08)
             cv2.polylines(out, [np.round(poly).astype(np.int32)], True,
                           RUIN_MARK_BGR, thick, cv2.LINE_AA)
 
     # Same rectangle --base is placed at and validated against above -- one
     # implementation, so the two can never drift apart.
-    x0c, y0c, x1c, y1c = output_crop(origin, u_col, u_row, N, W, Hc)
+    x0c, y0c, x1c, y1c = output_crop(*board.lattice, board.N, board.W, board.Hc)
     with PHASES("encode + write output"):
         cv2.imwrite(args.out, out[y0c:y1c, x0c:x1c])
     run.crop = (x0c, y0c, x1c, y1c)
@@ -6767,18 +6768,18 @@ def write_vision_each(run):
 
 def report(run):
     """The run's summary on stdout."""
-    (args, overlays, names, shots, origin, u_col, u_row, N, samples,
-     size_unverified, player_of, no_head_catalog, winner, badge_fallback,
-     fog_demoted, bar_promoted, vision_promoted, capped_of, ruin_hits, n_raw,
-     no_ruin_sprite, ruin_no_fog, conflicts, comparable) = (
-        run.args, run.overlays, run.names, run.shots, run.origin, run.u_col,
-        run.u_row, run.N, run.samples, run.size_unverified, run.player_of,
-        run.no_head_catalog, run.winner, run.badge_fallback, run.fog_demoted,
-        run.bar_promoted, run.vision_promoted, run.capped_of, run.ruin_hits,
-        run.n_raw, run.no_ruin_sprite, run.ruin_no_fog, run.conflicts,
-        run.comparable)
-    total = N * N
-    print(f"\nmap: {N}x{N} = {total} tiles")
+    (args, overlays, names, shots, samples, size_unverified, player_of,
+     no_head_catalog, winner, badge_fallback, fog_demoted, bar_promoted,
+     vision_promoted, capped_of, ruin_hits, n_raw, no_ruin_sprite, ruin_no_fog,
+     conflicts, comparable, board) = (
+        run.args, run.overlays, run.names, run.shots, run.samples,
+        run.size_unverified, run.player_of, run.no_head_catalog, run.winner,
+        run.badge_fallback, run.fog_demoted, run.bar_promoted,
+        run.vision_promoted, run.capped_of, run.ruin_hits, run.n_raw,
+        run.no_ruin_sprite, run.ruin_no_fog, run.conflicts, run.comparable,
+        run.board)
+    total = board.N * board.N
+    print(f"\nmap: {board.N}x{board.N} = {total} tiles")
     print(f"explored (union): {len(winner)}/{total} ({100 * len(winner) / total:.1f}%)")
     if args.base:
         carried = total - len(winner)
@@ -6834,8 +6835,7 @@ def report(run):
                         # the one in the middle.
                         for px in np.linspace(bx, bx + bw, 12):
                             for py in np.linspace(by, by + bh, 4):
-                                covered.add(tile_of_point(
-                                    (px, py), origin, u_col, u_row))
+                                covered.add(board.tile_of_point((px, py)))
                 lost = sorted(t for t in covered
                               if t in winner and winner[t] not in srcs)
                 if lost:
@@ -6940,7 +6940,7 @@ def report(run):
         if frac > CONFLICT_FRAC_SUSPECT:
             print(f"\nWARNING: {100 * frac:.0f}% of tiles disagree across "
                   f"sources, which is far more than two shots of one board "
-                  f"should. {N}x{N} is probably the wrong size -- at the "
+                  f"should. {board.N}x{board.N} is probably the wrong size -- at the "
                   f"right one this stays under 17%. The merge was written "
                   f"anyway; check it before trusting it.")
         # No "looks fine" branch, deliberately: a low number here is not
@@ -6956,11 +6956,9 @@ def report(run):
 
 def write_debug(run):
     """--debug-dir output."""
-    (args, names, shots, template_path, template, origin, u_col, u_row, W, Hc,
-     N, samples, winner, conflicts, out) = (
-        run.args, run.names, run.shots, run.template_path, run.template,
-        run.origin, run.u_col, run.u_row, run.W, run.Hc, run.N, run.samples,
-        run.winner, run.conflicts, run.out)
+    args, names, shots, samples, winner, conflicts, out, board = (
+        run.args, run.names, run.shots, run.samples, run.winner, run.conflicts,
+        run.out, run.board)
     if args.debug_dir:
         with PHASES("debug overlays"):
             os.makedirs(args.debug_dir, exist_ok=True)
@@ -6968,9 +6966,9 @@ def write_debug(run):
                 [(60, 60, 255), (60, 220, 60), (255, 180, 60), (255, 60, 220),
                  (60, 220, 220), (200, 200, 200)]))}
 
-            prov = (template.astype(np.float32) * 0.35).astype(np.uint8)
+            prov = (board.template.astype(np.float32) * 0.35).astype(np.uint8)
             for (i, j), n in winner.items():
-                r = tile_mask_bbox(origin, u_col, u_row, i, j, W, Hc)
+                r = board.tile_mask_bbox(i, j)
                 if r is None:
                     continue
                 m, (x0, y0, x1, y1) = r
@@ -6980,18 +6978,18 @@ def write_debug(run):
 
             conf_img = prov.copy()
             for (i, j), d, ws in conflicts:
-                poly = tile_poly(origin, u_col, u_row, i, j, 0.0).astype(np.int32)
+                poly = board.tile_poly(i, j, 0.0).astype(np.int32)
                 cv2.polylines(conf_img, [poly], True, (255, 255, 255), 3)
             cv2.imwrite(os.path.join(args.debug_dir, "conflicts.png"), conf_img)
 
             grid = out.copy()
-            for i in range(N + 1):
-                p0 = origin + i * u_col
-                p1 = origin + i * u_col + N * u_row
+            for i in range(board.N + 1):
+                p0 = board.origin + i * board.u_col
+                p1 = board.origin + i * board.u_col + board.N * board.u_row
                 cv2.line(grid, tuple(p0.astype(int)), tuple(p1.astype(int)), (0, 0, 0), 1)
-            for j in range(N + 1):
-                p0 = origin + j * u_row
-                p1 = origin + N * u_col + j * u_row
+            for j in range(board.N + 1):
+                p0 = board.origin + j * board.u_row
+                p1 = board.origin + board.N * board.u_col + j * board.u_row
                 cv2.line(grid, tuple(p0.astype(int)), tuple(p1.astype(int)), (0, 0, 0), 1)
             cv2.imwrite(os.path.join(args.debug_dir, "grid_overlay.png"), grid)
 
@@ -7009,11 +7007,11 @@ def write_debug(run):
                             shots[n].warped)
             with open(os.path.join(args.debug_dir, "anchor.json"), "w") as fh:
                 json.dump({
-                    "map_size": int(N),
-                    "origin": [float(v) for v in origin],
-                    "u_col": [float(v) for v in u_col],
-                    "u_row": [float(v) for v in u_row],
-                    "template": os.path.basename(template_path),
+                    "map_size": int(board.N),
+                    "origin": [float(v) for v in board.origin],
+                    "u_col": [float(v) for v in board.u_col],
+                    "u_row": [float(v) for v in board.u_row],
+                    "template": os.path.basename(board.template_path),
                     "shots": {n: {
                         "scale": float(shots[n].scale),
                         # what this shot itself witnessed, which is the cut the
@@ -7038,7 +7036,7 @@ def write_debug(run):
                 for (i, j), per_img in samples.items():
                     if per_img.get(n, {}).get("explored"):
                         continue
-                    r = tile_mask_bbox(origin, u_col, u_row, i, j, W, Hc)
+                    r = board.tile_mask_bbox(i, j)
                     if r is None:
                         continue
                     m, (x0, y0, x1, y1) = r
@@ -7056,8 +7054,7 @@ def write_debug(run):
                     for (ci, cj), (bx, by, bw, bh), _wc, _pl in shots[n].bars:
                         for di in (-1, 0, 1):
                             for dj in (-1, 0, 1):
-                                poly = tile_poly(origin, u_col, u_row,
-                                                 ci + di, cj + dj, 0.0)
+                                poly = board.tile_poly(ci + di, cj + dj, 0.0)
                                 cv2.polylines(vis, [np.round(poly).astype(np.int32)],
                                               True, (0, 255, 255), 2)
                         cv2.rectangle(vis, (bx, by), (bx + bw, by + bh),
@@ -7073,7 +7070,7 @@ def write_debug(run):
                     vis = shots[n].warped.copy()
                     for i, j, area, mask in shots[n].ruins:
                         vis[mask] = (0, 0, 255)
-                        poly = tile_poly(origin, u_col, u_row, i, j, 0.0)
+                        poly = board.tile_poly(i, j, 0.0)
                         cv2.polylines(vis, [poly.astype(np.int32)], True,
                                       (0, 0, 255), 2)
                     cv2.imwrite(os.path.join(args.debug_dir, f"ruins_{n}.png"), vis)

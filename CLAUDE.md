@@ -2025,7 +2025,13 @@ each tile actually show?).
 **`main()` is a list of phase functions in pipeline order**, from `load_inputs`
 through `write_debug`, sharing one `Run` object. Each phase unpacks the `Run`
 attributes it reads at its top and stores what later phases need at its end.
-`Run.__init__` names every shared value and the phase that sets it. The helpers
+`Run.__init__` names every shared value and the phase that sets it. The board
+geometry — template, lattice (`origin`/`u_col`/`u_row`), `N`, canvas size and
+the rest — is one immutable `Board` on `run.board`, built by `load_board` and
+never replaced; its methods (`tile_poly`, `tile_mask_bbox`, `tile_top_wedge`,
+`tile_of_point`, and `lattice` for helpers that take the triple) wrap the
+module-level helpers, which keep their own signatures because `shoreline/`
+imports them. The helpers
 that used to be closures inside `main` (`anchor_all`, `warp_shot`,
 `sample_shot`, `locked`, `sift_hops`, `corroborate_anchor`,
 `tile_predicate_mask`, `rank`, `sky_rebuild_for`) are module-level functions
