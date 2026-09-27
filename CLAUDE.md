@@ -597,12 +597,12 @@ per-file rects, key them on something unambiguous.
   path. Cross-check
   is *deterministic* (verified: repeated runs give identical numbers), so a
   change in these is real and not RANSAC noise.
-  **`badland_test3`'s 0.027 is only partly independent**: `cym.png` takes one
+  **`badland_test3`'s 0.022 is only partly independent**: `cym.png` takes one
   of its two pan offsets from a SIFT hint (see `pan_hint` above), and
   cross-check measures against that same SIFT geometry. Its other offset, its
   zoom and both other shots are measured normally, so the number is not
   vacuous — but read it as a consistency check rather than an independent one,
-  and judge that set on its union (331) and fog lock (10/68/104) as well.
+  and judge that set on its union (330) and fog lock (10/68/104) as well.
   **`pol_archi_test`'s 0.044 went *up* from 0.035 and is the stronger number of
   the two.** That set's old figure was the partly-vacuous kind described just
   above: `kick.png` took its zoom from SIFT against `pol.png`, and cross-check
@@ -611,7 +611,8 @@ per-file rects, key them on something unambiguous.
   3.6px corner gap against the old 2.8px) is a fully independent measurement
   where 0.035 was a partial self-check. Both sit well under the 0.05 bar. This
   is the one case in this list where a *larger* number is an improvement — do
-  not "fix" it back.
+  not "fix" it back. (It has since come down to 0.012 for an unrelated reason,
+  the fog-ish `top_k` cap; the 0.044 was the independent figure at the time.)
   **`test_ss_fruit` reports 11.1
   tiles, `test_ss_elyruins` 17.4 and `u_forest2` 6.3, and all three are false
   alarms** — see the cross-check caveat below.
