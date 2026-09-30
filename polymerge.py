@@ -2068,55 +2068,20 @@ def _button_blob_circles(img, mask, y0, min_circularity, verify_fill):
     return out
 
 
-BUTTON_FILL_LO, BUTTON_FILL_HI = 0.62, 0.85  # annulus, in ring radii, sampled
-                                              # to test whether a candidate's
-                                              # own button fill looks real --
-                                              # inside the ring stroke, outside
-                                              # the icon glyph, on every shot
-                                              # measured (see the function below)
-BUTTON_FILL_GRAY_MAX = 90     # the flat black fill measured over 200
-                               # (shot, slot) samples across the whole corpus
-                               # sits at gray 0-2 with a p99 of 19 and a single
-                               # outlier at 44 -- 90 is a >2x margin over that
-                               # outlier, not a knife-edge
-BUTTON_FILL_STD_MAX = 30      # the same fill is *flat*: std 0-2 typically, p99
-                               # 19, one outlier at 44. This is what actually
-                               # separates a real button from dark terrain --
-                               # gray alone does not, see below
-BUTTON_FILL_BLUE_HUE = (90, 115)  # the "not your turn" recolor -- Game Stats'
-                                    # ring and Exit's whole fill turn a
-                                    # saturated blue instead of white/black
-                                    # (perilous_test/xin.png,
-                                    # scorched_earth/bard.png) -- measured
-                                    # hue 96-105 at saturation 130-220 across
-                                    # every such button found in the corpus
-BUTTON_FILL_BLUE_SAT_MIN = 130
+BUTTON_FILL_LO, BUTTON_FILL_HI = 0.62, 0.85  # sampled annulus, in ring radii:
+                                              # inside the stroke, outside the
+                                              # icon glyph
+BUTTON_FILL_GRAY_MAX = 90     # real fill: gray 0-2, p99 19, max 44 (200 samples)
+BUTTON_FILL_STD_MAX = 30      # real fill: std 0-2, p99 19; dark terrain 90-103
+BUTTON_FILL_BLUE_HUE = (90, 115)  # the "not your turn" recolor: measured hue
+BUTTON_FILL_BLUE_SAT_MIN = 130    # 96-105, saturation 130-220
 
 
 def _button_fill_is_plausible(img, cx, cy, r):
-    """Is the flat fill just inside this candidate's ring -- between the
-    icon glyph and the stroke, never the icon itself -- a real button's
-    fill (black, or the "not your turn" blue), rather than some patch of
-    board/terrain a noisier detector below mistook for one?
-
-    This is not a brightness test on its own, and cannot be: plenty of
-    ordinary terrain (forest, mountain shadow, deep water) is just as dark
-    as a real button's fill, which is why `basin_treaties/q.png`'s and
-    `perilous_test/xin.png`'s own dark terrain circles pass a bare
-    `gray < 90` cut and have to be caught some other way. What actually
-    separates them is *uniformity* -- a button's fill is one flat UI
-    color and terrain is not, measured at std 0-2 (p99 19) against
-    terrain's 90-103 on the exact false positives this exists to reject.
-    Requiring both catches what either alone misses: gray-but-textured
-    terrain fails the std bar, and the saturated-but-bright blue variant
-    would fail a plain gray cut without the second branch.
-
-    Consulted by _button_row_hough_candidates and
-    _button_row_blue_candidates below -- both noisier than the blob path
-    in ways this catches -- but never by the blob path itself, whose own
-    connected-component test already implies a real ring; re-deriving that
-    here from a handful of sampled pixels would be strictly weaker
-    evidence, not stronger."""
+    """Is the fill just inside this candidate's ring a real button's -- flat
+    black, or the "not your turn" blue -- rather than terrain? Flatness is
+    what separates them: dark terrain is as dark as a button (basin_treaties,
+    perilous_test) but textured. Used by the Hough and blue nominators only."""
     h, w = img.shape[:2]
     y0 = max(0, int(cy - BUTTON_FILL_HI * r))
     y1 = min(h, int(cy + BUTTON_FILL_HI * r) + 1)
@@ -2139,44 +2104,13 @@ def _button_fill_is_plausible(img, cx, cy, r):
 
 
 def _button_row_hough_candidates(img):
-    """Circular button rings via Hough transform, for a ring that survives
-    intact but not *isolated* -- the blob path's connected-component test
-    cannot tell a real ring fused to the board from an actual chunk of
-    board, but a ring's edge is still a clean, unbroken circle either way,
-    which is exactly what Hough looks for instead of connectivity.
-
-    Measured on `basin_treaties/q.png`, `test_ss_elyruins/hood.png` and
-    `u_forest2/ely.png` -- shots where every one of the four buttons is
-    plainly visible and the blob path finds zero or one of them. The
-    mechanism is the same tessellated-lattice fact this codebase already
-    relies on for the fog test elsewhere: the board art is one continuous
-    mesh of touching bright facets, its lower boundary is jagged rather
-    than a clean line (the same scalloped-lip shape the fog cube's own
-    silhouette has), and on these particular captures one facet's point
-    happens to reach down far enough to touch a ring's stroke by a pixel
-    or two -- fusing the *entire* board mesh and that ring into one
-    connected component. (On `basin_treaties/q.png` the touch is the
-    board's own silhouette edge doing the same thing at a coarser scale.)
-    Nothing decorative is involved and no game-drawn element is at fault;
-    it is the ordinary lattice boundary's own irregularity meeting a ring
-    by chance, on these specific device/board combinations.
-
-    **Hough alone is not enough -- it is noisy in a way the blob path
-    structurally cannot be, and that is what _button_fill_is_plausible is
-    for.** A tessellated fog/ice pattern is full of circular-ish gradient
-    structure, including at plausible button radii and spacing:
-    `missized_test/z1.jpg`, a screenshot with no button row in frame at
-    all (confirmed with the project owner), produces two Hough circles
-    whose x-fractions happen to sum to 1.00 -- a real button pair's
-    signature, from a board with no buttons. Every one of that shot's
-    circles sits on bright, textured fog and fails the fill check.
-
-    Deliberately only run as a fallback: it costs a Gaussian blur plus a
-    Hough transform on every shot that reaches it, which the blob path's
-    fast case never pays.
-
-    Same (cx, cy, r) fraction convention as _button_row_blob_candidates,
-    so the lists from all three nominators concatenate directly."""
+    """Button rings via Hough transform, for a ring the board's jagged edge
+    touches and so fuses into one component with the whole board
+    (basin_treaties/q.png, test_ss_elyruins/hood.png, u_forest2/ely.png).
+    Noisy on textured fog -- missized_test/z1.jpg, with no button row in
+    frame, yields a plausible-looking circle pair -- so every circle must pass
+    _button_fill_is_plausible. Fallback only; same (cx, cy, r) fractions as
+    the blob nominator."""
     h, w = img.shape[:2]
     band, y0 = _button_band(img)
     gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
@@ -2199,63 +2133,18 @@ def _button_row_hough_candidates(img):
     return out
 
 
-BUTTON_BLUE_MIN_CIRCULARITY = 0.30  # far looser than the blob path's 0.70:
-                                     # Exit's solid recolored disc is as clean
-                                     # a circle as any button (measured
-                                     # circ 0.97), but Game Stats' recolored
-                                     # *ring* is thin and broken by its own
-                                     # tribe glyph reaching the stroke
-                                     # (measured 0.42-0.43) -- geometry this
-                                     # weak is exactly what
-                                     # _button_fill_is_plausible and
-                                     # _fit_button_row's own row model exist
-                                     # to arbitrate, not this test
+BUTTON_BLUE_MIN_CIRCULARITY = 0.30  # loose: a recolored Game Stats ring
+                                     # measures 0.42-0.43; the fill check and
+                                     # row fit arbitrate
 
 
 def _button_row_blue_candidates(img):
-    """Saturated-blue blobs in the button band -- Exit's whole fill, or
-    Game Stats' ring -- for the "not your turn" recolor state neither of
-    the other two nominators can see at all.
-
-    This is a different game state, not a capture artifact: per the
-    project owner, Game Stats' ring and Exit's fill both turn a saturated
-    blue instead of white/black while waiting on another player, and nothing
-    about that state is a *ring* the way the other three buttons still are
-    -- Exit becomes a filled disc with no stroke to speak of, so neither
-    the blob path's white-ring threshold nor Hough's circular-edge search
-    has anything to find there regardless of the board behind it. Direct
-    color thresholding is the only nominator that can propose this button
-    at all, on any shot.
-
-    Measured across the corpus at hue 96-105, saturation 130-220 -- the
-    same range `_button_fill_is_plausible` accepts, which is deliberate:
-    both are reading the same paint. Real terrain blue (water, ice) reads
-    nowhere near this saturated: the false candidates this must reject in
-    `perilous_test/xin.png` peak at S=33, one fifth of the real button's
-    floor.
-
-    `perilous_test/xin.png` is the shot in the corpus this recovers. Its
-    one candidate (Exit) joins two Hough-found white rings (Settings, Tech
-    Tree) for a clean 3-point fit, d agreeing to under 0.001 across all
-    three.
-
-    **It does not recover Game Stats, and cannot in general.** Game
-    Stats' own tribe glyph is not a small icon on a mostly-empty fill the
-    way the other three buttons' icons are (see `HEAD_SCALE_LO/HI`'s own
-    note that this icon's size relative to its button varies and is often
-    large) -- so `_button_fill_is_plausible`'s sampling annulus lands on
-    glyph edge, not flat paint, and correctly refuses it. Measured on
-    `scorched_earth/bard.png`: its Game Stats candidate reads std 35 (over
-    `BUTTON_FILL_STD_MAX`) and a mean hue of 82 (outside the blue band),
-    both a direct consequence of the glyph, and that shot is left with
-    only its one verified Exit candidate -- correctly not enough on its
-    own, for the same reason a single anchor from any nominator never is.
-    This is the same fact this codebase has stated since the head-matching
-    feature was built ("Game Stats itself is essentially never a
-    candidate"), showing up again in a new detector rather than a new
-    problem.
-
-    Same (cx, cy, r) fraction convention as the other two nominators."""
+    """Saturated-blue blobs in the button band, for the "not your turn"
+    state, where Game Stats' ring and Exit's whole fill turn blue and Exit
+    has no ring for the other nominators to find. Terrain blue is far less
+    saturated (S <= 33 against the button's 130+). Recovers
+    perilous_test/xin.png's Exit; Game Stats itself fails the fill check,
+    its glyph filling the sampled annulus (scorched_earth/bard.png)."""
     band, y0 = _button_band(img)
     hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
     mask = ((hsv[:, :, 0] >= BUTTON_FILL_BLUE_HUE[0]) & (hsv[:, :, 0] <= BUTTON_FILL_BLUE_HUE[1]) &
@@ -2264,99 +2153,24 @@ def _button_row_blue_candidates(img):
                                 verify_fill=True)
 
 
-BUTTON_ROW_FIT_MAX_RESID = 0.006  # calibrated below: every genuine fit in
-                                   # the corpus lands under 0.003; this is a
-                                   # 2x margin, not a knife-edge
-BUTTON_ROW_RADIUS_RATIO = 1.35    # every button on the row renders at the
-                                   # same size, so a real triple's radii
-                                   # should barely differ; loose enough for
-                                   # ordinary measurement noise, tight
-                                   # enough to reject a same-brightness blob
-                                   # of a genuinely different size
+BUTTON_ROW_FIT_MAX_RESID = 0.006  # all 66 corpus shots with 3+ candidates fit
+                                   # on slots {0, 2, 3} under 0.003
+BUTTON_ROW_RADIUS_RATIO = 1.35    # the buttons are one size
 
 
 def _fit_button_row(cands):
-    """Explain 2, 3 or 4 of these raw (cx, cy, r) button-row candidates as
-    one evenly-spaced, screen-centered row -- slot i in 0..3 at
-    cx = 0.5 + (i - 1.5) * d for one shared d, confirmed on the calibration
-    corpus (BUTTON_ROW_ANCHOR_X's idx0/idx3 sum to 0.999, and idx2 sits a
-    third as far from center as idx0/idx3 -- exactly the 0.5d/1.5d ratio
-    this model predicts). This is the one place that actually decides what
-    is real: every candidate from every nominator above is a proposal, not
-    a claim, and only a self-consistent subset of them is ever trusted.
+    """Fit 2-4 button candidates to one evenly spaced, screen-centred row:
+    slot i at cx = 0.5 + (i - 1.5) * d, for one shared d.
 
-    This is a different *kind* of evidence from matching a candidate
-    against BUTTON_ROW_ANCHOR_X's fixed, corpus-averaged fractions: fitting
-    k points to a 1-parameter family (one shared d) is over-determined for
-    any k >= 2, so a tight fit is real corroboration regardless of what
-    this device's own spacing actually is -- which is exactly what a
-    device whose spacing differs from the portrait-calibration corpus
-    needs and the fixed table cannot give it. `test_screenshots/h.jpg` and
-    `test_ss_2/hood.jpg` place Tech Tree and End Turn only 0.084 apart
-    against the corpus's own 0.189 average -- both landed inside idx=2's
-    tolerance window and neither close enough to idx=3, so the fixed-table
-    match silently produced a wrong crop from two buttons crowding one
-    slot (two of the corpus's previously-unexplained mismatches; see
-    CLAUDE.md). Fit on their own three visible buttons instead (Settings,
-    Tech Tree, End Turn -- Game Stats itself is essentially never a
-    candidate, per _button_row_blob_candidates' own note about its
-    interior), this device's real d=0.084 falls out directly, residual
-    0.0002.
+    Every nominator above only proposes; this decides. Because the intercept
+    is fixed at the screen centre, any k >= 2 points over-determine d, so a
+    tight fit corroborates whatever this device's own spacing is. That is
+    what fixed-table matching could not do: test_screenshots/h.jpg has a
+    spacing of 0.084 against the corpus's 0.189. Slot pairs need not be
+    symmetric. The best fit wins on most points, then lowest residual, never
+    first found.
 
-    Verified against every shot in the corpus with 3+ raw candidates (66 of
-    77): all 66 fit this model on indices {0, 2, 3} at a residual under
-    0.003, none at any other index triple, and none rejected -- so the
-    threshold below has a 2x margin on the whole corpus, not a fitted
-    edge.
-
-    **k=2 is the same fit, not a separate case, and that is the point of
-    writing it this way.** It used to be special-cased to symmetric slot
-    pairs only ({0,3} or {1,2}), on the reasoning that two points fit
-    *some* 2-slot hypothesis trivially so only a mirror pair -- checkable
-    by nothing but `p + q == 1`, without needing to know d at all -- was
-    real evidence. That reasoning proves too little: the least-squares fit
-    above is *exactly as over-determined* for any two distinct slot
-    indices, symmetric or not, because the model's intercept is fixed at
-    the screen's own center (0.5) rather than fitted -- two equations,
-    one unknown d, one residual to check, whichever pair of slots is
-    tried. Symmetric pairs are simply the case where that check reduces to
-    `p + q ~= 1` by algebra (worked out and confirmed: solving the
-    weighted least squares for u = (-1.5, 1.5) or (-0.5, 0.5) reproduces
-    the old `gap/3` and `gap` formulas exactly), not a different or
-    stronger kind of evidence than an asymmetric pair like {1, 3}.
-
-    That generality is load-bearing on four shots that were previously
-    invisible to the k=2 case entirely: `archers_test2/yad.png` resolves
-    on {2, 3}, `control_c/ai.png` and `scorched_earth/lux.jpg` on {0, 2},
-    none of them symmetric and so none reachable by the old
-    mirror-pair-only special case however tightly the two points agreed.
-    `star_change/oum2.png` still resolves on the one symmetric pair {0, 3}
-    the old case already handled, unchanged. The old case's one real
-    advantage -- deciding between a pair's two symmetric readings (spacing
-    d for {1,2}, or 3d for {0,3}) without an extra assumption -- is now
-    just one more entry in the same `slot_idxs` search the k=3/4 case
-    already runs, resolved as whichever reading actually clears the
-    residual bar rather than by tiebreaking against a corpus average.
-
-    It is *not* what saves `scorched_earth/bard.png`, which is worth
-    recording since it looks like it should be: that shot's board mesh
-    fuses so much of the row into one blob that no nominator recovers a
-    white ring, and while Exit's recolored fill is found and verified,
-    Game Stats' recolored ring is not -- its own tribe glyph is large
-    enough that the fill-plausibility check samples glyph edge rather than
-    flat paint (see `_button_row_blue_candidates`) and correctly refuses
-    it. One verified candidate is exactly as insufficient here as it is
-    anywhere else in this file, so that shot still declines.
-
-    **The best fit wins on (most points, then lowest residual), not the
-    first one found**, which matters most exactly here: with more than a
-    couple of candidates in play (routine once the noisier nominators are
-    in the mix) more than one k=2 reading can clear the residual bar, and
-    there is no basis for preferring whichever `combinations()` happens to
-    reach first.
-
-    Returns (d, {idx: (cx, cy, r)}) for the best fit, or None if nothing
-    fits tightly enough at any k."""
+    Returns (d, {idx: (cx, cy, r)}), or None if nothing fits tightly enough."""
     cands = sorted(cands, key=lambda c: c[0])
     n = len(cands)
     best = None
@@ -2384,13 +2198,8 @@ def _fit_button_row(cands):
 
 
 def _merge_button_candidates(base, extra):
-    """base + extra, dropping anything in extra that sits within 0.01 (x
-    and y) of a candidate base already has. A second nominator finding the
-    same real button is corroboration, not a second data point for
-    _fit_button_row to weigh -- and without this, a near-duplicate pair
-    both entering the k-search would cost nothing on a correct fit but
-    could let two near-identical readings of the same noise source pass
-    for independent agreement."""
+    """base + extra, minus any extra within 0.01 (x and y) of a base
+    candidate, so one button found twice cannot pass for two points."""
     out = list(base)
     for c in extra:
         if not any(abs(c[0] - b[0]) < 0.01 and abs(c[1] - b[1]) < 0.01 for b in out):
@@ -2400,36 +2209,13 @@ def _merge_button_candidates(base, extra):
 
 def locate_game_stats_icon(img):
     """Where the Game Stats button's icon sits in this (raw, unwarped)
-    screenshot, as (cx, cy, r) in pixels, or None when fewer than two
-    buttons were found to place it from. Zero anchors would be a corpus-average
-    guess and one an extrapolation from an average spacing; both were measured
-    producing confident wrong matches no score threshold could catch.
+    screenshot, as (cx, cy, r) in pixels, or None with fewer than two buttons
+    to place it from (zero or one anchor produced confident wrong matches).
 
-    Tries the row fit above first (see _fit_button_row for why it is
-    stronger evidence than matching against a fixed position table), and
-    only falls back to that fixed table -- BUTTON_ROW_ANCHOR_X, calibrated
-    on 63 portrait screenshots -- when nothing fits at all. **A duplicate
-    index in that fallback must not count as two anchors**: two distinct
-    real buttons can both fall inside one anchor's tolerance window (see
-    _fit_button_row's docstring for the worked case), which would
-    otherwise hand the regression two points sharing one index -- a
-    singular system whose minimum-norm solution silently produces *some*
-    crop rather than raising. Keep only the closer-to-canonical candidate
-    per index before counting or fitting, so two buttons contending for
-    one slot cost this shot an anchor rather than fabricating one from
-    noise.
-
-    **The two noisier nominators run only when the fast blob path's own
-    fit fails, and run together rather than staged one after the other.**
-    There is no ordering reason to prefer Hough's candidates over the blue
-    detector's or the reverse -- they key on different, non-overlapping
-    render states (a merged-but-intact white ring; a "not your turn"
-    recolor with no ring to find at all) -- and `_fit_button_row` is what
-    actually arbitrates whichever of them turn out to be real, exactly as
-    it does for the blob path's own candidates. The fast, well-tested blob
-    path runs and is tried alone first on every shot; the extra cost below
-    is paid only by the minority that reach here with nothing to show for
-    it otherwise."""
+    The blob nominator is tried alone first; only if its row fit fails do
+    the Hough and blue nominators join. If no row fits, falls back to the
+    BUTTON_ROW_ANCHOR_X table, keeping one candidate per slot: two buttons
+    in one slot's window must not count as two anchors."""
     h, w = img.shape[:2]
     cands = _button_row_blob_candidates(img)
     fit = _fit_button_row(cands)
@@ -2462,49 +2248,21 @@ def locate_game_stats_icon(img):
     return int(round(cx * w)), int(round(cy * h)), int(round(r * w))
 
 
-# The crop handed to the matcher, as a multiple of the button's own ring
-# radius. It has to be wide enough that the head is wholly inside it at the
-# largest scale the sweep below tries (1.85 radii tall), with room for the
-# match to slide; 1.4 gives that with a little margin and nothing more, since
-# every extra pixel is background the correlation has to explain away.
+# The crop handed to the matcher, in ring radii: just wide enough to hold the
+# largest head swept, since extra background dilutes the correlation.
 HEAD_ICON_REGION = 1.4
-# The head's own height, in button-ring radii. Measured over 16 shots spanning
-# the corpus: 1.235 to 1.742, mean 1.503, sd 0.131. It is *not* a constant --
-# the icon does not fill a fixed fraction of its button -- which is why this is
-# swept rather than assumed. The old code assumed one (a 0.78-of-radius
-# interior circle) and that was the single largest cause of lost recall.
+# The head's height in ring radii varies by icon (1.235-1.742 over 16 shots),
+# so it is swept, never assumed.
 HEAD_SCALE_LO, HEAD_SCALE_HI, HEAD_SCALE_STEPS = 1.15, 1.85, 8
 HEAD_ICON_MIN_PIXELS = 60       # too little sprite left to say anything
 HEAD_SPRITE_MAX = 256           # catalog sprites are stored no larger than
-                                # this on their long side; they are only ever
-                                # rendered at a fraction of HEAD_ICON_CANON,
-                                # and the assets ship at up to 1024x1024.
+                                # this (assets ship at up to 1024x1024)
 
-# Head scale is a property of the *icon*, not of the screenshot -- each
-# tribe/skin's own art is drawn at a fixed size relative to its button ring,
-# and it is the button-to-button variation across the 29 catalog entries that
-# makes HEAD_SCALE_LO..HI as wide as it is, not variation across captures of
-# one icon. Measured over every confidently-identified corpus shot (NCC>=0.55,
-# margin>=0.15, so a shaky identification cannot poison another tribe's
-# calibration): the within-entry spread across different screenshots -- often
-# different devices -- of the *same* icon is 0.00-0.06 (mean 0.024, n=19
-# entries with 2+ observations), while the entries themselves range center
-# 1.22-1.74. So once an icon's own scale is known, resweeping the full
-# HEAD_SCALE_LO..HI range for it on every shot is paying for per-capture
-# uncertainty that the data says is not there.
-#
-# HEAD_SCALE_BY_ENTRY centers a narrow +-HEAD_SCALE_ENTRY_TOL band on each
-# calibrated entry's own mean instead. The tolerance is 2.7x the largest
-# within-entry spread actually observed (0.06, x.png and y.png), and the band
-# is still searched at HEAD_SCALE_ENTRY_STEPS steps -- 0.053 apart, finer than
-# the old global sweep's ~0.10 -- so a calibrated entry is matched *more*
-# precisely at roughly half the per-entry cost (4 steps against 8). An entry
-# the corpus happens to hold no confident shot of (10 of 29 -- rarer skins:
-# Ai-Mo, Aquarion base and Forgotten, Bardur base and skin, Elyrion's Midnight
-# skin, Vengir's own base render, Vengir's other skin, Luxidoor's skin,
-# Quetzali's skin) keeps the full, unnarrowed sweep, since there is nothing to
-# calibrate it against -- narrowing on no evidence is exactly the mistake
-# HEAD_SCALE_LO/HI itself replaced (see that constant's own history).
+# But it is fixed per *icon*: the same icon across screenshots and devices
+# varies 0.00-0.06, against 1.22-1.74 between icons. So an entry with a
+# confident corpus measurement is swept narrowly around it (tolerance 2.7x the
+# largest spread seen, finer steps, half the cost); an uncalibrated entry keeps
+# the full sweep.
 HEAD_SCALE_ENTRY_TOL = 0.08
 HEAD_SCALE_ENTRY_STEPS = 4
 HEAD_SCALE_BY_ENTRY = {
@@ -2517,9 +2275,7 @@ HEAD_SCALE_BY_ENTRY = {
 
 
 def _head_scale_sweep(name):
-    """Scale candidates to try for one catalog entry: a narrow, calibrated
-    band around its own measured scale when one exists, else the full
-    uncalibrated sweep. See HEAD_SCALE_BY_ENTRY above."""
+    """Scale candidates for one catalog entry (see HEAD_SCALE_BY_ENTRY)."""
     center = HEAD_SCALE_BY_ENTRY.get(name)
     if center is None:
         return np.linspace(HEAD_SCALE_LO, HEAD_SCALE_HI, HEAD_SCALE_STEPS)
@@ -2532,16 +2288,10 @@ def head_icon_region(img, cx, cy, r):
     """The Game Stats button's neighbourhood, normalized to a fixed canonical
     size, as float32 -- or None if the location is degenerate.
 
-    Normalizing by the *button radius* is what makes one scale sweep serve
-    every device: after this the head is always between HEAD_SCALE_LO and
-    HEAD_SCALE_HI canonical radii tall whatever the capture's resolution.
-
-    Note this deliberately returns the whole square neighbourhood and applies
-    no interior circle. The ring and the rank badge are inside it, and are
-    handled where they belong -- by masking to the *sprite's* own alpha at
-    match time, so only pixels a candidate head actually claims are ever
-    compared. Cutting a fixed circle here instead threw away part of the head
-    on some captures and kept ring on others."""
+    Normalizing by the button radius lets one scale sweep serve every device.
+    No interior circle is cut: the ring and rank badge are excluded at match
+    time by the sprite's own alpha, whereas a fixed circle clipped the head on
+    some captures and kept ring on others."""
     R = int(round(r * HEAD_ICON_REGION))
     if R < 8:
         return None
@@ -2560,22 +2310,15 @@ def head_icon_region(img, cx, cy, r):
 PLAYER_HEAD_MIN_CORR = 0.55     # floor on the winning entry's own score
 PLAYER_HEAD_MIN_MARGIN = 0.10   # lead it must hold over the runner-up
 HEAD_CLUSTER_MIN_NCC = 0.90     # two shots' own icons this alike are one player
-HEAD_SAME_ICON_NCC = 0.98       # ...and this alike are the *same icon*, so the
-                                # second one need not be matched against the
-                                # catalog at all. That matters because the two
-                                # costs are nothing like each other: correlating
-                                # two shots is 0.2ms for every pair in a merge,
-                                # while one catalog match sweeps every sprite at
-                                # several scales. Sitting far above the 0.926 of
-                                # the closest genuinely-different pair in the
-                                # corpus, this can only ever collapse work.
+HEAD_SAME_ICON_NCC = 0.98       # ...and this alike are the same icon, so only
+                                # one needs a (costly) catalog match. Far above
+                                # the closest different pair's 0.926.
 
 _head_catalog_cache = None
 
 
 def head_icon_dir():
-    """Assets/Heads: the working directory, else next to this script (see
-    _asset_path)."""
+    """Assets/Heads, via _asset_path."""
     return _asset_path(HEAD_ICON_DIR)
 
 
@@ -2583,19 +2326,11 @@ def load_head_catalog():
     """Every Assets/Heads/*.png as a (premultiplied color, alpha) pair at its
     own native aspect ratio, keyed by filename, cached at module scope.
 
-    Composited over black, matching the button's own dark fill, and cropped to
-    the sprite's own alpha extent -- but **not** resized to a square. That
-    squash was a real defect rather than a detail: the alpha extents run from
-    aspect 0.561 to 1.169 across the 29 assets, so forcing each to a square
-    stretched every candidate by a different amount, up to 45%, and then
-    compared them against an undistorted screenshot. Correct matches topped
-    out near 0.54 because of it; with the aspect kept they reach 0.94-0.99.
-
-    Downsampled once to HEAD_SPRITE_MAX on its long side, because the match
-    only ever renders these at a fraction of HEAD_ICON_CANON and rescaling a
-    1024x1024 asset down to ~100px on every one of 8 scale candidates x 29
-    entries was most of this phase's cost -- 478ms a shot against 104ms with
-    the cap, for scores identical to three decimals."""
+    Composited over black (the button's fill) and cropped to the alpha extent,
+    but never squashed to a square: aspects run 0.561-1.169, and squashing
+    held correct matches near 0.54 where they now reach 0.94-0.99. Capped at
+    HEAD_SPRITE_MAX, which took the phase from 478 to 104 ms a shot for
+    identical scores."""
     global _head_catalog_cache
     if _head_catalog_cache is not None:
         return _head_catalog_cache
@@ -2628,21 +2363,10 @@ def _head_scores(region, catalog):
     """Every catalog entry's best masked correlation against this region, as
     {filename: ncc}, searching scale and position.
 
-    Three things make this work where a single fixed comparison did not, and
-    all three are about geometry rather than about color:
-      * the sprite keeps its aspect (see load_head_catalog);
-      * only the sprite's own alpha is compared, so the button's white ring,
-        its black fill and the rank badge in the corner are never scored --
-        they are simply not part of any candidate head;
-      * the head's size is searched rather than assumed, because it is not a
-        fixed fraction of the button (see HEAD_SCALE_LO) -- though it *is*
-        fixed per icon, which is what narrows the search per entry (see
-        HEAD_SCALE_BY_ENTRY).
-
-    matchTemplate locates each scale cheaply, then the masked correlation is
-    evaluated in a 3x3 window around that peak: the unmasked peak is close but
-    not always exact, since the ring it can see and the mask cannot pulls it a
-    pixel or two."""
+    Only pixels under the sprite's own alpha are compared, so the ring, fill
+    and rank badge never score. matchTemplate finds each scale's peak cheaply;
+    the masked correlation is then taken in a 3x3 window around it, since the
+    unmasked peak can sit a pixel or two off."""
     C = HEAD_ICON_CANON
     rr = C / (2.0 * HEAD_ICON_REGION)       # the button's radius, canonically
     scores = {}
@@ -2685,27 +2409,12 @@ def match_head_icon(region, catalog):
     """The catalog filename this icon region looks most like, as (key, ncc),
     or None if nothing clears the confidence gate.
 
-    Correlation is over color (all three BGR channels pooled and mean-centred
-    as one vector). A tribe/skin's head renders in one fixed palette whoever
-    is looking at it, so color is real signal here rather than noise.
-
-    It is worth knowing what color does *not* survive, since the code used to
-    claim it did: two captures of the identical icon can differ by a chroma
-    transform -- measured on one corpus pair as a 3x3 matrix in linear light
-    whose rows sum to 1.0, explaining 99.8% of the difference, i.e. a gamut
-    conversion between capture pipelines. It leaves the neutral axis untouched
-    at every lightness and moves saturated pixels in proportion to their
-    chroma. Mean-centring does not undo that, and no per-channel correction
-    does either. It cost a correct match once, when the margin budget was 0.02
-    and the geometry above was throwing away most of the signal; against the
-    0.2-0.6 margins this now returns it is immaterial.
-
-    The gate has two parts. The floor rejects a region that resembles nothing
-    catalogued -- an uncatalogued tribe or skin, which really happens (the
-    corpus has an Oumaji shot wearing the Khondor skin, which is not in
-    Assets/Heads and scores 0.39 against base Oumaji). The margin rejects a
-    genuine tie. Both sit far below what a correct match returns: over the
-    corpus those run 0.83-0.99 at margins of 0.20-0.59."""
+    Correlation is over colour (BGR pooled): a head renders in one fixed
+    palette for every viewer. Capture pipelines can differ by a gamut
+    conversion that mean-centring does not undo, which is immaterial at the
+    current margins. The floor rejects an uncatalogued icon (an Oumaji
+    Khondor shot scores 0.39); the margin rejects a tie. Correct matches run
+    0.83-0.99 at margins of 0.20-0.59."""
     scores = _head_scores(region, catalog)
     if not scores:
         return None
@@ -2718,19 +2427,14 @@ def match_head_icon(region, catalog):
 
 
 def player_icon_region(img):
-    """This screenshot's own Game Stats icon, canonically framed, or None.
-
-    None when locate_game_stats_icon cannot place the button (it needs at
-    least two real button-row anchors)."""
+    """This screenshot's own Game Stats icon, canonically framed, or None when
+    locate_game_stats_icon cannot place it."""
     loc = locate_game_stats_icon(img)
     return None if loc is None else head_icon_region(img, *loc)
 
 
 def icon_similarity(a, b):
-    """How alike two canonically-framed icon regions are, as a plain NCC over
-    all three channels pooled. Both sides come from screenshots, so there is
-    nothing here that mean-centring does not already cover -- which is the
-    whole reason this question is so much easier than naming the tribe."""
+    """Plain NCC between two canonically framed icon regions, channels pooled."""
     u = a.ravel() - a.mean()
     v = b.ravel() - b.mean()
     d = float(np.sqrt((u * u).sum() * (v * v).sum()))
@@ -2741,30 +2445,12 @@ def group_shots_by_icon(region_of):
     """Group shot names by whose Game Stats icon they carry, as a list of
     lists, without consulting the catalog at all.
 
-    Two screenshots are compared against *each other* rather than against a
-    reference render, which is a far easier question than naming the tribe:
-    they share a renderer, a ring, a badge position and usually a device, so
-    nothing has to be bridged. Measured over every within-set pair in the
-    corpus, same-player pairs correlate 0.926-1.000 and different-player pairs
-    0.017-0.837 -- populations that do not overlap.
-
-    That matters beyond robustness: grouping is what a per-player view
-    actually needs, and it keeps working for a tribe or skin Assets/Heads does
-    not have. Naming is then a separate, optional step that only decides which
-    color to draw in.
-
-    The single link at HEAD_CLUSTER_MIN_NCC is deliberately loose rather than
-    knife-edge. The one pair in the corpus that sits between the populations
-    is vengir_cultist's, at 0.926 -- two *different* players on the same tribe
-    wearing different skins. A threshold tight enough to split them would sit
-    0.031 below the worst genuine same-player pair, calibrated on one sample;
-    the catalog splits that case cleanly instead (see the group split in
-    main's player-identification phase), so this bar is set where both margins
-    are comfortable.
-
-    Note what no method can separate: two players on the same tribe *and* the
-    same skin render identically, so they are one group here and there is no
-    signal anywhere that would tell them apart."""
+    Shots are compared with each other, a far easier question than naming the
+    tribe, and one that works for icons the catalog lacks: same-player pairs
+    correlate 0.926-1.000, different players 0.017-0.837. The one pair in
+    between (vengir_cultist, 0.926: one tribe, two skins) is left to the
+    catalog split in identify_players. Two players on the same tribe and skin
+    are indistinguishable by any method."""
     names = [n for n in region_of if region_of[n] is not None]
     parent = {n: n for n in names}
 
@@ -2786,16 +2472,9 @@ def group_shots_by_icon(region_of):
     return [sorted(g) for g in groups.values()]
 
 
-# Each of the 16 tribes' own default color, straight from the "Color" column
-# of the Tribes table on https://polytopia.fandom.com/wiki/Tribes (hex RGB
-# in a trailing comment, precomputed to BGR for OpenCV in the tuple itself).
-# In the wiki's own order: the 12 regular tribes first, then the 4 special
-# ones, then any skin whose own color differs from its base tribe's -- the
-# wiki names exactly two (Aquarion's "Forgotten", Cymanti's "New Dawn"), and
-# a skin like that is a genuinely different color identity, so it gets its
-# own row here rather than a separate lookup table. This list is also the
-# fixed pool _assign_vision_colors draws a substitute from -- see there for
-# why one is ever needed.
+# Each tribe's default colour from the "Color" column of
+# https://polytopia.fandom.com/wiki/Tribes (hex RGB in the comment), in the
+# wiki's order, plus the two skins that change it. One row per distinct colour.
 TRIBE_COLORS_BGR = (
     ("Xin-xi",   (0, 0, 204)),      # cc0000
     ("Imperius", (255, 0, 0)),      # 0000ff
@@ -2818,18 +2497,9 @@ TRIBE_COLORS_BGR = (
 )
 _TRIBE_COLOR_OF = dict(TRIBE_COLORS_BGR)
 
-# Assets/Heads/ filename -> tribe (or named skin, for the rare skin with its
-# own color -- see TRIBE_COLORS_BGR above). Base tribes are coded by first
-# letter, or first two when that collides with another tribe -- the only
-# collision among these 16 names is "A" (Ai-Mo, Aquarion), hence "ai"/"aq".
-# A "2" suffix is a cosmetic skin of that same base tribe (confirmed with
-# the project owner against the wiki's own "Tribe Skins" table: h2
-# Hoodrick's Yorthwober, i2 Imperius's Lirepacci, and so on) -- a skin is a
-# genuinely different identity for matching purposes, since its head icon
-# looks different. Most skins share their base tribe's color and map to it
-# unchanged; aq2.png (Forgotten) and c2.png (New Dawn) do not -- the wiki's
-# only two color-changing skins -- so each maps to its own row above instead
-# of to its base tribe.
+# Assets/Heads filename -> tribe (or colour-changing skin). Base tribes are
+# coded by first letter ("ai"/"aq" for the one collision); a "2" suffix is a
+# skin of that tribe, which shares its colour except aq2 and c2.
 HEAD_TRIBE = {
     "x.png": "Xin-xi", "x2.png": "Xin-xi",       # x2 = Sha-po
     "i.png": "Imperius", "i2.png": "Imperius",   # i2 = Lirepacci
@@ -2859,12 +2529,8 @@ def tribe_default_color(player_key):
 PLAYER_VISION_PALETTE = (
     (255, 90, 0), (0, 140, 255), (40, 180, 40), (200, 0, 200),
     (255, 220, 0), (30, 90, 200), (0, 200, 200), (140, 100, 255),
-)  # BGR fallback for any identified player whose own tribe color is
-   # already taken by someone else in this merge (a base tribe and its own
-   # skin, the only case reached in practice -- see _assign_vision_colors)
-   # or that tribe_default_color cannot place at all. Verified clear of
-   # every tribe's own color in TRIBE_COLORS_BGR, of RUIN_MARK_BGR's
-   # violet, and of the spawn-zone layer's saturated red -- cycles past 8.
+)  # BGR for a player whose tribe colour is taken or unknown. Clear of every
+   # tribe colour, RUIN_MARK_BGR and the spawn-zone red; cycles past 8.
 
 
 def _assign_vision_colors(keys):
@@ -2872,16 +2538,9 @@ def _assign_vision_colors(keys):
     tribe's own default when nobody else identified in this merge already
     has it, else the next unused color from PLAYER_VISION_PALETTE.
 
-    A base tribe and its own skin sharing one default color is the
-    motivating case (see HEAD_TRIBE) -- both shots are the same tribe by the
-    game's own reckoning, just different cosmetic skins, so both may
-    legitimately show up identified separately in one merge and must not
-    then draw indistinguishably. First claim wins in sorted-key order, which
-    happens to put a base tribe (e.g. "i.png") ahead of its own skin
-    ("i2.png") whenever both appear, so the skin is the one that gets
-    bumped -- to a palette color, not another tribe's own: drawing it in
-    (say) Imperius's blue would read as a second Imperius player rather
-    than as a second Xin-xi one."""
+    The case is a base tribe and its own skin in one merge. First claim wins
+    in sorted order, so the skin is bumped -- to the palette, never to another
+    tribe's colour, which would read as that tribe."""
     used = set()
     assigned = {}
     unresolved = []
@@ -2901,11 +2560,9 @@ def _assign_vision_colors(keys):
     return assigned
 
 
-# The four tile-adjacency directions, as (di, dj, vertex-offset, vertex-offset):
-# crossing from tile (i,j) into its neighbor at (i+di, j+dj) crosses the edge
-# between lattice vertices (i,j)+offset0 and (i,j)+offset1. Vertex (a,b) is
-# origin + a*u_col + b*u_row -- the same lattice tile_poly builds tiles from,
-# just addressed by corner rather than by tile.
+# (di, dj, vertex offset, vertex offset): the neighbor at (i+di, j+dj) lies
+# across the edge between lattice vertices (i,j)+offset0 and (i,j)+offset1,
+# vertex (a,b) being origin + a*u_col + b*u_row.
 _VISION_EDGE_DIRS = (
     (-1, 0, (0, 0), (0, 1)),   # west edge, border with tile (i-1, j)
     (1, 0, (1, 0), (1, 1)),    # east edge, border with tile (i+1, j)
@@ -2913,18 +2570,14 @@ _VISION_EDGE_DIRS = (
     (0, 1, (0, 1), (1, 1)),    # south edge, border with tile (i, j+1)
 )
 
-VISION_BANDS_PER_EDGE = 6   # how many alternating color bands cover one
-                            # tile-edge length where two or more players'
-                            # boundaries coincide on the same edge
+VISION_BANDS_PER_EDGE = 6   # colour bands per tile edge that several players'
+                            # boundaries share
 
 
 def _draw_vision_edge(out, p0, p1, colors, thick):
     """One tile-edge segment, solid if only one player's boundary reaches it,
-    else split into VISION_BANDS_PER_EDGE alternating bands cycling through
-    every player whose boundary does. Adjacent tiles' edges share endpoints
-    and each divides evenly, so a run of coinciding edges along a straight
-    stretch of frontier reads as one continuous striped line rather than a
-    stripe pattern that resets, and arbitrarily jumps, at every tile."""
+    else banded through every player whose boundary does. Every edge divides
+    evenly, so a straight shared frontier reads as one continuous stripe."""
     if len(colors) == 1:
         cv2.line(out, tuple(np.round(p0).astype(int)),
                  tuple(np.round(p1).astype(int)), colors[0], thick, cv2.LINE_AA)
@@ -2944,20 +2597,11 @@ VISION_FADE_ALPHA = 0.75   # wash opacity immediately behind the frontier line
 
 
 def _draw_vision_fade(out, explored, keys_sorted, color_of, origin, u_col, u_row):
-    """Blend each player's own color into their own territory, fading to
-    nothing over VISION_FADE_FRAC of a tile from the frontier -- a soft wash
-    behind the frontier line rather than a bare line, without tinting the
-    rest of a large explored region.
-
-    Distance transform on each player's own rasterized tile set. Opening
-    the mask with a disk the size of the fade first rounds its outer
-    (convex) corners into a matching arc before the distance transform runs
-    -- a plain distance transform on the raw mask miters those corners
-    (the perpendicular distance to each adjacent edge stays valid right up
-    to the corner, so nothing rounds it), where an inner (concave) corner
-    already comes out rounded on its own. This is purely a look, not a
-    truer distance: a wash reads better wrapping a corner in an arc than
-    meeting itself in a sharp miter."""
+    """Blend each player's colour into their own territory, fading out over
+    VISION_FADE_FRAC of a tile from the frontier (a distance transform of the
+    player's tile set). The mask is first opened with a disk of the fade's
+    size so convex corners wrap in an arc rather than a miter -- a look, not a
+    truer distance."""
     h, w = out.shape[:2]
     tile_px = (float(np.linalg.norm(u_col)) + float(np.linalg.norm(u_row))) / 2
     fade_px = VISION_FADE_FRAC * tile_px
@@ -2987,10 +2631,7 @@ def _draw_vision_fade(out, explored, keys_sorted, color_of, origin, u_col, u_row
             cv2.fillConvexPoly(mask, np.round(poly).astype(np.int32), 255)
         rounded = cv2.morphologyEx(mask, cv2.MORPH_OPEN, corner_kernel)
         dist = cv2.distanceTransform(rounded, cv2.DIST_L2, 5)
-        # distanceTransform reports 0 for background pixels too, not just at
-        # the frontier -- alpha must be forced to 0 there explicitly, or the
-        # whole padded region outside this player's own territory paints at
-        # full strength instead of just the band along the frontier.
+        # Background also reads distance 0, so force its alpha to 0.
         a = np.where(rounded > 0, np.clip(1 - dist / fade_px, 0, 1), 0.0)
         a = (a * VISION_FADE_ALPHA)[..., None]
         region = out[y0:y1, x0:x1].astype(np.float32)
@@ -2999,37 +2640,19 @@ def _draw_vision_fade(out, explored, keys_sorted, color_of, origin, u_col, u_row
 
 
 def _player_explored_tiles(samples, shot_names):
-    """The union, over `shot_names`, of tiles those shots' own samples
-    classified as explored -- one player's own witnessed territory, from the
-    same per-(tile, shot) classification winner selection already used.
-    Shared by draw_player_vision (the boundary outline) and the vision-each
-    per-player composites below, so "what did this player see" is answered
-    once rather than reimplemented per consumer."""
+    """Tiles any of `shot_names` classified as explored: one player's own
+    witnessed territory, from the same samples winner selection used."""
     return {ij for ij, per in samples.items()
             if any(per.get(n, {}).get("explored") for n in shot_names)}
 
 
 def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
     """Outline, in a distinct color per player, the union of tiles each
-    identified player's own shot(s) witnessed as explored, with a soft wash
-    of that color fading out over the interior VISION_FADE_FRAC of a tile
-    (see _draw_vision_fade) so the frontier reads as more than a bare line.
-
-    `by_player` maps a player key to the names of shots identified as that
-    player. The tile set comes straight from `samples` -- the same per-(tile,
-    shot) classification winner selection already used -- so this asks
-    nothing new of the pipeline; it just asks it a different question,
-    "what did this one player see" rather than "what did anyone see".
-
-    Built at the level of individual tile edges rather than by rasterizing
-    each player's region and tracing its contour, specifically so two (or
-    more) players' boundaries that fall on the exact same edge -- their
-    explored regions border the same unexplored tile at the same place --
-    are detected rather than silently overdrawn. A contour-per-player
-    approach can only paint one color there, whichever player happened to be
-    drawn last; every edge is instead computed once, tagged with every
-    player whose boundary reaches it, and drawn solid when that is one player
-    or banded (see _draw_vision_edge) when it is more than one."""
+    identified player's own shot(s) witnessed as explored, over a fading wash
+    (_draw_vision_fade). `by_player` maps a player key to that player's shot
+    names. Drawn per tile edge rather than per-player contour, so an edge on
+    several players' frontiers is banded in all their colours instead of
+    showing whoever was drawn last."""
     explored = {key: _player_explored_tiles(samples, shot_names)
                 for key, shot_names in by_player.items()}
     keys_sorted = [k for k in sorted(explored) if explored[k]]
@@ -3054,26 +2677,15 @@ def draw_player_vision(out, samples, by_player, origin, u_col, u_row, thick):
         _draw_vision_edge(out, p0, p1, [color_of[k] for k in keys], thick)
 
 
-# `vision-each` wash: a flat, near-white tint rather than the game's own fog
-# art. The fog render's crystalline texture is a fixed, deterministic pattern
-# -- great as a *classifier* (see fog_period_scale) -- but laid back down over
-# real terrain at partial opacity it reads as visual noise competing with the
-# map underneath it, rather than a simple "you haven't seen this" cue. A
-# plain wash says the same thing without competing with the content.
+# `vision-each` marks unseen tiles with a flat white wash rather than fog art,
+# whose texture competes with the terrain beneath it at partial opacity.
 VISION_EACH_WASH_BGR = (255, 255, 255)
-# Not 1.0 (that would hide the real content someone else photographed) and
-# not too low to read as a wash at all; mid-range, the same role
-# OVERLAY_ALPHA's "grid" entry plays for a layer meant to be seen *and* seen
-# through.
-VISION_EACH_WASH_ALPHA = 0.55
+VISION_EACH_WASH_ALPHA = 0.55   # the terrain must stay visible underneath
 
 
 def _vision_each_unseen_mask(winner_tiles, explored_self, origin, u_col, u_row, W, Hc):
-    """uint8 mask, one player's "the union knows this tile but I don't" set:
-    every tile in `winner_tiles` (this run's explored union) that is not in
-    `explored_self` (this player's own witnessed tiles). Restricted to the
-    union rather than the whole board so a tile nobody explored keeps its
-    ordinary template fog untouched instead of a doubled wash."""
+    """uint8 mask of the tiles in the explored union `winner_tiles` that this
+    player's own `explored_self` lacks. Tiles nobody explored keep plain fog."""
     mask = np.zeros((Hc, W), np.uint8)
     for (i, j) in winner_tiles:
         if (i, j) in explored_self:
@@ -3085,20 +2697,15 @@ def _vision_each_unseen_mask(winner_tiles, explored_self, origin, u_col, u_row, 
 
 def render_vision_each(out, unseen_mask, color=VISION_EACH_WASH_BGR,
                         alpha=VISION_EACH_WASH_ALPHA):
-    """`out` (the finished composite) with a flat translucent `color` wash
-    laid over it wherever `unseen_mask` marks a tile -- real content stays
-    visible underneath, tinted just enough to read as "not yet seen by this
-    player" without obscuring what someone else's shot revealed there."""
+    """`out` with a translucent `color` wash wherever `unseen_mask` is set."""
     a = (unseen_mask.astype(np.float32) / 255.0 * alpha)[..., None]
     blended = out.astype(np.float32) * (1.0 - a) + np.array(color, np.float32) * a
     return np.clip(blended, 0, 255).astype(np.uint8)
 
 
 def vision_each_slug(key):
-    """Filesystem-safe stem for a vision-each output filename. `key` is a
-    by_player key: either a head-catalog filename ("i2.png") or the
-    "unnamed player N" fallback main assigns when no shot in that group could
-    be matched to the catalog at all."""
+    """Filesystem-safe stem for a vision-each output file, from a by_player
+    key: a catalog filename ("i2.png") or "unnamed player N"."""
     if key.endswith(".png"):
         return key[:-4]
     digits = "".join(ch for ch in key if ch.isdigit())
@@ -3117,13 +2724,9 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def _asset_path(rel):
     """`rel` under the working directory if it exists there, else under this
-    script's directory -- whether or not it exists there either, so a
-    caller's error message names a real filename rather than "None".
-
-    The cwd is checked first so a set can keep its own renders alongside its
-    screenshots; the script-relative fallback is what makes the assets
-    findable from the Discord bot, which runs polymerge with cwd set to a
-    per-merge temp dir."""
+    script's directory (existing or not, so errors name a real path). The
+    fallback is what finds assets from the bot, which runs polymerge in a
+    temp dir."""
     return rel if os.path.exists(rel) else os.path.join(_SCRIPT_DIR, rel)
 
 
@@ -3147,67 +2750,36 @@ def overlay_path(n, layer):
 
 
 def template_path_for(n):
-    """The blank all-fog render for an NxN board, or None at a size with no name.
-
-    Overlays/<name>-blank.png is the only source of fog art there is, and
-    deliberately the only one: a fallback here could engage only when Overlays/
-    was missing, and would then merge *silently* against different fog art
-    rather than saying so. A missing render must fail with the filename, which
-    is what load_template's caller does.
-
-    --template still overrides."""
+    """The blank all-fog render for an NxN board, or None at a size with no
+    name. Deliberately no fallback: a missing render must fail by name, not
+    merge silently against other fog art. --template overrides."""
     return overlay_path(n, "blank")
 
 
-# The optional decorative layers, in the order they are painted onto the
-# composite, and the Overlays/ filename stem each comes from.
-#
-# Order matters and is bottom-up: shading is a wash and must go under the grid
-# rather than dull it; spawn zones and push arrows are content and sit on top.
-# Ruin markers are drawn after all of these (see paste_composite), so a marker is never
-# dimmed by the shading it happens to land on.
+# The decorative layers, bottom-up in paint order, and their Overlays/ stems.
+# Ruin markers are drawn after all of them (paste_composite).
 OVERLAY_LAYERS = (("shade", "shaded"),
                   ("grid", "gridded"),
                   ("spawns", "*spawns"),
                   ("push", "push"))
 
-# Layers painted only where the composite is still fog, never over explored
-# terrain (confirmed with the project owner).
-#
-# The split is between layers that *fill* and layers that *reference*. `shade`
-# and `spawns` wash whole tiles with color, so over real terrain they dull the
-# map art the merge exists to show, while over fog -- a flat expanse of one
-# repeated render -- they are what makes it readable as tiles at all.
-#
-# `grid` and `push` cover the whole board instead, because they are read
-# *against* the map rather than laid over it: a lattice is for counting
-# coordinates and a push arrow states a fixed property of each tile, and both
-# are wanted most where the units and cities are, which is the explored half.
-# Thin strokes on a sprite cost far less legibility than a color wash does.
+# Layers that fill tiles are clipped to fog, where they help, and kept off
+# explored terrain, where they would dull it; the grid and push arrows are
+# read against the map and cover the whole board.
 OVERLAY_FOG_ONLY = frozenset({"shade", "spawns"})
 
-# Per-layer opacity multiplier, applied on top of the file's own alpha.
-# `grid` covers explored terrain (see OVERLAY_FOG_ONLY above) and full-strength
-# lines compete with the map art underneath, so it's cut to let terrain show
-# through. Layers not listed here paint at their file's own alpha.
+# Opacity on top of the file's own alpha; the grid lies over explored terrain.
 OVERLAY_ALPHA = {"grid": 0.7}
 
-# Shading alone: it is what makes a flat expanse of fog readable as tiles,
-# where the grid and the spawn zones are clutter on a map being read for
-# territory. Note polybot overrides this with an empty default and always passes
-# --overlays explicitly -- a merge nobody asked a question of should hand back
-# the map as the game draws it. This default serves the CLI only.
+# The CLI default. polybot always passes --overlays (default: none).
 OVERLAY_DEFAULT = "shade"
 
 
 def overlay_layer_path(n, stem):
     """Resolve one layer file for an NxN board, or None if it has none.
 
-    `stem` may contain a `*` because the spawn layer encodes its zone grid in
-    the filename -- <name>-2spawns.png is a 2x2 grid of 4 zones and
-    <name>-3spawns.png a 3x3 of 9. That digit is a property of the board size,
-    so it is matched rather than assumed. Not every size has every layer:
-    massive has no layers at all and tiny has no spawns layer."""
+    `stem` may hold a `*`: the spawn layer's filename encodes its zone grid
+    (2spawns, 3spawns), which is matched rather than assumed."""
     name = BOARD_SIZE_NAMES.get(n)
     if name is None:
         return None
@@ -3215,9 +2787,8 @@ def overlay_layer_path(n, stem):
 
 
 def _read_png(path):
-    """An image with any alpha channel kept, 16-bit normalized to 8, or None.
-
-    normal-*.png in Overlays/ is 16-bit; everything else is 8."""
+    """An image with any alpha kept and 16-bit (normal-*.png) normalized to
+    8, or None."""
     im = cv2.imread(path, cv2.IMREAD_UNCHANGED)
     if im is not None and im.dtype == np.uint16:
         im = (im / 257.0).astype(np.uint8)
@@ -3227,13 +2798,8 @@ def _read_png(path):
 def load_overlay(path, shape):
     """One decorative layer as (bgr, alpha) in 0..1 float, or None.
 
-    Rejects a layer whose canvas is not the template's. The layers are rendered
-    in the same frame as their blank -- verified: per board size every variant
-    shares the blank's canvas -- so no registration or warping is needed, and a
-    mismatch means the wrong file rather than something to resample. (The grid
-    lines of large-gridded and tiny-gridded are slightly sheared against their
-    blanks' tiles; see CLAUDE.md. That is a defect in those two files, not a
-    registration question.)"""
+    Layers share their blank's exact frame, so none is warped; a layer whose
+    canvas differs from the template's is the wrong file and is rejected."""
     im = _read_png(path)
     if im is None:
         return None
@@ -3247,12 +2813,9 @@ def paint_overlays(out, wanted, n, fog_mask=None):
     """Alpha-blend the requested layers onto the composite, in OVERLAY_LAYERS
     order. Returns the names that had no file for this board size.
 
-    Straight (not premultiplied) alpha: the push and spawn layers carry pixels
-    whose color exceeds their alpha, which only makes sense unpremultiplied,
-    and the dark layers composite identically either way.
-
-    `fog_mask` marks the tiles nobody explored. Layers in OVERLAY_FOG_ONLY are
-    clipped to it, so they never tint another player's terrain."""
+    Straight, not premultiplied, alpha (the push and spawn layers need it).
+    Layers in OVERLAY_FOG_ONLY are clipped to `fog_mask`, the unexplored
+    tiles."""
     missing = []
     for name, stem in OVERLAY_LAYERS:
         if name not in wanted:
@@ -3275,20 +2838,11 @@ def load_template(path, dark_thresh, erode_px):
     """A template's BGR pixels and its silhouette masks, as
     (bgr, valid_t, edge_t).
 
-    16-bit files are normalized on the way in (normal-*.png is uint16) and the
-    alpha channel is dropped, which is all the conversion these renders need:
-    they are premultiplied against black -- RGB is 0 wherever alpha is, verified
-    across every file in Overlays/ -- so the remaining BGR *is* the black-sky
-    image the rest of the pipeline already expects.
-
-    The silhouette then comes from the same brightness test the screenshots
-    get, deliberately. **Do not derive it from the alpha channel**, obvious as
-    that looks on a render that ships one: alpha cuts the antialiased fringe
-    --dark-thresh keeps, so the template's board is defined differently from
-    every screenshot's and the edge fit stops comparing like with like. It moves
-    the tile step by only ~0.045%, which is enough to cost a set most of its fog
-    lock and triple its cross-check disagreement. A lattice skew is a real
-    reason to want this and belongs to detect_corners, which handles it."""
+    The renders are premultiplied against black, so dropping alpha leaves the
+    black-sky image the pipeline expects. The silhouette comes from the same
+    brightness test the screenshots get; **never from the alpha channel**,
+    which cuts the antialiased fringe and moved the tile step enough to cost a
+    set most of its fog lock."""
     if not path:
         return None, None, None      # a board size with no render of its own
     im = _read_png(path)
@@ -3309,17 +2863,9 @@ _template_cache = {}
 def template_geometry(path, dark_thresh, erode_px):
     """One render's pixels plus everything geometric derived from them, once.
 
-    Every consumer of a board render wants the same five things off it, and a
-    run has two consumers: the size pre-pass (_probe_basis) and the merge
-    itself. They ask at different times and used to each pay in full -- a load,
-    a corner fit, an outline and an edge fit, which is 294ms at 20x20 (164 load,
-    42 corners, 72 outline, 17 edge fit).
-
-    Keyed on (path, dark_thresh, erode_px), so a hit is by construction the same
-    computation on the same file and returns the same object. `erode_px` reaches
-    only `valid_t`; `edge_t` is always built un-eroded, which is why the pre-pass
-    can pass the caller's erode_px rather than 0 and share this entry without
-    changing anything it reads.
+    Shared by the size pre-pass (_probe_basis) and the merge, which would
+    otherwise each pay ~300 ms at 20x20. Keyed on every input that can change
+    the answer, (path, dark_thresh, erode_px).
 
     Returns None for a render that is not on disk, exactly as load_template
     does, so the caller still owns the refusal."""
@@ -3339,11 +2885,8 @@ def template_geometry(path, dark_thresh, erode_px):
 
 
 def output_crop(origin, u_col, u_row, n, W, Hc, pad=10):
-    """The exact pixel rectangle paste_composite crops the canvas to before
-    writing the composite -- factored out of it so --base's size
-    check and detection (base_output_size, below) can share the exact
-    arithmetic that decides a finished composite's on-disk dimensions,
-    rather than risk drifting from it."""
+    """The rectangle paste_composite crops the canvas to, shared with --base's
+    size check and base_output_size so they cannot drift from it."""
     full = np.float32([origin, origin + n * u_col,
                        origin + n * u_col + n * u_row, origin + n * u_row])
     x0c, y0c = np.floor(full.min(0)).astype(int)
@@ -3357,18 +2900,9 @@ def base_output_size(shape_hw, dark_thresh, erode_px):
     """Which board size's own composite has exactly these pixel dimensions,
     or None if none does.
 
-    A finished composite's size is a pure function of board geometry
-    (output_crop), so this is a fact about which board it is, not an
-    estimate -- exact match only, deliberately. An 18x18 composite scaled
-    ~1.1x lands within a pixel of 20x20's own native size, so a near-match
-    would silently pick the wrong board; a resized or re-encoded --base is
-    refused by its caller instead of guessed at.
-
-    Largest first, matching _probe_basis's own precedent and for the same
-    reason: most merges are 20x20, so checking it first makes the common
-    case load exactly one template geometry -- the same one the real merge
-    loads moments later via template_geometry's cache, so it costs nothing
-    extra there either."""
+    Exact match only: an 18x18 composite scaled ~1.1x lands within a pixel of
+    20x20's size, so a resized --base is refused, never guessed at. Largest
+    first, as in _probe_basis, so a 20x20 base loads one template."""
     h, w = shape_hw
     hit = None
     for n in sorted(MAP_SIZE_CHOICES, reverse=True):
@@ -3390,38 +2924,15 @@ class ShotCache:
     """Per-shot measurements several parts of a run all want: the board
     outline, and the fog's repeat period.
 
-    Both are wanted twice in a run with no --map-size -- once by
-    `detect_map_size` before the board size is known, and again by
-    `anchor_to_template` afterwards -- at ~85-250ms a shot (outline 18-68ms,
-    period 66-186ms). They are the same measurement
-    only when they are made under the same *parameters*, and that is the whole
-    design of this class: **the key carries every input that can change the
-    answer**, so a hit returns the same bits and a miss recomputes exactly what
-    the old code did.
+    Both are wanted by detect_map_size and again by anchor_to_template. **The
+    key carries every input that can change the answer** -- the mask (via a
+    per-shot generation counter), the basis and crop bands for the outline,
+    dir_a and tile_px (which sets the sweep's phase) for the period -- so a
+    hit is bit-identical and a miss recomputes. On a 20x20 board the pre-pass
+    parameters match the anchor's and every key hits; elsewhere nothing does.
 
-    - the outline depends on the mask, on the projection basis (which reaches
-      `_board_component`'s angle test), and on `--top-crop`/`--bottom-crop`
-      (which tells it where the crop's own cut line falls, so points along
-      that line are not mistaken for a weak real edge -- see board_boundary);
-    - the period depends on the mask, on `dir_a` (the shift direction) and on
-      `tile_px` (which sets the phase of the coarse sweep grid -- see the
-      deferred item on that sensitivity, where a different sweep window moves
-      the answer by up to 0.9%).
-
-    The pre-pass has to pick a template before it knows the size, so it takes
-    those from whichever render `_probe_basis` finds first. That is why the
-    probe order is 20, 18, 16, 14, 11 rather than ascending: on a 20x20 board --
-    the commonest size, and the one this program is most often asked for -- the
-    probe's basis and tile step *are* the ones the anchor will use, every key
-    hits, and the pre-pass becomes free. On any other size nothing hits and the
-    behavior is bit-identical to not having this class at all. It buys the
-    common case and cannot cost the rest.
-
-    A mask is not hashable and identity is not enough (`sky_rebuild` writes new
-    masks into a Shot in place), so a generation counter per shot stands
-    in for it and `invalidate` bumps it. Getting that wrong would be the one way
-    this could return a stale answer, so it is the caller's single obligation:
-    anything that replaces a shot's masks must invalidate."""
+    Masks are not hashable, so anything that replaces a shot's masks must call
+    `invalidate`."""
 
     def __init__(self):
         self._gen, self._boundary, self._period = {}, {}, {}
@@ -3441,11 +2952,8 @@ class ShotCache:
     def period(self, name, img, valid, hsv, dir_a, tile_px):
         """(s_it, period_px, ncc) or None -- fog_period_scale's own answer.
 
-        Takes the image rather than its gray conversion so that a hit skips
-        that too -- an argument would be evaluated before the call could return
-        the cached value. The conversion is deliberately not *retained*: one
-        gray frame per shot is ~5.6MB on a large capture and would buy only a
-        ~5ms recompute on the at most two misses a shot can have."""
+        Takes the image rather than its gray conversion so a hit skips that
+        too."""
         key = (name, self._gen.get(name, 0), dir_a.tobytes(), float(tile_px))
         if key not in self._period:
             self._period[key] = fog_period_scale(
@@ -3457,64 +2965,18 @@ class Shot:
     """One screenshot: its image, masks, anchor and warp -- everything the merge
     computes about it that is read more than once.
 
-    valid/valid_raw/edge_mask/frame/frame_raw and hsv are built at
-    construction from nothing but the image, args and this shot's ui-mask
-    rects -- there is no run state left to bolt on afterward the way an
-    earlier version did. valid/valid_raw/edge_mask/frame are also the one
-    part of this that is not "compute once": build_masks can be called again
-    later to replace all four in place (the sunrise-sky fallback), which is
-    why a Shot's identity is the image rather than any one mask -- the masks
-    are just its current best understanding of that image. frame_raw and hsv
-    never get rebuilt: the sky test decides what was *photographed*, not
-    what is bright enough to judge, and hsv is a plain colorspace conversion
-    with nothing sky-related in it.
-
-    badge_mask/badge_halo are set by detect_badge, also called once at
-    construction (unless --no-badge-filter) but kept a separate method
-    rather than folded into __init__: the badge is detected *from* valid,
-    so it is not known until after the first mask build, and the caller
-    needs the blob list back to log and bookkeep it, which is load_inputs'
-    business and not this object's. Both stay None on a shot with no
-    capture badge; every shot still gets a Shot, badge or not, the same way
-    badge_mask_of used to give every shot an entry.
-
-    to_template is set once anchor_all resolves a transform and then, like
-    the masks, can be replaced in place -- the zero-lock revert to `prior`,
-    the SIFT pan/zoom borrow -- each time immediately followed by a re-warp
-    (warp_shot), which is why warped/wmask/wmask_raw/pmask/pmask_raw/scale
-    live here too rather than in a separate family: they are that shot's
-    current rendering of its *current* to_template, nothing more. A shot
-    that never anchors (dropped) keeps every one of these at None; that is
-    what "not in to_template_of" used to mean and "to_template is None"
-    means now.
-
-    gain/fogpix come from the fog-illumination fit (fog pixel masks phase):
-    gain stays None when the shot locked too little fog to fit one, exactly
-    the sparseness gain_of used to have. bars/ruins are that shot's own
-    detector output (city-bar, ruin-vision) -- each a list, possibly empty,
-    and None until that phase actually runs for this shot (only when the
-    corresponding --city-bars/--ruin-vision flag is on); ruins is a list of
-    (i, j, area, mask). sift_features is lazy, memoized on first use by
-    sift_hops -- folded in because it already had exactly one producer, so
-    there is no caching topology to disturb by moving where the memo lives.
-
-    sift_mask() and terrain_mask() are genuine methods rather than fields
-    filed in from outside, and that split is deliberate: everything above needs
-    something from the run (the template, the board lattice, an args
-    threshold) and so is computed by the merge and handed in, but these two need
-    nothing but the shot's own valid/edge_mask/hsv plus fixed constants of
-    the game's projection (BOARD_DIR_A/BOARD_DIR_B, PIXEL_FOG_SAT) -- they
-    were only ever passed dir_a/dir_b as parameters because main() happened to
-    have local aliases for those constants lying around, not because the
-    values are actually per-run. A method only belongs on Shot when the shot
-    has everything it needs to compute the thing itself; these two are the
-    ones that qualify. build_masks is not that -- it takes args and rects
-    because darkness thresholds and crop bands really are per-run -- which is
-    why __init__ takes them too rather than reading them off nothing. The backing fields for sift_mask/terrain_mask are
-    private (a leading underscore) because the method, not the field, is
-    the interface -- same shape as Python's own cached_property, just
-    written out by hand since __slots__ has no instance __dict__ for
-    cached_property to use."""
+    - Masks (valid, valid_raw, edge_mask, frame) are built at construction
+      and rebuilt in place by build_masks for the sunrise-sky fallback;
+      frame_raw and hsv never change. badge_mask/badge_halo come from
+      detect_badge (None with no badge).
+    - to_template and its warp (warped, wmask, wmask_raw, pmask, pmask_raw,
+      scale) are set by anchoring and replaced together by warp_shot; all stay
+      None on a dropped shot. `prior` is the unrefined anchor.
+    - gain/fogpix come from fit_fog_pixels (gain None when too little fog
+      locked); bars/ruins are None until their phase runs; sift_features is
+      memoized by sift_hops.
+    - sift_mask() and terrain_mask() are lazy methods because they need only
+      the shot itself and fixed constants."""
     __slots__ = ("img", "hsv", "valid", "valid_raw", "frame", "frame_raw",
                  "edge_mask", "badge_mask", "badge_halo",
                  "to_template", "zoom_source", "implied_n", "prior",
@@ -3524,11 +2986,7 @@ class Shot:
 
     def __init__(self, img, args, rects):
         self.img = img
-        # The paste-time counterpart of valid: same badge handling as
-        # build_masks below, but built from build_frame_mask so darkness
-        # never disqualifies a pixel from being pasted (see that
-        # docstring). Built once, here, and never rebuilt -- see the class
-        # docstring.
+        # The paste-time counterpart of valid (see build_frame_mask).
         self.frame_raw = build_frame_mask(img, rects, args.top_crop,
                                           args.bottom_crop)
         self.badge_mask = None
@@ -3555,21 +3013,13 @@ class Shot:
     def build_masks(self, args, rects, drop_sky=False):
         """(Re)build the two brightness masks for this shot, in place.
 
-        Called at most twice: once from __init__, and again from
-        sky_rebuild_for when the ordinary masks yielded no usable board
-        edge, that time with the sunrise-sky test. Those two were written
-        out separately for a long time, which is a poor shape for a
-        sequence with a step that is easy to leave out -- see
-        _subtract_badges."""
+        Called from __init__, and again by sky_rebuild_for with the
+        sunrise-sky test."""
         self.valid_raw = build_valid_mask(self.img, rects, args.dark_thresh,
                                           args.erode_px, args.top_crop,
                                           args.bottom_crop, drop_sky=drop_sky)
-        # Geometry comes off the *un-eroded* mask. --erode-px exists to keep
-        # SIFT features and tile samples away from the mask's fringe, but it
-        # eats erode_px of the board edge in each image's own pixels -- i.e.
-        # a different amount of board in each, since the shots differ in
-        # zoom by up to 1.4x. Anchoring off that would bake a scale error
-        # into the fit.
+        # Geometry uses the un-eroded mask: erosion eats a zoom-dependent
+        # amount of board and would bias the scale.
         self.edge_mask = build_valid_mask(self.img, rects, args.dark_thresh,
                                           0, args.top_crop, args.bottom_crop,
                                           drop_sky=drop_sky)
@@ -3578,16 +3028,9 @@ class Shot:
         self._subtract_badges()
 
     def _subtract_badges(self):
-        """Take this shot's capture badge back off the masks that must not
-        see it, after either build_masks call above.
-
-        Separate from build_masks for two reasons: the badge is detected
-        *from* valid, so at construction it is not known until after the
-        first build; and a rebuild replaces valid_raw and edge_mask from
-        scratch, so it has to redo exactly this. The halo half is the one
-        that gets forgotten, and forgetting it reintroduces the phantom
-        board edge on precisely the shots a rebuild is for -- see
-        badge_halo."""
+        """Take the capture badge off valid/frame and its halo off edge_mask,
+        after every mask build. Forgetting the halo on a rebuild brings the
+        phantom edge back (see badge_halo)."""
         badge = self.badge_mask
         self.valid = self.valid_raw & ~badge if badge is not None else self.valid_raw
         self.frame = self.frame_raw & ~badge if badge is not None else self.frame_raw
@@ -3598,16 +3041,9 @@ class Shot:
         """Find this shot's capture badge, if any, and exclude it from the
         masks that must not see it.
 
-        Detected against the badge-free masks build_masks just built, which
-        is why this runs after it rather than being folded into it. Returns
-        the blob list rather than logging it directly, so the caller can
-        name the shot and add it to whatever run-wide bookkeeping it keeps
-        -- this object has no name of its own to log with. Every shot still
-        gets a badge_mask, badge or not -- an all-zero mask when nothing was
-        found, which --debug-dir relies on to write badges_<name>.png for
-        every shot: an empty overlay is how you see the detector did not
-        misfire. So "did any shot have a badge?" cannot be asked of
-        badge_mask; the caller's own bookkeeping answers it instead."""
+        Returns the blob list for the caller to log. badge_mask is set even
+        when empty, since --debug-dir writes badges_<name>.png for every
+        shot."""
         badge, found = detect_capture_badges(self.img, self.valid)
         if found:
             self.badge_halo = badge_halo(badge, found)
@@ -3618,17 +3054,9 @@ class Shot:
     def sift_mask(self):
         """Pixels SIFT may take features from: the board, and nothing else.
 
-        Chrome that survives the crop is a hazard here in a way it is not for
-        the edge fit, because two screenshots of the same *replay* carry
-        pixel-identical UI -- the turn timeline, the transport buttons -- and
-        identical pixels match perfectly. On tests/replay_ss2 that gives 330
-        inliers on a flat identity transform, beating the genuine board match's
-        113 and reporting that two different views of the board are the same
-        image. Ordinary gameplay shots hide this because their HUD differs
-        between captures (score, turn, whose go it is).
-
-        Lazily computed and cached: it costs one morphology pass, and only on
-        the paths that use SIFT at all."""
+        Two shots of one replay have identical UI, which matches perfectly
+        (replay_ss2: 330 inliers on an identity transform against the real
+        match's 113). Lazy, since only SIFT paths need it."""
         if self._sift_mask is None:
             self._sift_mask = self.valid & board_region(
                 self.edge_mask, (BOARD_DIR_A, BOARD_DIR_B))
@@ -3637,12 +3065,8 @@ class Shot:
     def terrain_mask(self):
         """Pixels saturated enough that they cannot be the fog cube.
 
-        Used only to count how many SIFT inliers rest on terrain rather than
-        fog (see SIFT_TERRAIN_MIN_INLIERS). This is emphatically *not* fog
-        classification -- it never decides what a tile is, only whether a
-        correspondence is worth counting -- which is the same distinction
-        that makes RUIN_NOMINATE_SAT acceptable while a color-based fog test
-        is not."""
+        Only counts SIFT inliers on terrain (SIFT_TERRAIN_MIN_INLIERS); it
+        never classifies a tile."""
         if self._terrain_mask is None:
             self._terrain_mask = self.hsv[:, :, 1] >= PIXEL_FOG_SAT
         return self._terrain_mask
@@ -3653,23 +3077,12 @@ def _probe_basis(dark_thresh, erode_px=0):
     """The board's projection directions, tile step and per-direction span,
     from any template.
 
-    None of it depends on which template supplies it, which is what makes
-    detecting the map size possible at all. `dir_a`/`dir_b` are the fixed
-    isometric projection angles -- the camera never rotates and a diamond is a
-    diamond at every N. `tile_px` is used only to center fog_period_scale's
-    0.30-3.75x sweep, a 12x-wide window that comfortably contains the truth
-    whichever template set it. `span` is the template's own width in each
-    direction, needed only to compare two edge pairs like for like: the a and b
-    spans differ by 0.17% even on a square board (1858.93 vs 1862.05 at 20x20),
-    which is small against EDGE_PAIR_MAX_SPREAD's 3% but not against the
-    0.00-1.24% that healthy pairs actually report. Returns None when no
-    standard template is on disk."""
-    # Largest first, and this ordering is load-bearing rather than tidy: the
-    # basis and tile step taken here are what ShotCache keys on, so probing the
-    # size a board is most likely to be means the pre-pass's measurements are
-    # the ones the anchor wants and are reused instead of repeated. Descending
-    # from MAP_SIZE_CHOICES rather than a literal list, so a new size cannot
-    # fall out of step with it.
+    Nothing measured with these depends on which template supplied them:
+    `tile_px` only centres fog_period_scale's 12x-wide sweep, and `span`
+    only normalizes two edge pairs against each other (a and b differ by
+    0.17% even on a square board). Returns None when no template is on disk.
+
+    Largest first, so on a 20x20 board ShotCache's keys match the anchor's."""
     for n in sorted(MAP_SIZE_CHOICES, reverse=True):
         g = template_geometry(template_path_for(n), dark_thresh, erode_px)
         if g is None:
@@ -3686,39 +3099,21 @@ def _probe_basis(dark_thresh, erode_px=0):
 def _no_measurement_reason(why):
     """Why no shot could be measured, phrased for the person who has to fix it.
 
-    Counting the tiles across a board is span / fog-period, so it needs *both*
-    an opposite edge pair and a readable fog repeat, and the two failures want
-    opposite advice -- zoom out, versus state the size because no amount of
-    zooming will help. The old text named only the first, which on a replay or a
-    finished game is simply untrue: fogless/s1.png and s2.png each have an
-    opposite edge pair agreeing to 0.03%.
-
-    The first line stands alone as polybot's channel headline, so it carries the
-    cause and stays free of internal vocabulary.
-
-    Note "counted" is the honest verb throughout. Nothing here guesses a size;
-    it measures one, and refuses when it cannot."""
+    Counting tiles needs both an opposite edge pair and readable fog, and the
+    two failures want different advice. This is channel copy: the first line
+    is polybot's headline, carrying the cause and the remedy and nothing about
+    the mechanism (CLAUDE.md, the bot's refusal conventions)."""
     tail = " " + RESTATE_SIZE.format(size_list())
     kinds = set(why.values())
-    # Both branches state the cause and the remedy and stop there. Why the fog
-    # is needed, and what it is measured against, is this file's business and
-    # not the player's -- they cannot act on it, and it is the difference
-    # between a message read and a message skimmed.
     if kinds == {"no-fog"}:
-        # No second remedy, deliberately: the board has no fog left, so no
-        # amount of re-photographing it brings the ruler back, and inviting the
-        # player to try sends them round a loop that cannot succeed.
+        # No re-photographing remedy: there is no fog to bring back.
         return "these screenshots have no fog left to measure." + tail + "."
     if kinds == {"no-span"}:
-        # Here there is a second remedy and it is the better one, so it is
-        # offered alongside rather than instead. "Two opposite sides" rather
-        # than the internal a-min/a-max vocabulary: what a shot must contain to
-        # have its tiles counted is both ends of one direction.
         return ("no screenshot spans the whole board." + tail
                 + ", or with at least one screenshot that shows two opposite "
                   "sides of the board.")
-    # Mixed, or a cause with no tailored line of its own. Name them per shot, so
-    # the summary can never contradict the detail lines printed above it.
+    # Otherwise name the reason per shot, so the summary cannot contradict the
+    # detail lines above it.
     said = {"no-fog": "no fog left to measure against",
             "no-span": "does not span the board",
             "weak-pair": "its only edge pair is too weak to trust",
@@ -3733,49 +3128,18 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
                     top_crop=0.0, bottom_crop=0.0):
     """Measure the board's size off the screenshots themselves.
 
-    This is the same quantity the board-size check already computes against a
-    supplied --map-size (see anchor_to_template): a shot spanning the whole
-    board in one direction can *count* the tiles across it, by dividing that
-    span by its own fog repeat period. Both are measured in the shot's own
-    pixels, so no template is involved and there is no circularity in using it
-    to pick one -- verified directly, goon_test2 reads 17.93/17.87 with the 18
-    template loaded and 17.96/17.99 with the 20, the difference being only
-    fog_period_scale's slightly different sweep window.
-
-    It is safe here for a reason that does not hold for the general guard: the
-    supported sizes are at least 2 tiles apart, and across the corpus every
-    measurement lands within 0.32 tiles of the truth, a 1.6x margin on the
-    rounding. (Note the 18-boards read slightly low, so BOARD_SPAN_WALL_TILES
-    is a touch large there; nowhere near enough to matter, but that is the
-    direction to look if a size is ever misread.)
-
-    The phantom-edge rejections are replicated from anchor_to_template rather
-    than skipped, and they are what makes the failure case honest: a sole edge
-    pair must clear min_support on *both* sides, and two pairs must agree.
-    pol_archi_test is the set with no measurement at all -- both its shots
-    need the sunrise-sky fallback, which this pre-pass does not have -- and the
-    right answer there is to ask, which is why this raises rather than falling
-    back to a default. A guessed size is the most destructive mistake available
-    in this program.
-
-    Costs one edge fit and one fog_period_scale per shot (~0.22s). That used to
-    be duplicated work -- anchor_to_template measures both again -- and `cache`
-    is what reclaims it, on the sizes where the two agree about the parameters
-    they measure under. See ShotCache. Only ever runs when --map-size is
-    omitted.
-
-    `edge_mask` already has `--top-crop`/`--bottom-crop` baked in (see
-    Shot.build_masks); `top_crop`/`bottom_crop` here must be the same values,
-    so board_boundary can tell its own cut line apart from a real edge
-    instead of reading it as a weak one -- see board_boundary."""
+    A shot spanning the board in one direction counts its tiles as span / fog
+    period, both in its own pixels, so no template is involved. The sizes are
+    at least 2 apart and honest readings land within 0.32 tiles. The
+    phantom-edge rules are the same as anchor_to_template's, and with no
+    measurement this raises rather than guess: a wrong size is the most
+    destructive failure there is. See CLAUDE.md, "Detecting the map size
+    outright". `cache` shares the measurements with anchoring (ShotCache);
+    `top_crop`/`bottom_crop` must match the masks'."""
     cache = cache if cache is not None else ShotCache()
     basis = _probe_basis(dark_thresh, erode_px)
     if basis is None:
-        # An install fault, not anything the player did, so the headline says
-        # so plainly and the path that identifies it goes on the second line
-        # for whoever runs the deployment. Same split as the refusals below:
-        # polybot promotes only the first line, and puts the rest in a code
-        # block underneath.
+        # An install fault: the headline says so, the path goes on line two.
         raise SystemExit("this is not installed correctly, so it cannot work "
                          "the board size out.\n(no Overlays/<name>-blank.png "
                          "on disk to take the board's projection from -- see "
@@ -3783,12 +3147,8 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     dir_a, dir_b, tile_px, t_span = basis
     tags = ["a-min", "a-max", "b-min", "b-max"]
     implied = {}
-    # Why each abstaining shot abstained. The summary below is built from these
-    # rather than asserting one hardcoded cause, because the causes want
-    # opposite advice -- zoom out, versus state the size because no amount of
-    # zooming will help -- and polybot shows the channel only the summary (it
-    # reads stderr, and these prints go to stdout). A hardcoded cause is
-    # therefore the *only* thing a player would see, right or wrong.
+    # Why each abstaining shot abstained: the refusal is built from these, and
+    # it is all a player sees (these prints go to stdout).
     why = {}
     with PHASES("detect map size"):
         for n in names:
@@ -3801,11 +3161,7 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
             have = [c >= min_scale_support for c in support]
             pairs = [(k, lo, hi) for k, (lo, hi) in enumerate([(0, 1), (2, 3)])
                      if have[lo] and have[hi]]
-            # A lone pair is believed only if both its sides are properly
-            # supported, and two pairs only if they agree: exactly the rules
-            # anchor_to_template applies, for exactly the same reason. An edge
-            # barely above the phantom floor yields a confident wrong span, and
-            # here that would be a confident wrong *board size*.
+            # anchor_to_template's phantom-edge rules.
             if len(pairs) == 1:
                 _, lo, hi = pairs[0]
                 if min(support[lo], support[hi]) < min_support:
@@ -3829,9 +3185,7 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
             period = got[1]
             spans = [off[hi] - off[lo] for _, lo, hi in pairs]
             if len(spans) == 2:
-                # Normalized by the template's own span in each direction, the
-                # same way anchor_to_template forms edge_scales -- comparing raw
-                # spans would fold that 0.17% asymmetry into the test.
+                # Normalized per direction, as anchor_to_template does.
                 scales = [s / t_span[k] for s, (k, _, _) in zip(spans, pairs)]
                 spread = abs(scales[0] / scales[1] - 1)
                 if spread > EDGE_PAIR_MAX_SPREAD:
@@ -3847,18 +3201,12 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     if not implied:
         raise SystemExit("cannot detect the map size: "
                          + _no_measurement_reason(why))
-    # Weigh only the measurements that could describe a board. A number nowhere
-    # near a real size is a broken measurement rather than a dissenting
-    # opinion, and letting it into the spread check below fails the whole run
-    # over one shot's misread fog period -- which is what missized_test did.
+    # A number near no real size is broken, not dissenting (missized_test).
     implied, discarded = plausible_sizes(implied)
     if discarded:
         print(implausible_note(discarded))
     if not implied:
         detail = "  ".join(f"{n}={v:.2f}" for n, v in sorted(discarded.items()))
-        # Headline first and remedy with it; the per-shot numbers are debugging
-        # detail and go below, where polybot renders them in a code block the
-        # player can ignore.
         raise SystemExit(
             "cannot detect the map size: no screenshot measured anything "
             "close to a real board size. " + RESTATE_SIZE.format(size_list()) + "."
@@ -3874,8 +3222,6 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     med = float(np.median(vals))
     size = int(round(med))
     if size not in MAP_SIZE_CHOICES:
-        # Sizes without the "x", the way a player writes one to the bot: the
-        # supported list is a list of things to *type*, not of board shapes.
         raise SystemExit(
             f"this looks like a {size}x{size} board, which is not a size this "
             f"can merge. The sizes it handles are " + size_list()
@@ -3886,17 +3232,13 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
 
 
 # -------------------------------------------------------------------- main ---
-# A tile counts as "locked" when it matches the template's fog art this well.
-# Deliberately far above --fog-ncc: that threshold only has to separate fog
-# from terrain, whereas this one asks the stronger question of whether the
-# lattice itself is right, and a correct anchor puts genuine fog tiles at
-# 0.95+ rather than merely above 0.4.
+# A tile is "locked" when it matches the fog art this well: far above
+# --fog-ncc, since it asks whether the lattice is right (real fog scores 0.95+).
 FOG_LOCK_NCC = 0.7
 
 # Fog-locked pixels a shot needs before its illumination is fitted; below it
 # the shot gets no fog-pixel evidence (see fit_fog_pixels).
 FOG_GAIN_MIN_PX = 5000
-
 
 
 class Board(collections.namedtuple(
@@ -3976,14 +3318,9 @@ class Run:
 def sky_rebuild_for(run, n):
     """Rebuild one shot's masks with the sunrise-sky test.
 
-    Handed to anchor_to_template and called *lazily* -- only when that
-    shot's ordinary masks yield no usable board edge. A black-sky
-    screenshot therefore never builds these at all, which is why the
-    fallback costs the common case nothing.
-
-    It writes back into the Shot's own masks as well as returning,
-    because everything downstream -- the warp, tile sampling, SIFT --
-    has to see the same masks the anchor was fitted on."""
+    Called by anchor_to_template only when the ordinary masks fail. Writes
+    into the Shot as well as returning, so everything downstream sees the
+    masks the anchor was fitted on."""
     args, ui, shots = run.args, run.ui, run.shots
     def rebuild():
         shots[n].build_masks(args, ui.get(n, []), drop_sky=True)
@@ -3995,17 +3332,14 @@ def anchor_all(run):
     """Anchor every shot, in two passes: independently first, then a SIFT
     zoom hint for whatever could not manage it alone.
 
-    Shared by --cross-check and the merge so the two cannot diverge --
-    they did once, and the symptom was cross-check reporting a set
-    unanchorable that the merge handled fine (pol_archi_test)."""
+    Shared by --cross-check and the merge so the two cannot diverge."""
     args, names, shots, shot_cache, board = (
         run.args, run.names, run.shots, run.shot_cache, run.board)
     M_of, src_of, implied_of, scale_of, failed = {}, {}, {}, {}, []
     prior_of = {}
 
     def _record(n, M, implied):
-        """File one shot's anchor into M_of/scale_of/implied_of. Run once
-        per shot in each of the two passes below."""
+        """File one shot's anchor into M_of/scale_of/implied_of."""
         M_of[n] = M
         scale_of[n] = float(np.hypot(M[0, 0], M[1, 0]))
         if implied is not None:
@@ -4028,21 +3362,14 @@ def anchor_all(run):
             print(f"  no self-anchor: {e}")
             failed.append(n)
     if failed and M_of:
-        # Timed around the SIFT work only. The re-anchor below must stay
-        # *outside* this context: anchor_to_template opens phases of its
-        # own, and nesting them double-counts, which drives the report's
-        # "(unattributed)" line negative and makes the whole timing block
-        # untrustworthy.
+        # Keep the re-anchor outside this: nested PHASES double-count.
         with PHASES("anchor: SIFT zoom fallback"):
             feats = {n: sift_features(shots[n].img, shots[n].sift_mask(), args.nfeatures,
                                       args.contrast)
                      for n in list(M_of) + failed}
             hints = {}
             for n in failed:
-                # Ranked by terrain inliers, and gated on them: a match
-                # made of fog is the failure this guards against, so the
-                # fog-borne inliers should neither elect a lender nor count
-                # toward the bar. See SIFT_TERRAIN_MIN_INLIERS.
+                # Ranked and gated on terrain inliers only.
                 best = (0, 0, None, None)
                 for m in M_of:
                     M_nm, inl, terr = pair_transform(
