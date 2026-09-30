@@ -3846,17 +3846,30 @@ measured on the nine corpus shots that reached it, the resulting crop matched
 would clear, just the wrong thing, and no score threshold on the match
 itself can tell the two cases apart.
 
-**A handful of screenshots supply no anchor at all**, and are the
-regression cases for that refusal: `badland_test/oum.jpg` and
-`badland_test2/cym.png` are the two landscape captures whose button row is
-physically cropped through the middle by the capture itself (the image ends
-mid-circle); `perilous_test/xin.png` and `scorched_earth/bard.png` are
-landscape shots whose ring reads at lower contrast than the brightness cut
-expects; `missized_test/z1.jpg`, `test_ss_elyruins/hood.png` and
-`u_forest2/ely.png` fail for related reasons (board content or chrome
-intruding on the search band). None of this costs the merge anything —
-these shots still anchor and paste normally — it only costs that one shot a
-vision outline.
+**Three nominators propose buttons and one row fit decides**
+(`locate_game_stats_icon`). The white-ring blob test runs alone first and is
+enough on most shots; only if its fit fails do a Hough circle search (for a
+ring the board's jagged lower edge touches and fuses into one component) and a
+saturated-blue fill test (the "not your turn" recolor, where Exit becomes a
+filled disc with no ring) join, their candidates checked for a flat button
+fill first because Hough is noisy on textured fog (`missized_test/z1.jpg`, with
+no button row in frame, yields a plausible-looking circle pair). The fit
+(`_fit_button_row`) fixes the row's centre at the screen's and solves for one
+shared spacing, so any two slots, symmetric or not, over-determine it: all 66
+corpus shots with 3+ candidates fit slots {0, 2, 3} at residual under 0.003,
+and `archers_test2/yad.png` ({2,3}) and `control_c/ai.png`,
+`scorched_earth/lux.jpg` ({0,2}) resolve only on asymmetric pairs. Removing a
+5x5 close from the blob test recovered `badland_test/oum.jpg` and
+`star_change/oum2.png`; Hough recovered `test_ss_elyruins/hood.png`,
+`u_forest2/ely.png` and `basin_treaties/q.png`; the blue test recovered
+`perilous_test/xin.png`.
+
+**Three shots still supply no icon** (re-measured 2026-09-30):
+`badland_test2/cym.png`, a landscape capture cropped through the button row;
+`scorched_earth/bard.png`, whose Game Stats glyph fills the fill-check annulus
+and whose white rings fuse with the board, leaving one verified candidate; and
+`missized_test/z1.jpg`, which has no button row in frame. None of this costs
+the merge anything — only that shot's vision outline.
 
 **`Assets/Heads/` filenames are short tribe/skin codes** (`o.png`, `i.png`,
 `b.png`, a `2` suffix for an alternate skin of the same letter -- `b2.png`,
@@ -3895,6 +3908,21 @@ across shots or across sets (the identical `yad.png` reused in
 are heavily overrepresented relative to the catalog's own size. Cross-checked
 against every place the corpus lets two screenshots be confirmed as one real
 player, a match this gate accepts has so far always agreed with itself.
+
+Matching details, measured, that the code now states only in outline:
+- **Head scale is per icon, not per capture.** Over confidently identified
+  shots (NCC >= 0.55, margin >= 0.15), one icon across screenshots and devices
+  varies 0.00-0.06 in ring radii (19 entries with 2+ observations), against
+  1.22-1.74 between icons. `HEAD_SCALE_BY_ENTRY` narrows each calibrated
+  entry's sweep to +-0.08 at half the cost; the 10 entries with no confident
+  corpus shot keep the full sweep.
+- **`HEAD_ICON_CANON` = 96** was swept at 72/96/128/200 over 18 shots: all
+  four identify every shot, and margins stop improving at 96 (0.248, against
+  0.225 at 72 and 0.244 at 128) at 539 ms against 942 ms.
+- **Colour does not fully survive capture.** Two captures of the identical
+  icon can differ by a 3x3 matrix in linear light whose rows sum to 1.0 (99.8%
+  of the difference, i.e. a gamut conversion). Mean-centring does not undo it;
+  it cost a match only under the old 0.02 margins.
 
 **The catalog covers all 16 tribes as base renders, and (as of 2026-09-14)
 13 of their 16 possible skins** (confirmed with the project owner against
@@ -3977,9 +4005,9 @@ loses to `c.png` (Cymanti) even after the black-floor fix above;
 icon color at all, yet still cleared both gates in `match_head_icon` purely
 because `c2.png` happened to correlate with the noise once it was added to
 the catalog. `locate_game_stats_icon` now requires **two** anchors, not one,
-and returns None otherwise — costing exactly those
-two shots their outline, and turning two confident wrong matches into two
-honest non-matches.
+and returns None otherwise, which turned two confident wrong matches into two
+honest non-matches. (Both shots are located again now, from two or more real
+buttons, by the row fit and the Hough nominator described above.)
 
 **Each identified player's outline draws in that tribe's own default color**
 (`TRIBE_COLORS_BGR`), not an arbitrary per-merge palette slot — pulled

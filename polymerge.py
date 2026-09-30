@@ -3389,12 +3389,8 @@ def anchor_all(run):
             k = float(np.hypot(M_nm[0, 0], M_nm[1, 0]))
             print(f"  {inl} SIFT inliers against {m}, {terr} of them on "
                   f"terrain (relative scale {k:.4f})")
-            # m's anchor composed with the hop onto m is a complete
-            # image-n -> template transform. Its scale is what zoom_hint
-            # has always been; its *translation* is what anchor_to_template
-            # falls back on for a direction with no board edge in frame.
-            # Pass both, so the borrowed offset is measured at the same zoom
-            # it is used at -- see pan_hint in anchor_to_template.
+            # A complete n -> template transform: its scale is the zoom hint
+            # and its translation the pan hint, so both are at one zoom.
             borrowed = (to_h(M_of[m]) @ to_h(M_nm))[:2]
             try:
                 s = shots[n]
@@ -3418,9 +3414,8 @@ def anchor_all(run):
 
 
 def warp_shot(run, n):
-    """Put one shot on the canvas, in all four mask flavors. Factored out
-    so a shot whose anchor is revised later (the SIFT pan borrow below) can
-    be redone on its own rather than re-running the whole phase."""
+    """Put one shot on the canvas with all its masks; rerun whenever its
+    anchor changes."""
     shots, board = run.shots, run.board
     s = shots[n]
     Mn = s.to_template
@@ -3450,18 +3445,8 @@ def sample_shot(run, n):
                 per[n] = s
 
 
-# Fog art is a fixed render, so a correctly anchored shot lands a large
-# number of its fog tiles almost exactly on the template's -- NCC 0.95+,
-# with the explored ones down near 0.0 and very little in between. When the
-# tile lattice is wrong the whole distribution collapses into a blob around
-# 0.0 instead, nothing locks, and every tile gets called explored: the
-# composite then looks plausible but is really each source's fog pasted
-# over every other source's terrain. Measured across the then-four test
-# sets, the best-locking shot in a run scores 105-211 locked tiles when
-# --map-size is right and 2-4 when it is wrong, so this separates them with
-# room to spare. It is a whole-run check because a single shot can honestly
-# have almost no fog in frame (a zoomed-in view of explored territory:
-# test_ss_2/cym1.jpg locks only 15 tiles and is anchored correctly).
+# How many of n's tiles lock onto the fog art (FOG_LOCK_NCC). With a wrong
+# lattice almost nothing locks; see --min-fog-lock in CLAUDE.md.
 def locked(run, n):
     samples = run.samples
     return sum(1 for s in samples.values()
@@ -3472,16 +3457,9 @@ def sift_hops(run, n, witnesses):
     """Where each anchored shot's SIFT geometry says n belongs.
 
     One (inliers, m, anchor implied for n, gap from n's own anchor in
-    tiles) per witness that matches well enough, best-matching first. The
-    gap is exactly --cross-check's measurement: hop template -> n -> m ->
-    template and see how far you land from where you started.
-
-    Features are cached on the Shot because both callers below can want
-    the same shot, and neither runs on an ordinary merge. Deliberately its
-    own cache rather than sharing anchor_all's separate feats dict: that
-    one is local to a fallback pass that never overlaps this one in a
-    single run, and the two must not start deduping into each other on a
-    path CLAUDE.md notes the corpus does not exercise."""
+    tiles) per witness clearing SIFT_TERRAIN_MIN_INLIERS, most inliers
+    first. The gap is --cross-check's measurement. Features are memoized on
+    the Shot, separately from anchor_all's (no corpus set reaches this)."""
     args, shots, board = run.args, run.shots, run.board
     with PHASES("SIFT anchor hop"):
         for m in witnesses + [n]:
@@ -3510,19 +3488,10 @@ def sift_hops(run, n, witnesses):
 def corroborate_anchor(run, n, witnesses):
     """Is n's anchor confirmed by an already-anchored shot's SIFT geometry?
 
-    Both bars have to be cleared, and they guard different failures: the
-    terrain-inlier floor (SIFT_TERRAIN_MIN_INLIERS, applied inside
-    sift_hops) rejects fog matching the wrong repeat of itself -- the
-    confident, high-scoring, badly wrong match -- and the gap bar rejects a
-    genuine match that simply disagrees. Returns a phrase describing the
-    evidence, or None.
-
-    *Some* anchored shot has to agree, not the best-matching one: sift_hops
-    ranks by inlier count, and inlier count is not what decides here (the
-    same reasoning as the anchor borrow above -- a near-identical view of
-    the same player's own board out-matches every other shot whether or not
-    it is anchored well). So every hop that cleared the inlier floor gets
-    to corroborate, and the first that also agrees is enough."""
+    Needs the terrain-inlier floor (fog matching the wrong repeat) and
+    MISANCHOR_CORROBORATE_MAX_TILES (a genuine match that disagrees). Any
+    witness may agree, not only the best-matching one, since inlier count
+    does not measure anchor quality. Returns a phrase for the log, or None."""
     for inl, m, _A, gap in sift_hops(run, n, witnesses):
         if gap <= MISANCHOR_CORROBORATE_MAX_TILES:
             return (f"sits {gap:.3f} tiles from where {m}'s SIFT geometry "
@@ -3531,12 +3500,8 @@ def corroborate_anchor(run, n, witnesses):
 
 
 def tile_predicate_mask(run, n, keep, inset=0.0):
-    """Boolean canvas of every tile whose sample for n satisfies `keep`.
-
-    Two phases use it -- the fog-lock mask that picks a
-    shot's illumination-fitting tiles below, and the fog-area mask that
-    picks a shot's own-witnessed-fog tiles for ruin detection -- differing
-    only in `keep` and the inset."""
+    """Boolean canvas of every tile whose sample for n satisfies `keep`
+    (fog-locked tiles for the illumination fit, fog tiles for ruin search)."""
     samples, board = run.samples, run.board
     canvas = np.zeros((board.Hc, board.W), bool)
     for (i, j), per in samples.items():
@@ -3554,21 +3519,11 @@ def tile_predicate_mask(run, n, keep, inset=0.0):
 def rank(run, cands, key):
     """Eligible sources, best first: least fog on the tile, then sharpest.
 
-    Sharpness is *ascending* shot.scale. Mind the direction: scale is the
-    factor that blows a shot up to template size, so the smallest value is
-    the shot that already had the most of its own pixels on the tile. The
-    zoomed-out shots are the ones being upscaled, so they have fewer
-    source pixels per tile. (City UI scales with board zoom, so it is not
-    a further penalty -- see CLAUDE.md.)
-
-    Fog evidence outranks sharpness, because a sharp shot that cannot
-    actually see the tile is worse than a blurry one that can. Sources
-    carrying clearly more fog than the best available are pushed to the
-    back rather than dropped, so they can still fill pixels no cleaner
-    source photographed -- the same reasoning as the badge fallback below.
-    The margin is well clear of ordinary disagreement: across test_ss_3's
-    186 multi-source tiles the fog-fraction spread between co-eligible
-    sources is a median 0.001 and a 95th percentile of 0.019."""
+    Sharpest is *ascending* shot.scale (the least upscaled shot). Sources
+    with more than --fog-frac-margin more fog than the cleanest are moved to
+    the back, not dropped, so they can still fill pixels nobody else has
+    (ordinary disagreement: median 0.001, p95 0.019 on test_ss_3). Returns
+    (order, number demoted)."""
     args, shots, board = run.args, run.shots, run.board
     poly = board.tile_poly(key[0], key[1], 0.0)
     frac = {n: (tile_fog_fraction(shots[n].fogpix, shots[n].wmask, poly,
@@ -3757,29 +3712,12 @@ def parse_args():
 def resolve_overlays(args):
     """The --overlays set, defaulted and validated."""
     if args.overlays is None:
-        # --base's own default is "none", not OVERLAY_DEFAULT ("shade"),
-        # simply so an update run stays a quiet continuation of the prior
-        # merge unless asked otherwise -- not, any more, to dodge a
-        # correctness bug. shade/spawns clip to fog_only, which used to come
-        # only from this run's own winner dict: a tile the base already
-        # carries as real content but that no new screenshot re-witnesses was
-        # not in winner either, so requesting shade explicitly painted a
-        # checkerboard tint straight over that content (measured on
-        # tests/goon_test2: 100+ tiles of imp.jpg's own already-explored
-        # territory). fog_only now also classifies the base's own pixels
-        # directly (see the "base fog classification" phase below) whenever
-        # an overlay that needs it is requested and a base is given, with or
-        # without new screenshots, so that is fixed at the source. This
-        # default is kept anyway, on the same "it's on the caller" basis
-        # already accepted for a base's own baked-in decorations -- an
-        # explicit --overlays still overrides it.
+        # With --base, default to no layers, so an update is a quiet
+        # continuation of the prior merge.
         args.overlays = "none" if args.base else OVERLAY_DEFAULT
 
-    # Validated here rather than where it is used, so a typo fails immediately
-    # instead of after the ~20s of work that produced the composite.
-    # `vision`/`vision-each` are not in OVERLAY_LAYERS -- neither has an
-    # Overlays/ file, so neither is ever handed to paint_overlays; both are
-    # drawn/written by paste_composite and write_vision_each.
+    # Validated up front so a typo fails before the merge work. vision and
+    # vision-each have no Overlays/ file and are drawn separately.
     known = {name for name, _ in OVERLAY_LAYERS} | {"vision", "vision-each"}
     overlays = {p.strip().lower() for p in args.overlays.split(",") if p.strip()}
     overlays.discard("none")
@@ -3805,8 +3743,7 @@ def load_inputs(run):
         for path, name in zip(args.images, names):
             im = cv2.imread(path)
             if im is None:
-                # basename, not the full path: this message is passed straight
-                # to a Discord channel, and the path is a server-side temp dir
+                # basename only: this reaches a Discord channel
                 raise SystemExit(f"cannot read {name} -- it appears invalid")
             shots[name] = Shot(im, args, ui.get(name, []))
             if not args.no_badge_filter:
@@ -3814,21 +3751,11 @@ def load_inputs(run):
                 if found:
                     print(f"{name}: excluding {len(found)} capture-badge "
                           f"blob(s) {found}")
-                    # badge_mask/badge_halo alone can't answer "did any shot
-                    # have a badge?" -- an all-zero badge_mask is also what a
-                    # clean shot gets, deliberately, so --debug-dir has an
-                    # empty badges_<name>.png to show the detector did not
-                    # misfire. badge_found is the answer to that question.
+                    # badge_mask is set even when empty, so record hits here.
                     badge_found.add(name)
 
-        # The previous composite, on an update run. Loaded here (independent
-        # of names/shots) and never added to either -- the menu prefilter,
-        # --max-shots, detect_map_size, and the whole of anchor_all below are
-        # all meant to see only the new screenshots. It joins the merge once,
-        # much later, as the paste canvas's own starting pixels (see the
-        # "paste composite" phase) rather than as a competing shot -- it
-        # needs no anchoring, since a finished composite's geometry is
-        # already exactly known (base_output_size, above).
+        # The prior composite is never a shot: it only seeds the paste canvas
+        # (paste_composite), its geometry being exactly known.
         base_bgr = cv2.imread(args.base) if args.base else None
         if args.base and base_bgr is None:
             raise SystemExit("cannot read --base image -- it appears invalid")
@@ -3842,15 +3769,7 @@ def load_inputs(run):
 def select_map_shots(run):
     """Drop menu screenshots, then apply --max-shots and --single."""
     args, names, shots = run.args, run.names, run.shots
-    # A score screen is a menu drawn over a dimmed copy of the map, and it
-    # anchors well enough to poison a merge (see board_angle_fraction). Dropped
-    # here, before anything else looks at these shots -- in particular before
-    # detect_map_size, which one could otherwise contribute a board-size
-    # measurement to.
-    #
-    # The projection angles come straight from BOARD_DIR_A/BOARD_DIR_B, so this
-    # needs no template and no probe: the camera is fixed orthographic
-    # isometric, and those are a constant of it rather than of any one render.
+    # Menus go before anything else sees the shots, detect_map_size included.
     all_names = list(names)
     with PHASES("menu-screenshot prefilter"):
         for name in list(names):
@@ -3863,26 +3782,13 @@ def select_map_shots(run):
                       f"or other menu drawn over the map?)")
                 names.remove(name)
     if all_names and not names:
-        # Guarded on all_names, not just "not names": a --base-only run with
-        # no new screenshots at all starts with names already empty, and that
-        # is not a menu-screen refusal -- see the "no screenshots given" check
-        # in parse_args.
-        #
-        # Cause and remedy on the one line, as every refusal here does: polybot
-        # promotes only the first line to the channel. No mention of edge angles
-        # -- a player cannot act on that, and infers the shape of it from the
-        # remedy anyway.
+        # (A --base-only run starts with no names and is not a refusal.)
         raise SystemExit("these look like score screens or menus rather than "
                          "the map itself. Please retry with in-game "
                          "screenshots of the map.")
 
-    # Counted here rather than by the caller, and that is the whole point of the
-    # option: the menu prefilter is the only thing that knows which inputs are
-    # map screenshots, it needs the pixels to know it, and polybot has them only
-    # as undownloaded attachments at the point where it would otherwise check.
-    # Charging a score screen against the budget refuses merges that are well
-    # inside it -- a 3v3 where everyone posts a map and a score screen is 12
-    # images and 6 shots.
+    # Counted after the menu prefilter, which only this program can run (the
+    # bot has undownloaded attachments): menus must not spend the budget.
     if args.max_shots is not None and len(names) > args.max_shots:
         raise SystemExit(f"too many screenshots: {len(names)} of these show the "
                          f"map, and the limit is {args.max_shots}. Please retry "
@@ -3895,21 +3801,11 @@ def select_map_shots(run):
 def resolve_map_size(run):
     """Settle args.map_size: stated, read off --base, or measured."""
     args, names, shots, base_bgr = run.args, run.names, run.shots, run.base_bgr
-    # Only when the caller omitted it: an explicit --map-size is always obeyed,
-    # so this can never override a size someone actually meant. A --base image
-    # answers this on its own terms (its pixel dimensions name the board
-    # exactly -- base_output_size), so it takes priority over measuring the
-    # new screenshots, which on an update are typically a zoomed-in partial
-    # view that cannot measure the board at all.
-    #
-    # A base-derived size still counts as *stated*, not detected: it says
-    # nothing about whether fog exists, only which board this is, so a run
-    # that then locks no fog against it should warn rather than refuse (see
-    # --min-fog-lock below) -- exactly the replay/late-game case this feature
-    # is for.
+    # An explicit --map-size is always obeyed. A --base's pixel size names the
+    # board exactly, so it beats measuring, and counts as *stated* (a zero
+    # fog lock then warns rather than refuses).
     size_was_detected = args.map_size is None and not args.base
-    # One cache for the whole run, so whatever the size pre-pass measures below
-    # is available to the anchor rather than measured again. See ShotCache.
+    # One cache for the run, shared with anchoring (ShotCache).
     shot_cache = ShotCache()
     if args.map_size is None and args.base:
         args.map_size = base_output_size(base_bgr.shape[:2], args.dark_thresh,
@@ -3923,9 +3819,7 @@ def resolve_map_size(run):
               f"is {base_bgr.shape[1]}x{base_bgr.shape[0]}px, exactly that "
               f"size's own composite dimensions)")
     elif size_was_detected:
-        # detect_map_size takes plain per-shot dicts rather than Shot objects,
-        # since shoreline/polyshore.py calls it directly too -- this adapts
-        # the Shots without spending that boundary on this refactor.
+        # Plain dicts, since shoreline/polyshore.py calls this too.
         args.map_size = detect_map_size(
             names, {n: s.img for n, s in shots.items()},
             {n: s.edge_mask for n, s in shots.items()},
@@ -3947,8 +3841,7 @@ def load_board(run):
     tgeom = template_geometry(template_path, args.dark_thresh, args.erode_px)
     template = tgeom["bgr"] if tgeom else None
     if template is None:
-        # Install fault, like the missing-Overlays refusal in detect_map_size:
-        # nothing the player did, so the path goes below the headline.
+        # Install fault: the path goes below the headline.
         raise SystemExit(f"this is not installed correctly, so it cannot merge "
                          f"this board size.\n({template_path} is missing or "
                          f"unreadable.)")
@@ -3966,13 +3859,8 @@ def load_board(run):
     tile_px = float(np.linalg.norm(u_col))
     print(f"tile step: {tile_px:.2f}px")
 
-    # Validated here, unconditionally, whenever --base is given -- whether
-    # args.map_size just came from the base above or was stated explicitly
-    # alongside it (which must still agree with the base's actual pixels
-    # rather than being taken on faith). base_rect is the exact rectangle
-    # this run's own composite would be cropped to at args.map_size, so this
-    # is the same check base_output_size makes, just against a size that is
-    # now fixed rather than searched.
+    # Any --base must match this size's composite exactly, however the size
+    # was chosen.
     base_rect = None
     if args.base:
         Wt, Ht = template.shape[1], template.shape[0]
@@ -3988,9 +3876,7 @@ def load_board(run):
                 f"output at this size.")
         base_rect = (x0c, y0c, x1c, y1c)
 
-    # The composite is built in the template's own frame, so the canvas *is*
-    # the template. These were two pairs of names for one size back when the
-    # canvas was a computed union of wherever the shots landed.
+    # The composite is built in the template's own frame.
     W, Hc = template.shape[1], template.shape[0]
     N = args.map_size
     run.board = Board(
@@ -4025,21 +3911,10 @@ def run_cross_check(run):
 def adopt_anchors(run):
     """Anchor every shot and file the results onto the Shots."""
     names, all_names, shots = run.names, run.all_names, run.shots
-    # Every image is anchored to the template independently -- zoom from its own
-    # fog artwork, pan from its own board edges (anchor_to_template) -- and never
-    # against each other. Registering the shots to one another first and
-    # anchoring the group is the tempting alternative and is worse: one bad
-    # pairwise match throws off every shot chained through it, and a group fit
-    # has no precision check that can fail (see cross_check's docstring).
-    # Per-image anchoring gives each shot its own independent failure mode,
-    # which --cross-check verifies shot-by-shot against SIFT's geometry.
+    # Each shot is anchored to the template independently, never registered
+    # to the others, so one bad pairwise match cannot throw off a chain.
     M_of, src_of, implied_of, prior_M_of = anchor_all(run)
-    # Filed onto each Shot rather than kept as parallel dicts: to_template is
-    # revised in place later (the zero-lock revert, the SIFT pan/zoom borrow),
-    # the same pattern build_masks already uses for a shot's masks. Same
-    # homogeneous representation as the anchors themselves -- these are
-    # swapped in for one another below, and sift_hops inverts whatever is in
-    # to_template.
+    # Stored homogeneous (3x3), since later phases swap and invert them.
     for n, M in M_of.items():
         shots[n].to_template = to_h(M)
     for n, src in src_of.items():
@@ -4050,22 +3925,14 @@ def adopt_anchors(run):
         if M is not None:
             shots[n].prior = to_h(M)
     if all_names and not M_of:
-        # Guarded on all_names for the same reason as the menu-screen refusal
-        # above: a --base-only run legitimately has nothing to anchor.
+        # (A --base-only run has nothing to anchor.)
         raise SystemExit(
             "no valid images found -- none of them could be placed on the "
             "board. They need to be in-game screenshots showing part of the "
             "map, with two adjoining sides of the board in frame -- two "
             "opposite sides are not enough. Zooming out usually does it.")
-    # One summary line naming what got left out, on stdout and in a fixed
-    # format, because a *partial* merge is the failure a player is least
-    # likely to notice: the composite still looks fine, it is just missing
-    # someone's territory. A real user reported exactly this ("failed to
-    # attach the oum ss") and only caught it by eye. polybot parses this line
-    # to say so in the channel -- keep the prefix stable if you edit it.
-    # Over all_names, not names: a shot the menu prefilter removed above is
-    # just as absent from the composite as one that failed to anchor, and the
-    # player is owed the same line about it.
+    # A partial merge still looks fine, so name what was left out, menus
+    # included. polybot parses this line: keep the prefix and n/m shape.
     dropped_names = [n for n in all_names if shots[n].to_template is None]
     if dropped_names:
         print(f"DROPPED {len(dropped_names)}/{len(all_names)}: "
@@ -4077,10 +3944,7 @@ def adopt_anchors(run):
 def identify_players(run):
     """--overlays vision/vision-each: who took each shot."""
     overlays, names, shots = run.overlays, run.names, run.shots
-    # Identifying a shot's player needs nothing but its own raw pixels -- no
-    # anchor, no board size -- so it could run before any of the above. It
-    # runs here instead, once `names` is final, so a dropped shot (which
-    # contributes no explored tiles either way) is not probed for nothing.
+    # Runs once `names` is final, so dropped shots are not probed.
     player_of = {}
     no_head_catalog = False
     if overlays & {"vision", "vision-each"}:
@@ -4092,19 +3956,11 @@ def identify_players(run):
                       f"{os.path.join(head_icon_dir(), '*.png')}, so no shot "
                       f"could be matched to a player -- vision outlines/"
                       f"per-player composites skipped")
-            # Two questions, answered separately and in this order, because
-            # they are not equally hard. *Which shots are one player* is
-            # settled by comparing the shots' own icons against each other --
-            # like for like, no reference render involved, and it keeps
-            # working for a tribe or skin Assets/Heads has never seen. *Which
-            # tribe that player is* then only decides the outline's color, and
-            # is the question that needs the catalog.
+            # First which shots are one player (icons compared with each
+            # other), then which tribe (the catalog), which only picks colour.
             region_of = {n: player_icon_region(shots[n].img) for n in names}
             groups = group_shots_by_icon(region_of)
-            # One catalog match per distinct *icon*, not per shot. Two shots by
-            # one player are usually the same icon to three decimals, so the
-            # second asks a question already answered -- and it is the only
-            # expensive question in this phase.
+            # One (costly) catalog match per distinct icon, not per shot.
             named, matched = {}, []
             for group in groups:
                 for n in group:
@@ -4118,33 +3974,21 @@ def identify_players(run):
                     matched.append(n)
             anon = 0
             for group in groups:
-                # A group holding two *confidently different* names is two
-                # players on one tribe wearing different skins -- rare, real
-                # (tests/vengir_cultist), and the one case icon similarity
-                # alone gets wrong, since those two icons correlate higher
-                # than any other pair of different players. Split on the
-                # catalog's word, which separates them cleanly.
+                # Two confident names in one group are one tribe in two skins
+                # (vengir_cultist): split on the catalog's word.
                 keys = sorted({named[n][0] for n in group if named.get(n)})
                 if len(keys) > 1:
                     parts = [[n for n in group
                               if named.get(n) and named[n][0] == k] for k in keys]
-                    # A shot the catalog could not place cannot be assigned to
-                    # either skin on this evidence, so it goes with the part
-                    # its own icon is closest to -- which is why it was in
-                    # this group at all.
+                    # An unnamed shot joins the first part.
                     for n in group:
                         if not named.get(n):
                             parts[0].append(n)
                 else:
                     parts = [group]
                 for part in parts:
-                    # The whole part answers as one, best score first, so a
-                    # shot the catalog cannot place still inherits its
-                    # player's identity from the shots that could. When none
-                    # of them could, the part is still a player and still
-                    # earns an outline -- under a key that is deliberately not
-                    # a catalog filename, so tribe_default_color finds nothing
-                    # and _assign_vision_colors falls back to the palette.
+                    # The part takes its best-scoring name; with none it is
+                    # still a player, under a non-catalog key (palette colour).
                     best = max((named[n] for n in part if named.get(n)),
                                key=lambda kn: kn[1], default=None)
                     if best is None:
@@ -4162,36 +4006,18 @@ def check_board_size(run):
     """Refuse a stated size the shots' own tile count contradicts."""
     args, shots, size_was_detected = (
         run.args, run.shots, run.size_was_detected)
-    # Any shot spanning the whole board counts the tiles across it directly
-    # (span / fog repeat period), which is an estimate of the board size owing
-    # nothing to --map-size. This is the guard that --min-fog-lock alone cannot
-    # be: fog_period_scale sizes a shot by matching period against period, so a
-    # shot anchored that way locks happily onto the *wrong* board size too, and
-    # the fog-lock check waves it through (CLAUDE.md has the measured case).
-    # Checked against the median so one odd shot cannot fail an otherwise good
-    # run -- but with only two measurements the median *is* their mean, so one
-    # broken number drags it half way (CLAUDE.md has that failure too).
-    # Measurements that could not describe a board at all are therefore
-    # discarded first rather than averaged in; see MAP_SIZE_PLAUSIBLE_TOL.
+    # Stronger than --min-fog-lock, which a fog-period anchor passes at a wrong
+    # size too. The median of two is their mean, so implausible readings are
+    # dropped first (MAP_SIZE_PLAUSIBLE_TOL).
     implied_n_of, implied_n_bad = plausible_sizes(
         {n: s.implied_n for n, s in shots.items() if s.implied_n is not None})
     if implied_n_bad and not size_was_detected:
-        # detect_map_size already said this about the same shots when it ran,
-        # and the message is three lines.
+        # (detect_map_size has already printed it otherwise)
         print(implausible_note(implied_n_bad))
     if implied_n_of:
         med = float(np.median(list(implied_n_of.values())))
         if abs(med - args.map_size) > MAP_SIZE_STATED_TOL:
-            # One sentence, no method and no per-shot table: this goes straight
-            # to a Discord channel, where the reader is a player who wants the
-            # answer and the fix. The evidence is already on stdout -- every
-            # shot printed its own "board size implied by span/fog-period"
-            # line during anchoring -- so nothing is lost by leaving it there.
-            #
-            # "or without a size" is the better of the two remedies and is why
-            # it is offered: omitting it makes this program measure the board
-            # rather than take anyone's word for it, which is exactly what went
-            # wrong here.
+            # Channel copy: one sentence. The per-shot evidence is on stdout.
             got = int(round(med))
             raise SystemExit(
                 f"This looks like a {got}x{got} board, not "
@@ -4220,24 +4046,10 @@ def fog_lock_guards(run):
     args, names, shots, size_was_detected, board = (
         run.args, run.names, run.shots, run.size_was_detected, run.board)
     fog_lock = {n: locked(run, n) for n in names}
-    # A refinement that locked nothing had nothing to refine against.
-    # joint_register scores candidates by fog alignment, so with no fog in frame
-    # it is walking to the argmax of noise rather than refining -- the same
-    # reasoning that stops a borrowed pan being refined (see borrow_pan), except
-    # a fogless board cannot be spotted up front the way that can, so this check
-    # runs after the fact. tests/fogless is the case: see CLAUDE.md for the
-    # measurements.
-    #
-    # **The prior wins even on a tie at zero, and that tie is the whole point.**
-    # Fog lock cannot separate two anchors when neither has any fog; what
-    # decides is that one was fitted to noise and the other was not. A shot
-    # locking even one tile keeps its refinement untouched, so this cannot move
-    # an ordinary merge.
-    #
-    # Deliberately before the report and the guard below, so the printed numbers
-    # are the ones the merge actually uses and a recovered prior can satisfy
-    # --min-fog-lock. Not gated on --min-fog-lock > 0, since a fogless board has
-    # to pass 0 to reach here at all.
+    # A refinement that locked no fog was fitted to noise (tests/fogless), so
+    # the shot goes back to its unrefined prior -- even on a tie at zero, which
+    # is the point. One locked tile keeps the refinement. Runs before the
+    # report and the guard, and regardless of --min-fog-lock.
     for n in [n for n in names if not fog_lock[n] and shots[n].prior is not None]:
         shots[n].to_template = shots[n].prior
         warp_shot(run, n)
@@ -4249,34 +4061,14 @@ def fog_lock_guards(run):
           f"{FOG_LOCK_NCC}): "
           + "  ".join(f"{n}={fog_lock[n]}" for n in names))
     size_unverified = False
-    # Guarded on names: with none (a --base-only run adding no new
-    # screenshots), there is nothing here to check a fog lock on at all, and
-    # max() on the empty fog_lock dict would raise rather than mean anything.
+    # (A --base-only run has no names, and max() of nothing would raise.)
     if names and args.min_fog_lock > 0 and max(fog_lock.values()) < args.min_fog_lock:
-        # Two things produce a run where nothing locks and they want opposite
-        # answers: --map-size is wrong, or the board has no fog left at all (a
-        # replay, or a finished game). Nothing available here separates them.
-        #
-        # So split on *who claimed the size*, which is answerable. **Detected**
-        # means the claim is this program's own and has to be self-consistent --
-        # detect_map_size reads span over fog period, so it found fog, and a run
-        # that then locks none of it is wrong about something. Refuse.
-        # **Stated** is the person's assertion, and a wrong one is theirs to
-        # make: warn loudly and merge. Refusing every replay to guard against a
-        # mistyped size served nobody.
-        #
-        # A wrong *stated* size is still guarded twice: the board-size check
-        # above is independent and stronger wherever it can measure at all, and
-        # the conflict fraction below is the backstop where it abstains --
-        # which, unlike anything here, measures the *harm* rather than guessing
-        # at the cause. Two tests that look like the missing discriminator and
-        # are not (fog_period_scale returning None, and a fog-ish colour
-        # fraction) are written up in CLAUDE.md; do not reach for either.
+        # A wrong size and a fogless board look the same here, so split on who
+        # claimed the size: a *detected* size came from fog, so none locking
+        # is an error; a *stated* one is warned about and merged (a wrong one
+        # is still caught by check_board_size or CONFLICT_FRAC_SUSPECT). See
+        # --min-fog-lock in CLAUDE.md.
         if size_was_detected:
-            # The reasoning that makes this a refusal rather than a warning --
-            # the size came from the fog, so fog is present and should have
-            # locked -- is in the comment above and in the numbers below. The
-            # player gets the outcome and what to do about it.
             raise SystemExit(
                 "the board size measured from these screenshots does not fit "
                 "them. " + RESTATE_SIZE.format(size_list()) + "."
@@ -4298,30 +4090,12 @@ def borrow_anchors(run):
     """Give a shot with no fog lock a lender's anchor, if its own fog agrees."""
     args, names, shots, fog_lock = (
         run.args, run.names, run.shots, run.fog_lock)
-    # A shot with *no* fog locked has had no say in its own refinement:
-    # joint_register scores candidates by fog alignment, so with nothing to
-    # align it keeps the edge-derived prior, bias and all. For such a shot
-    # another shot's SIFT geometry is better evidence than its own edges, so
-    # borrow the whole transform rather than only the zoom (which is what
-    # anchor_all's fallback lends a shot that cannot anchor at all).
-    #
-    # Three things keep this from becoming the old
-    # register-the-group-then-anchor design it superficially resembles: only a
-    # shot with zero fog evidence is eligible, a lender must have real fog
-    # evidence of its own, and the borrowed anchor has to *prove itself* on the
-    # borrower's own fog.
-    #
-    # **That last one also decides which lender, and it has to, because inlier
-    # count does not.** The same player's near-identical second view out-matches
-    # every other shot whether or not it is itself anchored well -- measured at
-    # 4494 inliers against a correct lender's 829, on a shot that was a full
-    # tile out. So try every eligible lender and let the borrower's own fog
-    # pick. A shot reaching here already has its own unrefined anchor back (the
-    # zero-lock block above), so the borrow competes against its best
-    # own-evidence anchor rather than against a refinement fitted to noise.
-    #
-    # **No corpus set reaches this**, so tools/baseline.py cannot verify a
-    # change here; exercise it deliberately. CLAUDE.md has the worked case.
+    # A shot with zero fog locked had no say in its own anchor, so it may
+    # borrow a whole anchor by SIFT -- only from a lender that clears
+    # --min-fog-lock, and only if the borrowed anchor locks more of the
+    # borrower's own fog. That test also picks the lender, since inlier count
+    # does not (a near-identical view out-matches regardless). No corpus set
+    # reaches this: exercise changes deliberately.
     if args.min_fog_lock > 0:
         lenders = [m for m in names if fog_lock[m] >= args.min_fog_lock]
         for n in [n for n in names if fog_lock[n] == 0]:
@@ -4351,22 +4125,10 @@ def borrow_anchors(run):
 
 def drop_misanchored(run):
     """Drop a fog-period shot that locks no fog and nothing corroborates."""
-    # Per-image counterpart of the run-level guard, applicable only to shots
-    # whose zoom came from the fog-period fallback. That fallback measures zoom
-    # on a large expanse of the shot's own fog, so if none of its tiles then
-    # lock onto the template's fog art, the anchor is wrong -- and a
-    # misanchored shot calls its own fog "explored" and pastes it over every
-    # other source's terrain. Dropping it keeps the rest of the merge alive.
-    #
-    # That premise is not airtight: the whole board is periodic at the tile
-    # step, not just the fog, so a shot with almost no fog in frame can measure
-    # a correct period off crop fields and tile borders and still lock nothing
-    # (star_change/oum.png -- see CLAUDE.md). Such a shot is perfectly
-    # mergeable, so before dropping it, ask for a second opinion that owes
-    # nothing to fog: SIFT against a shot that anchored on its own. This can
-    # only ever *save* a shot, never drop one that would have survived -- a
-    # spurious SIFT match (fog matching fog) fails the inlier floor or the
-    # agreement bar and leaves the drop exactly as it was.
+    # A fog-period zoom was measured on the shot's own fog, so locking none of
+    # it means a wrong anchor that would paste fog over others' terrain. But
+    # terrain is periodic too (star_change/oum.png), so SIFT corroboration can
+    # save the shot first; it can never drop one that would have survived.
     args, names, all_names, shots, samples, fog_lock = (
         run.args, run.names, run.all_names, run.shots, run.samples, run.fog_lock)
     if args.min_fog_lock > 0:
@@ -4390,15 +4152,7 @@ def drop_misanchored(run):
                 per.pop(n, None)
             del fog_lock[n]
         if all_names and not names:
-            # Guarded on all_names, same reason as the other refusals above:
-            # a --base-only run starts this block with names already empty,
-            # and that is not every shot having just been dropped as
-            # misanchored.
-            #
-            # Same audience as the refusals above: "misanchored" names an
-            # internal state, and the player needs the consequence and the
-            # remedy instead. The per-shot lines just printed carry the cause
-            # for the console.
+            # (A --base-only run starts with no names.)
             raise SystemExit(
                 "none of these screenshots could be placed on the board. "
                 "Check they are all of the same board, and that the size is "
@@ -4406,16 +4160,9 @@ def drop_misanchored(run):
 
 
 def fit_fog_pixels(run):
-    """Per-pixel fog evidence for each shot."""
-    # Per-pixel fog evidence, used to rank sources against each other on the
-    # *same* tile. A tall city can fill a tile's inset center in every shot, so
-    # the fog test sees only towers and calls the tile explored even in a shot
-    # where it is really fog -- which then wins on sharpness and pastes its own
-    # fog fringe. Both shots are looking at the same towers, so comparing their
-    # fog fractions cancels the occluder and leaves only the disagreement that
-    # matters. Confirmed on the tile north of Ichphy (test_ss_3 tile (9,8)):
-    # 0.089/0.084 for the two yad shots, where it is genuinely fog, against
-    # 0.000/0.000 for the two cym shots, where it is genuinely grass.
+    """Per-pixel fog evidence for each shot, which rank() compares across
+    sources on one tile: a tall city can hide fog from the tile test in every
+    shot, but the occluder cancels between them (test_ss_3 (9,8))."""
     args, names, shots, board = run.args, run.names, run.shots, run.board
     with PHASES("fog pixel masks"):
         for n in names:
@@ -4424,10 +4171,7 @@ def fit_fog_pixels(run):
                 n, lambda s: s.get("fog_ncc", 0.0) >= FOG_LOCK_NCC,
                 args.tile_inset)
             sel = locked_mask & (s.wmask > 0)
-            # Without enough known-fog pixels there is nothing to fit the shot's
-            # illumination on. A shot with no fog in frame also cannot be the one
-            # smuggling a fog fringe in, so an all-false mask is the right answer:
-            # it simply never disqualifies that source.
+            # Too little fog to fit: an all-false mask never demotes the shot.
             if int(sel.sum()) >= FOG_GAIN_MIN_PX:
                 s.gain = fog_illumination(s.warped, board.template, sel)
                 s.fogpix = fog_pixel_mask(s.warped, board.template, s.gain)
@@ -4439,17 +4183,9 @@ def select_winners(run):
     """Rank the sources for every explored tile."""
     args, names, shots, badge_found, samples, board = (
         run.args, run.names, run.shots, run.badge_found, run.samples, run.board)
-    # A tile with no clean (badge-excluded) witness falls back to raw witnessing
-    # -- i.e. a source may win using content that includes a capture badge --
-    # rather than showing template fog. Excluding badge pixels is meant to
-    # prefer a *cleaner* source when one exists, never to blank out the only
-    # available view of a tile.
-    #
-    # `priority[key]` keeps the *whole* eligible order, not just the winner,
-    # because the paste layers through it: a tile whose best source only partly
-    # covers it (that shot's own photo frame ends mid-tile) falls through to the
-    # next-best source for the leftover pixels, instead of copying the winner's
-    # out-of-frame black into the composite.
+    # A tile with no clean witness falls back to badge-covered ones rather than
+    # show fog. priority[key] keeps the whole order, since the paste falls
+    # through it wherever the winner's frame ends mid-tile.
     winner, priority, badge_fallback, fog_demoted = {}, {}, [], []
     with PHASES("winner selection"):
         for i in range(board.N):
@@ -4463,12 +4199,7 @@ def select_winners(run):
                     winner[key] = order[0]
                     priority[key] = (order, False)  # False: use each shot's pmask
                     continue
-                # Nothing to fall back *to* unless some shot actually carries
-                # a badge: with none, wmask_raw is wmask and the re-sample below
-                # is guaranteed to reproduce the empty `eligible` it just got.
-                # This used to test badge_mask_of for a None, which is never
-                # None (see its assignment), so the re-sample ran on every
-                # unexplored tile of every merge.
+                # With no badge anywhere the re-sample would change nothing.
                 if not badge_found:
                     continue
                 poly = board.tile_poly(i, j, args.tile_inset)
@@ -4497,54 +4228,23 @@ def promote_city_bars(run):
     args, names, shots, samples, winner, priority, capped_of, board = (
         run.args, run.names, run.shots, run.samples, run.winner, run.priority,
         run.capped_of, run.board)
-    # The population bar is owner-only, so the shot showing one *is* that
-    # city's owner's shot -- no ownership has to be inferred, which is what
-    # makes this immune to "* N" also appearing on embassy'd foreign cities.
-    # Preserving it is a priority question, not a compositing one: promote
-    # that source on the city's 3x3 block and the ordinary paste keeps the bar
-    # intact. The 3x3 is deliberately a *superset* of the tiles the bar can
-    # touch (the city plus its SW/S/SE), because promoting only some of them
-    # would cut the bar in half at a tile border -- worse than not preserving
-    # it at all. It is also exactly the block a city's owner is guaranteed to
-    # have vision on, so promotion here can never paste fog over another
-    # player's terrain.
-    #
-    # The `n in order` test is the belt-and-braces version of that guarantee:
-    # `order` holds only sources that witnessed the tile as explored, so a
-    # source is never promoted onto a tile it sees as fog even if the bar was
-    # mis-located. A mis-detection can therefore cost sharpness, never truth.
+    # The shot showing a bar is its city's owner's, so that source is promoted
+    # on the city's 3x3 block: a superset of the tiles the bar can touch, and
+    # the block the owner is guaranteed to see. Promotion only reorders
+    # sources that witnessed the tile as explored, so a mis-detection costs
+    # sharpness, never truth. See CLAUDE.md, city population bars.
     bar_promoted, vision_promoted = [], []
     if args.city_bars:
-        # Same promotion, triggered by *vision* rather than by a detected bar.
-        # A source that alone sees every tile of some 3x3 block is the only
-        # candidate owner of a city there, since the game guarantees an owner
-        # sight of all 8 neighbors -- and this needs no detector, so it reaches
-        # bars a fused or occluded sprite hides from detect_population_bars.
-        # It is self-limiting: inside anyone's own territory every source
-        # qualifies and the claim cancels, so it only discriminates where
-        # sight genuinely differs (frontiers, frame edges), which is where
-        # bars actually get lost. See CLAUDE.md for the measured hit rate and
-        # the worked strong/weak-claim case.
-        #
-        # Blocks running off the board count only their in-range tiles; a rim
-        # city has fewer than 8 neighbors and would otherwise never qualify.
-        # Everything is collected before anything is applied, so overlapping
-        # blocks cannot be resolved by iteration order.
+        # Vision promotes too: a source that alone sees a whole 3x3 block is
+        # the only candidate owner of a city there. It cancels wherever every
+        # source sees the block, so it only acts at frontiers and frame edges.
+        # All claims are collected before any is applied.
         with PHASES("city-bar detection"):
             for n in names:
                 shots[n].bars = detect_population_bars(shots[n].warped, shots[n].wmask,
                                                         *board.lattice, board.N)
 
-            # Does this bar physically reach its S/SW/SE neighbors? Only the
-            # capped width does; the short one stops on its own tile. Asked
-            # here to rank two contradictory detections against each other, and
-            # again below for the claim ranking.
-            #
-            # This was `_complete`, and it measured a detected bbox against a
-            # pixel width to tell a whole bar from a fragment. The anchor-first
-            # detector only ever emits one of two legal widths, so there are no
-            # fragments and nothing to measure -- the bbox argument outlived
-            # its use by some margin.
+            # Only a capped bar reaches the city's S/SW/SE neighbors.
             def _capped(width_class):
                 return width_class >= 3
 
@@ -4558,22 +4258,9 @@ def promote_city_bars(run):
                                               plate, bbox[2]))
                 return best
 
-            # **No two cities sit within CITY_MIN_GAP tiles of each other**
-            # (confirmed with the project owner), so two detections that close
-            # cannot both be real -- at least one is an impostor. That is a hard
-            # contradiction rather than a heuristic, and it is the one signal
-            # here needing no new measurement: the corpus carried 14 such pairs.
-            #
-            # Resolve on the evidence already in hand -- a complete bar beats a
-            # fragment, then plate evidence, then span -- and drop the loser's
-            # detections outright, so the report and the splice check agree with
-            # the claim ranking. Dropping is safe in the direction that matters:
-            # the loser keeps its *vision* claim, which is a separate mechanism,
-            # so a real city demoted here can still win its tiles by sight.
-            #
-            # On an exact tie neither is better and dropping either is a guess,
-            # so the higher tile loses purely to keep this deterministic. Repeat
-            # until no pair survives, since adjacency can chain.
+            # Detections within CITY_MIN_GAP contradict each other: drop the
+            # weaker (capped width, then plate, then span; the higher tile on
+            # a tie) until none remain. The loser keeps its vision claim.
             while True:
                 cities = {c for n in names for c, _b, _n, _p in shots[n].bars}
                 pair = next(((a, b) for a in sorted(cities)
@@ -4587,20 +4274,13 @@ def promote_city_bars(run):
                 for n in names:
                     shots[n].bars = [x for x in shots[n].bars if x[0] != loser]
 
-            # Several shots can show one city's bar -- two shots by the same
-            # player, most obviously. Arbitrate by the ordinary sharpness rule
-            # rather than letting dict order decide, so this is deterministic.
+            # One city's bar in several shots: the sharpest owns it.
             owner_of, capped_of, plate_of = {}, {}, {}
             for n in names:
                 for city, bbox, width_class, plate in shots[n].bars:
                     if city not in owner_of or shots[n].scale < shots[owner_of[city]].scale:
                         owner_of[city] = n
                         plate_of[city] = plate
-                        # Direct evidence that the bar physically covers
-                        # its S/SW/SE neighbors, which only the capped width
-                        # does. Every detection is one of two legal widths now,
-                        # so this is a property of the bar rather than a guess
-                        # about how much of one was seen.
                         capped_of[city] = _capped(width_class)
 
         with PHASES("vision-based promotion"):
@@ -4627,30 +4307,11 @@ def promote_city_bars(run):
                     for dj in (-1, 0, 1):
                         key = (ci + di, cj + dj)
                         w = strong_w if (di >= 0 and dj >= 0) else weak_w
-                        # Rank, in full: strength, then whether a capped-width
-                        # bar backs the claim, then plate evidence, then
-                        # proximity, then sharpness. Every term earns its place
-                        # and the order is not arbitrary -- CLAUDE.md works
-                        # through the contested tiles that pin it down.
-                        #
-                        # Two of them in brief. **Proximity alone is not
-                        # enough**, because the two cases disagree about it: a
-                        # false detection can sit on a real bar's SW tile (the
-                        # nearer claim is wrong) or a real city can hold only a
-                        # short bar beside a longer impostor (the nearer claim
-                        # is right). Width class separates them. **A city's own
-                        # tile beats another city's claim on it as a neighbor**
-                        # at equal strength -- a bar certainly covers the tile
-                        # its city stands on, a neighbor's claim there is
-                        # speculative -- and without that the tie falls to
-                        # sharpness and splices a city's label across two shots
-                        # that render it differently.
-                        #
-                        # Vision claims carry no plate measurement and score 0.
-                        # That is neutral rather than a penalty: strength
-                        # already separates vision from detected-bar claims, so
-                        # a plate value is only ever compared against another
-                        # value of the same kind.
+                        # Strength, capped width, plate, proximity (a city's
+                        # own tile first, which keeps its label whole), then
+                        # sharpness. Vision claims score plate 0, which only
+                        # ever meets another vision claim. CLAUDE.md works
+                        # through the tiles that pin this order down.
                         d = max(abs(di), abs(dj))
                         full = 0 if capped_of.get((ci, cj), False) else 1
                         plate = plate_of.get((ci, cj), 0.0)
@@ -4675,10 +4336,7 @@ def promote_city_bars(run):
 def detect_ruins(run):
     """--ruin-vision: find Elyrion ruin markers on each shot's own fog."""
     args, names, shots, board = run.args, run.names, run.shots, run.board
-    # Ruin-vision detection runs on the same per-source fog classification the
-    # merge already produced: a sprite is only searched for inside tiles this
-    # source itself witnessed as fog, which is what keeps saturated explored
-    # content (fruit, borders, units) out of the candidate set entirely.
+    # Searched only on tiles this source itself witnessed as fog.
     ruin_hits = {}                        # (i, j) -> ([(n, area, mask)], tiles)
     n_raw = 0                             # detections before adjacency merging
     no_ruin_sprite = False                # asset missing: reported, never faked
@@ -4691,30 +4349,15 @@ def detect_ruins(run):
                 fog_area = tile_predicate_mask(run, 
                     n, lambda s: s.get("witness") and not s["explored"])
                 fog_area &= shots[n].wmask > 0
-                # The fog this shot would show if nothing were drawn on it. The
-                # gain comes from the fog-pixel-mask phase above, which fits it
-                # on tiles this shot locked onto the template's fog art. Without
-                # one there is no reference to subtract, and a matched filter
-                # against a guessed background is worse than no answer: say so
-                # and skip the shot.
+                # Without a fitted gain there is no fog to subtract: report the
+                # shot and skip it rather than match against a guess.
                 if sprite is None or shots[n].gain is None:
                     if sprite is not None:
                         ruin_no_fog.append(n)
                     shots[n].ruins = []
                     continue
-                # The template and this shot's gain go in, not a prediction
-                # built from them: the prediction is only ever read inside the
-                # fog crop, so building it whole here spent 30% of the phase on
-                # fog nobody looks at.
-                #
-                # wmask, not pmask, and the mask taxonomy in CLAUDE.md is
-                # worth re-reading before changing it. pmask is the *pasting*
-                # mask -- it keeps pixels too dark to judge color by, because a
-                # winning source may legitimately have dark content. Feeding
-                # those here adds their darkness to |D| in the correlation's
-                # denominator without adding anything a flame kernel explains,
-                # which drags genuine matches down: measured, u_forest drops
-                # from 9 ruins to 7 on that change alone.
+                # wmask, not pmask: pmask's dark pixels inflate |D| (u_forest
+                # loses 2 of its 9 ruins).
                 found = detect_ruin_vision(shots[n].warped, shots[n].wmask, fog_area,
                                            board.template, shots[n].gain,
                                            *board.lattice, sprite)
@@ -4759,14 +4402,8 @@ def paste_composite(run):
         run.player_of, run.winner, run.priority, run.ruin_hits, run.board)
     with PHASES("paste composite"):
         out = board.template.copy()
-        # --base's whole contribution: seed the canvas with its pixels before
-        # the paste loop runs, completely unmodified below. priority[key] and
-        # winner[key] are only ever set together (winner selection, and the
-        # bar/vision-promotion pass which only ever reorders an existing
-        # entry), so the paste loop only ever writes tiles someone explored
-        # this run -- every other tile is left exactly as the canvas was
-        # seeded. New content therefore always wins wherever a new screenshot
-        # shows any, with no ranking or demotion rule needed for the base.
+        # --base seeds the canvas. The paste writes only tiles explored this
+        # run, so new content always wins and the rest of the base survives.
         if args.base:
             bx0, by0, bx1, by1 = board.base_rect
             out[by0:by1, bx0:bx1] = base_bgr
@@ -4784,28 +4421,11 @@ def paste_composite(run):
                     continue
                 region_out[avail] = shots[n].warped[y0:y1, x0:x1][avail]
                 filled |= avail
-        # Decorative layers go on *after* the tiles, so the grid reads over
-        # real terrain and not only over the fog it was rendered against. They
-        # are drawn before the ruin markers below, which therefore stay the
-        # topmost thing on the composite.
-        #
-        # `winner` holds exactly the tiles somebody explored *this run*, so its
-        # complement is the fog still showing through from the template --
-        # which is what the shading layer is clipped to. Built from the same
-        # tile_poly the paste loop uses, so the two agree tile for tile by
-        # construction.
-        #
-        # On a --base run, `winner` alone is not the right complement, because
-        # a tile the base already carries as real content but that no new
-        # screenshot re-witnesses is not in `winner` either -- so without this,
-        # requesting shade/spawns painted a checkerboard tint straight over
-        # already-explored base content (measured on tests/goon_test2: 100+
-        # tiles of imp.jpg's own territory). base_explored closes that by
-        # classifying the base's own pixels directly with the same fog test
-        # every shot's tiles get, for whichever tiles `winner` left open --
-        # which, with no new screenshots at all, is every tile. No anchoring
-        # is needed: the base is already in the template's exact pixel frame
-        # (base_rect), so it is sampled in place like an already-warped shot.
+        # Layers go on after the tiles and before the ruin markers. The fog-only
+        # layers are clipped to tiles nobody explored: not in `winner`, and on
+        # a --base run not explored in the base either (its pixels, already in
+        # template frame, get the ordinary fog test), or shade would tint the
+        # base's own territory.
         base_explored = set()
         if args.base and overlays & OVERLAY_FOG_ONLY:
             with PHASES("base fog classification"):
@@ -4839,49 +4459,23 @@ def paste_composite(run):
             fog_only = fog_only.astype(np.float32)[:, :, None]
         missing_overlays = paint_overlays(out, overlays, board.N, fog_only)
         if missing_overlays:
-            # Named on stdout in the same shape as DROPPED so polybot can lift
-            # it into the merge caption -- a player who asked for the grid and
-            # silently did not get it would reasonably assume the merge failed.
+            # polybot lifts this line into its caption (same shape as DROPPED).
             print(f"NO-OVERLAY {len(missing_overlays)}: "
                   f"{' '.join(sorted(missing_overlays))} -- not available on a "
                   f"{board.N}x{board.N} board")
         thick = max(3, int(round(np.linalg.norm(board.u_col) * 0.075)))
-        # Drawn after the decorative overlays (so shade cannot dull an
-        # outline) and before the ruin markers (so those stay the topmost
-        # thing on the composite, as the comment below already promises).
+        # Vision outlines: after the layers, before the ruin markers.
         by_player = {}
         for n, ident in player_of.items():
             if ident is not None:
                 by_player.setdefault(ident[0], []).append(n)
         if by_player and "vision" in overlays:
             draw_player_vision(out, samples, by_player, *board.lattice, thick)
-        # A fogged tile carrying a ruin gets two things: the Elyrion player's
-        # own view of that tile, and a violet outline around it.
-        #
-        # How much gets copied is constrained, and deliberately. The flames are
-        # that player's private UI rather than map content, nothing else can
-        # corroborate them, and the cluster is
-        # drawn at an offset from the tile it refers to and spills across the
-        # border. So the copy is clipped to the ruin tile's own rhombus: the
-        # player sees the real cluster instead of taking the outline's word for
-        # it, and no sprite lands on a tile that did not earn one. A cluster
-        # straddling a border therefore shows only its share, which is the
-        # honest rendering of a marker that does not belong to one tile.
-        #
-        # Tiles another player has actually explored are skipped entirely --
-        # their real terrain is already in the composite and is strictly better
-        # information than either a marker or a copy.
-        #
-        # Three details make the copy sit right:
-        #  * It runs *after* the decorative overlays, so `shade` cannot dull the
-        #    flames -- the same reason the outline is drawn last.
-        #  * The source is carried back through its own illumination fit
-        #    (the inverse of fog_illumination's gain) into template space, so
-        #    the pasted fog matches the fog of the tiles around it instead of
-        #    showing a rectangle of that shot's exposure.
-        #  * pmask, not wmask: this is a *pasting* operation, and the mask
-        #    taxonomy reserves wmask for judging color. A flame's own dark
-        #    pixels are content here, not untrustworthy data.
+        # A fogged ruin tile gets the Elyrion player's own view of it, clipped
+        # to the tile's rhombus and carried back through that shot's inverse
+        # illumination fit so it matches the surrounding fog, plus a violet
+        # outline. Tiles someone explored are skipped. pmask, not wmask: this
+        # is a paste.
         for key, (hits, comp) in sorted(ruin_hits.items()):
             if key in winner:
                 continue
@@ -4904,8 +4498,7 @@ def paste_composite(run):
             cv2.polylines(out, [np.round(poly).astype(np.int32)], True,
                           RUIN_MARK_BGR, thick, cv2.LINE_AA)
 
-    # Same rectangle --base is placed at and validated against above -- one
-    # implementation, so the two can never drift apart.
+    # The same rectangle --base was validated against.
     x0c, y0c, x1c, y1c = output_crop(*board.lattice, board.N, board.W, board.Hc)
     with PHASES("encode + write output"):
         cv2.imwrite(args.out, out[y0c:y1c, x0c:x1c])
@@ -4921,16 +4514,8 @@ def write_vision_each(run):
     args, overlays, samples, winner, out, thick, by_player, board = (
         run.args, run.overlays, run.samples, run.winner, run.out, run.thick,
         run.by_player, run.board)
-    # One additional composite per identified player, each the finished
-    # composite above with a white wash laid back over any tile the union
-    # explored that this one player's own shot(s) did not -- what somebody
-    # else revealed but this player has not personally seen still reads as
-    # unexplored to them -- plus that same player's own vision boundary (see
-    # draw_player_vision) drawn on top, so the line between "mine" and
-    # "washed" reads as a frontier rather than just a color change.
-    # `by_player` and `winner` are exactly what draw_player_vision and the
-    # paste loop already computed above; this asks them nothing new, the
-    # same way that function's own docstring notes.
+    # Each: the composite, washed white over tiles the union explored that this
+    # player did not, with the player's own outline on top.
     vision_each_paths = []
     if "vision-each" in overlays and by_player:
         with PHASES("vision-each per-player composites"):
@@ -4947,8 +4532,7 @@ def write_vision_each(run):
                 cv2.imwrite(path, per_out[y0c:y1c, x0c:x1c])
                 vision_each_paths.append(path)
     if vision_each_paths:
-        # Named on stdout in the DROPPED/NO-OVERLAY shape so polybot can lift
-        # it straight into the merge caption/attachments.
+        # polybot lifts this line (same shape as DROPPED).
         print(f"VISION-EACH {len(vision_each_paths)}: "
               + " ".join(vision_each_paths))
 
@@ -4996,15 +4580,8 @@ def report(run):
                     print(f"  city ({ci},{cj}): {kind}, seen by {n}")
             print(f"  {len(set(bar_promoted))} tile(s) changed hands to keep a "
                   f"bar intact: {sorted(set(bar_promoted))}")
-            # Did each bar actually survive whole? Promotion changing hands is
-            # not the same question: a bar is only preserved if *every* tile it
-            # physically crosses went to a source that shows it, and one tile
-            # lost splices it -- which reads worse than not preserving it at
-            # all. Worth reporting because none of the other numbers can see
-            # this. The explored union is invariant under promotion by
-            # construction, and the count above counts detections, so a spliced
-            # bar leaves both completely unchanged. It is nearly free here,
-            # since `winner` and the bar bboxes are already in hand.
+            # Spliced bars: a tile the bar crosses went to a source not showing
+            # it. No other number can see this.
             shown_by = {}
             for n in names:
                 for city, bbox, width_class, _pl in shots[n].bars:
@@ -5016,10 +4593,7 @@ def report(run):
                     for c2, (bx, by, bw, bh), _n, _p in shots[n].bars:
                         if c2 != city:
                             continue
-                        # Sample the whole bbox, not just its corners: the tile
-                        # lattice is a rhombus, so a bar only ~1.5 tiles wide
-                        # can cross three of them and a few probe points miss
-                        # the one in the middle.
+                        # A grid over the bbox: corners alone miss a middle tile.
                         for px in np.linspace(bx, bx + bw, 12):
                             for py in np.linspace(by, by + bh, 4):
                                 covered.add(board.tile_of_point((px, py)))
@@ -5031,18 +4605,8 @@ def report(run):
                                         if x[0] == city])
                     spliced.append((city, lost, wid, capped_of.get(city, False)))
             if spliced:
-                # Report the width class, because the two cases this catches
-                # want opposite reactions and only that separates them. A
-                # *capped* bar losing a tile is the real defect -- the composite
-                # shows half a bar, which reads worse than showing none. A short
-                # bar losing one is usually the system working: cities sit at
-                # least CITY_MIN_GAP apart, so a short bar detected beside a
-                # capped one is a false positive being correctly overridden, and
-                # cutting it is the point.
-                #
-                # "complete" here means the capped width, not the old
-                # complete-versus-fragment distinction -- the anchor-first
-                # detector emits only legal widths, so there are no fragments.
+                # A spliced capped ("complete") bar is a real defect; a short
+                # one is usually a false positive correctly overridden.
                 detail = "  ".join(
                     f"{c}[{w}px{',complete' if f else ''}]->"
                     f"{','.join(str(t) for t in l)}"
@@ -5063,10 +4627,8 @@ def report(run):
                   f"this keeps an undetected bar too)")
 
     if args.ruin_vision:
-        # NO-RUIN-SPRITE mirrors NO-OVERLAY: a machine-readable line the bot
-        # lifts into its caption. Saying nothing would let a player read "no
-        # ruins found" as "this board has no ruins", which is a different and
-        # much stronger claim than "this merge could not look".
+        # Machine-readable like NO-OVERLAY: "could not look" must not read as
+        # "no ruins".
         if no_ruin_sprite:
             print(f"\nNO-RUIN-SPRITE: cannot read {ruin_sprite_path()}, so "
                   f"Elyrion ruin markers were not searched for")
@@ -5111,18 +4673,10 @@ def report(run):
     for (i, j), d, ws in sorted(conflicts, key=lambda c: -c[1])[:10]:
         print(f"  tile ({i},{j}): dist={d:.1f} sources={ws}")
 
-    # The backstop for a stated size that nothing else could check. See
-    # CONFLICT_FRAC_SUSPECT: this is the only signal here that measures what a
-    # wrong size actually does, rather than inferring it from whether fog was
-    # found. It reports rather than refuses, because the size was asserted by
-    # the person merging and overriding them here would put us back to refusing
-    # replays.
+    # The backstop for a stated size nothing else could check
+    # (CONFLICT_FRAC_SUSPECT). It warns rather than refuses: the size was the
+    # person's to state.
     if size_unverified and comparable >= CONFLICT_FRAC_MIN_COMPARABLE:
-        # Over the tiles two sources actually *can* be compared on, not over the
-        # board. The board is the wrong denominator whenever the shots do not
-        # overlap much: basin_treaties' two shots show disjoint islands, so at a
-        # wrong size it reads 0.020-0.078 of the board -- under any usable bar --
-        # while the handful of tiles they do share disagree wholesale.
         frac = len(conflicts) / float(comparable)
         if frac > CONFLICT_FRAC_SUSPECT:
             print(f"\nWARNING: {100 * frac:.0f}% of tiles disagree across "
@@ -5130,13 +4684,7 @@ def report(run):
                   f"should. {board.N}x{board.N} is probably the wrong size -- at the "
                   f"right one this stays under 17%. The merge was written "
                   f"anyway; check it before trusting it.")
-        # No "looks fine" branch, deliberately: a low number here is not
-        # evidence the size is right. Measured by forcing every set to every
-        # size, badland_test at 11 and 14 and u_forest at 11 all produce *zero*
-        # conflicts at a flatly wrong size, and fogless reads the same at 16 as
-        # at 20 because with no fog there is nothing for a bad lattice to smear.
-        # So this rules a size out and is otherwise silent -- "nothing
-        # contradicts NxN" would be reassurance the number cannot support.
+        # Deliberately no "looks fine" branch: a low fraction proves nothing.
 
     print(f"\nwrote {args.out}")
 
@@ -5180,15 +4728,8 @@ def write_debug(run):
                 cv2.line(grid, tuple(p0.astype(int)), tuple(p1.astype(int)), (0, 0, 0), 1)
             cv2.imwrite(os.path.join(args.debug_dir, "grid_overlay.png"), grid)
 
-            # The warped sources and the lattice they were warped onto, as
-            # plain data. Everything else in this directory is an *overlay* --
-            # a decision already drawn onto the pixels in red or yellow -- which
-            # makes it unreadable as input: ruins_<name>.png paints its
-            # accepted pixels over the very colors anything downstream would
-            # want to measure. Offline tooling that needs to re-measure what a
-            # detector saw (tools/ruinsprite.py) needs the pixels themselves and
-            # the basis to locate a tile in them, so write both. Pure
-            # diagnostics: nothing in the pipeline reads these back.
+            # Undecorated warped sources and the lattice, for offline tools
+            # (tools/ruinsprite.py); the overlays above paint over the pixels.
             for n in names:
                 cv2.imwrite(os.path.join(args.debug_dir, f"warped_{n}.png"),
                             shots[n].warped)
@@ -5201,18 +4742,14 @@ def write_debug(run):
                     "template": os.path.basename(board.template_path),
                     "shots": {n: {
                         "scale": float(shots[n].scale),
-                        # what this shot itself witnessed, which is the cut the
-                        # ruin detector runs inside -- a marker is only ever
-                        # searched for on a tile this source called fog
+                        # this shot's own fog tiles, where ruins are searched
                         "fog_tiles": [list(k) for k, per in sorted(samples.items())
                                       if n in per and per[n].get("witness")
                                       and not per[n]["explored"]],
                         "explored_tiles": [list(k) for k, per in sorted(samples.items())
                                            if n in per and per[n].get("witness")
                                            and per[n]["explored"]],
-                        # per-channel gain+offset carrying template fog to this
-                        # shot's colors; absent when the shot locked too little
-                        # fog to fit one (see the fog pixel masks phase)
+                        # fog_illumination's fit, None if too little fog
                         "fog_gain": (shots[n].gain.tolist()
                                      if shots[n].gain is not None else None),
                     } for n in names},
@@ -5232,9 +4769,8 @@ def write_debug(run):
                 cv2.imwrite(os.path.join(args.debug_dir, f"explored_{n}.png"),
                            np.clip(dim, 0, 255).astype(np.uint8))
 
-            # Same mandatory-QA reasoning as the badge overlay: show exactly
-            # which pixels the bar detector accepted and which 3x3 it promoted,
-            # per source, even when it found nothing.
+            # The detector overlays below are written even when empty, so a
+            # miss or misfire is visible.
             if args.city_bars:
                 for n in names:
                     vis = shots[n].warped.copy()
@@ -5248,10 +4784,6 @@ def write_debug(run):
                                       (0, 0, 255), 2)
                     cv2.imwrite(os.path.join(args.debug_dir, f"bars_{n}.png"), vis)
 
-            # Same mandatory-QA reasoning as the badge overlay below: the ruin
-            # matched filter accepts or rejects on a score nobody can eyeball,
-            # so when it ran, show exactly which pixels it accepted, per source,
-            # even when it found nothing.
             if args.ruin_vision:
                 for n in names:
                     vis = shots[n].warped.copy()
@@ -5262,10 +4794,6 @@ def write_debug(run):
                                       (0, 0, 255), 2)
                     cv2.imwrite(os.path.join(args.debug_dir, f"ruins_{n}.png"), vis)
 
-            # Always render what detect_capture_badges flagged, whether or not it
-            # found anything -- this is the mandatory visual QA step for a
-            # heuristic with a real, demonstrated false-positive mode (see that
-            # function's docstring), so a silent miss or misfire is never silent.
             for n in names:
                 badge = shots[n].badge_mask
                 if badge is None:
