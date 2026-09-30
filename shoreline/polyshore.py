@@ -881,7 +881,8 @@ def main():
         args.map_size = pm.detect_map_size(
             [name], {name: im}, {name: S["edge"]}, {name: S["valid"]},
             {name: S["hsv"]}, args.dark_thresh, args.min_edge_support,
-            args.min_scale_support)
+            args.min_scale_support,
+            top_crop=args.top_crop, bottom_crop=args.bottom_crop)
     N = args.map_size
 
     template_path = args.template or pm.template_path_for(N)
@@ -901,7 +902,8 @@ def main():
         im, S["edge"], S["valid"], S["hsv"], tmpl_gray, t_edge_off, dir_a,
         dir_b, origin, u_col, u_row, N, args.min_edge_support, name,
         refine=True, min_scale_support=args.min_scale_support,
-        sky_rebuild=sky_rebuild_for(S, args))
+        sky_rebuild=sky_rebuild_for(S, args),
+        top_crop=args.top_crop, bottom_crop=args.bottom_crop)
 
     Wt, Ht = template.shape[1], template.shape[0]
     warped = cv2.warpAffine(im, M[:2], (Wt, Ht), flags=cv2.INTER_LANCZOS4)

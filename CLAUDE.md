@@ -75,7 +75,7 @@ So pair the harness with a name check, which costs a second and catches exactly
 the class `--compare` cannot:
 
 ```bash
-.venv/Scripts/python.exe -m pyflakes polymerge.py polybot.py tools/*.py shoreline/*.py
+.venv/Scripts/python.exe -m pyflakes polymerge.py polybot.py tools/*.py shoreline/*.py shoreline/tools/*.py
 ```
 
 It is not in `requirements.txt` and must not be: the image does not need it.
@@ -413,7 +413,7 @@ per-file rects, key them on something unambiguous.
   per-tile, in the same way the three sets above are: two turns of one board,
   so any per-tile claim can be made twice and compared.
 
-  Twenty-four sets but fewer distinct boards — `test_screenshots`, `test_ss_2` and
+  Twenty-seven sets but fewer distinct boards — `test_screenshots`, `test_ss_2` and
   `beautiful_test3` are all the same map, which is worth remembering when
   judging whether a change generalizes (it also gives ruin-vision detection
   three independent looks at the same ruins; see below). Mixed aspect ratios,
@@ -545,7 +545,7 @@ per-file rects, key them on something unambiguous.
   It is where the chrome filter is load-bearing (the replay turn-timeline strip
   takes an edge off *both* shots, so the whole merge fails rather than one shot
   dropping), and it is the only set exercising the zero-lock un-refinement in
-  `main` — with nothing to score against, `joint_register` walks both anchors
+  `fog_lock_guards` — with nothing to score against, `joint_register` walks both anchors
   1.1 tiles apart and the composite comes out visibly seamed.
 
   Two properties are worth knowing before judging it. Its **edge-only anchors
@@ -597,12 +597,12 @@ per-file rects, key them on something unambiguous.
   path. Cross-check
   is *deterministic* (verified: repeated runs give identical numbers), so a
   change in these is real and not RANSAC noise.
-  **`badland_test3`'s 0.027 is only partly independent**: `cym.png` takes one
+  **`badland_test3`'s 0.022 is only partly independent**: `cym.png` takes one
   of its two pan offsets from a SIFT hint (see `pan_hint` above), and
   cross-check measures against that same SIFT geometry. Its other offset, its
   zoom and both other shots are measured normally, so the number is not
   vacuous — but read it as a consistency check rather than an independent one,
-  and judge that set on its union (331) and fog lock (10/68/104) as well.
+  and judge that set on its union (330) and fog lock (10/68/104) as well.
   **`pol_archi_test`'s 0.044 went *up* from 0.035 and is the stronger number of
   the two.** That set's old figure was the partly-vacuous kind described just
   above: `kick.png` took its zoom from SIFT against `pol.png`, and cross-check
@@ -611,7 +611,8 @@ per-file rects, key them on something unambiguous.
   3.6px corner gap against the old 2.8px) is a fully independent measurement
   where 0.035 was a partial self-check. Both sit well under the 0.05 bar. This
   is the one case in this list where a *larger* number is an improvement — do
-  not "fix" it back.
+  not "fix" it back. (It has since come down to 0.012 for an unrelated reason,
+  the fog-ish `top_k` cap; the 0.044 was the independent figure at the time.)
   **`test_ss_fruit` reports 11.1
   tiles, `test_ss_elyruins` 17.4 and `u_forest2` 6.3, and all three are false
   alarms** — see the cross-check caveat below.
@@ -637,7 +638,7 @@ per-file rects, key them on something unambiguous.
   drop.) `--cross-check` returns before the merge path, so it reports
   the *refined* anchors, and on a board with no fog the merge discards those in
   favor of each shot's own unrefined edge anchor (see the zero-lock block in
-  `main`). Those agree to **0.023 tiles**. Same shape as `star_change` below:
+  `fog_lock_guards`). Those agree to **0.023 tiles**. Same shape as `star_change` below:
   the number is the quality of an anchor nothing uses. Judge the set on its
   union (256/256) and conflicts (0). It has read 16.6, 13.5, 0.511, 0.253, 0.378
   and 0.035 across changes that left that union and those conflicts untouched,
@@ -1771,7 +1772,7 @@ Facts about these files worth knowing before touching them:
   against black), so a plain `cv2.imread` yields exactly the black-sky image the
   pipeline expects. `normal-*.png` are **16-bit** and are normalized on load.
 - **Every layer shares its blank's exact pixel frame.** Verified per size: same
-  canvas. So overlays need **no warping or registration at all** — `main`
+  canvas. So overlays need **no warping or registration at all** — `paste_composite`
   builds the composite in template space and the layers alpha-blend straight
   on. (This bullet used to add "and the grid lines land exactly on the blank's
   fog tile boundaries"; that is false for two files — see the two bullets
@@ -2020,6 +2021,21 @@ The pipeline has two halves that are easy to conflate but solve different
 problems: **per-image anchoring** (where does this screenshot sit on the
 board?) and **per-tile compositing** (given all anchored images, what does
 each tile actually show?).
+
+**`main()` is a list of phase functions in pipeline order**, from `load_inputs`
+through `write_debug`, sharing one `Run` object. Each phase unpacks the `Run`
+attributes it reads at its top and stores what later phases need at its end.
+`Run.__init__` names every shared value and the phase that sets it. The board
+geometry — template, lattice (`origin`/`u_col`/`u_row`), `N`, canvas size and
+the rest — is one immutable `Board` on `run.board`, built by `load_board` and
+never replaced; its methods (`tile_poly`, `tile_mask_bbox`, `tile_top_wedge`,
+`tile_of_point`, and `lattice` for helpers that take the triple) wrap the
+module-level helpers, which keep their own signatures because `shoreline/`
+imports them. The helpers
+that used to be closures inside `main` (`anchor_all`, `warp_shot`,
+`sample_shot`, `locked`, `sift_hops`, `corroborate_anchor`,
+`tile_predicate_mask`, `rank`, `sky_rebuild_for`) are module-level functions
+taking the `Run` first.
 
 ### 1. Anchoring (`anchor_to_template`, `joint_register`)
 
@@ -2288,7 +2304,7 @@ check rather than being filtered apart here. Verified: `goon_test2/imp.jpg` +
 `test_ss_2/cym1.jpg` still report the 1.91-tile disagreement.
 
 It applies in **both** consumers, and the second is the one that needed it
-most. `main`'s board-size check takes a median specifically "so one odd shot
+most. `check_board_size` takes a median specifically "so one odd shot
 cannot fail an otherwise good run" — but a median only delivers that from three
 measurements up. With two it *is* their mean, so one broken number drags it half
 way, which is exactly how 17.93 and 8.60 produced a 13x13 board. Two-measurement
@@ -2356,7 +2372,7 @@ candidates by fog alignment, so a shot with no fog in frame is not being refined
 at all — it is walking to the argmax of noise. This is the same reasoning that
 already stops a borrowed pan being refined (`borrow_pan`, below); the difference
 is that a fogless board cannot be recognized *up front* the way `borrow_pan` can,
-so the check has to be after the fact. In `main`, any shot whose refined anchor
+so the check has to be after the fact. In `fog_lock_guards`, any shot whose refined anchor
 locks **zero** fog tiles is put back on its own unrefined edge/fog-period prior.
 
 `tests/fogless` is the case and the only set that reaches it: a replay of a
@@ -2817,7 +2833,7 @@ there is nothing for the table to track. It is the same treatment
 should be run against those three plus the full corpus.
 
 **SIFT takes its features from the board, not from whatever else survived the
-crop** (`board_region`, `sift_mask_for`). Every SIFT consumer — the zoom borrow,
+crop** (`board_region`, `Shot.sift_mask`). Every SIFT consumer — the zoom borrow,
 the `pan_hint`, `corroborate_anchor` and `--cross-check` — used to build features
 from `valid`, which includes chrome. That is harmless on ordinary gameplay shots
 because their HUD *differs* between captures (score, turn, whose go it is), and
@@ -2882,7 +2898,7 @@ class of subtle bug in this codebase:
   non-`_raw` variants have detected badge pixels subtracted
   (`detect_capture_badges`). Both exist because a tile with no *clean*
   witness should still fall back to a badge-covered source rather than show
-  nothing — see `badge_fallback` in `main`.
+  nothing — see `badge_fallback` in `select_winners`.
 - `edge_mask`: erosion-free version used specifically for `board_boundary`/
   edge fitting, since `--erode-px` erosion eats a different amount of board
   in each image's own pixels depending on zoom, which would bias the fit.
@@ -3294,7 +3310,7 @@ its two segments fused into one blob — so requiring them is what made the old
 detector miss it entirely. The old reports' "N segments" meant "segments the
 detector resolved", which was never the bar's true subdivision count.
 
-The claim ranking's `span_of` therefore now asks the question it actually wants:
+The claim ranking's width test (`_capped` in `promote_city_bars`) therefore asks the question it actually wants:
 does this bar physically reach its S/SW/SE neighbors? That is exactly the
 capped width, and the short one does not.
 
@@ -3398,7 +3414,7 @@ hurts.** On both contested pairs the separation is 2x or better:
 | `beautiful_test3` (18,11) | false positive | 59 | **69** |
 
 **Built** — `plate_edge_run`, ranked *after* completeness and before the
-own-tile proximity rule, in `main`'s claim comparison:
+own-tile proximity rule, in `promote_city_bars`' claim comparison:
 
 ```
 cand = (-w, full, -plate, d, scale[n], n)
@@ -3762,7 +3778,7 @@ positives' 18.9 and 18.3 — a 20x separation. It fails twice over anyway:
   **35 of the 52 complete bars** — it clips real bars before impostors.
 - **As a claim tiebreak**, because a genuine fragment is off-center by
   construction (seeing half a bar puts its bbox center half a bar off), so
-  offset really separates complete-from-narrow, which `span_of` already does
+  offset really separates complete-from-narrow, which the width class already does
   directly and better. Wired in after completeness it left every tracked
   baseline identical and every complete bar intact, moving one contested tile
   between two *competing false positives* where nothing says which should win.
@@ -3775,7 +3791,7 @@ enforces. What remains genuinely untried is the **differential** idea below — 
 bar is present in exactly one source and absent from the others at the same
 template location.
 
-### 6. Player identification and vision outlines (`identify_player`, `--overlays vision`, off by default)
+### 6. Player identification and vision outlines (`player_icon_region`, `group_shots_by_icon`, `match_head_icon`, `--overlays vision`/`vision-each`, off by default)
 
 **The bottom action row's second button, Game Stats, always shows the
 viewing player's own tribe/skin head icon, circled** — confirmed by the
@@ -3822,25 +3838,38 @@ The four buttons are evenly spaced and centered on the screen, though
 (confirmed: gap(0,2) is 2× gap(2,3) on every sample, and index *i* sits at a
 fixed fraction *a + i·d* symmetric about 0.5), so Game Stats' position is
 always **interpolated** from whichever of the other three are found
-(`locate_game_stats_icon`) — never guessed at directly. A shot with *zero*
-usable anchors falls back to the corpus-mean position, but `identify_player`
-refuses to trust a match built on that fallback at all (see below): measured
-on the nine corpus shots that reach it, the resulting crop matches
+(`locate_game_stats_icon`) — never guessed at directly. With fewer than two
+usable anchors it returns None and the shot gets no identity (see below). The
+corpus-mean fallback position that used to stand in for zero anchors is gone:
+measured on the nine corpus shots that reached it, the resulting crop matched
 *something* in the catalog with a confidence a genuinely well-placed crop
 would clear, just the wrong thing, and no score threshold on the match
 itself can tell the two cases apart.
 
-**A handful of screenshots supply no anchor at all**, and are the
-regression cases for that refusal: `badland_test/oum.jpg` and
-`badland_test2/cym.png` are the two landscape captures whose button row is
-physically cropped through the middle by the capture itself (the image ends
-mid-circle); `perilous_test/xin.png` and `scorched_earth/bard.png` are
-landscape shots whose ring reads at lower contrast than the brightness cut
-expects; `missized_test/z1.jpg`, `test_ss_elyruins/hood.png` and
-`u_forest2/ely.png` fail for related reasons (board content or chrome
-intruding on the search band). None of this costs the merge anything —
-these shots still anchor and paste normally — it only costs that one shot a
-vision outline.
+**Three nominators propose buttons and one row fit decides**
+(`locate_game_stats_icon`). The white-ring blob test runs alone first and is
+enough on most shots; only if its fit fails do a Hough circle search (for a
+ring the board's jagged lower edge touches and fuses into one component) and a
+saturated-blue fill test (the "not your turn" recolor, where Exit becomes a
+filled disc with no ring) join, their candidates checked for a flat button
+fill first because Hough is noisy on textured fog (`missized_test/z1.jpg`, with
+no button row in frame, yields a plausible-looking circle pair). The fit
+(`_fit_button_row`) fixes the row's centre at the screen's and solves for one
+shared spacing, so any two slots, symmetric or not, over-determine it: all 66
+corpus shots with 3+ candidates fit slots {0, 2, 3} at residual under 0.003,
+and `archers_test2/yad.png` ({2,3}) and `control_c/ai.png`,
+`scorched_earth/lux.jpg` ({0,2}) resolve only on asymmetric pairs. Removing a
+5x5 close from the blob test recovered `badland_test/oum.jpg` and
+`star_change/oum2.png`; Hough recovered `test_ss_elyruins/hood.png`,
+`u_forest2/ely.png` and `basin_treaties/q.png`; the blue test recovered
+`perilous_test/xin.png`.
+
+**Three shots still supply no icon** (re-measured 2026-09-30):
+`badland_test2/cym.png`, a landscape capture cropped through the button row;
+`scorched_earth/bard.png`, whose Game Stats glyph fills the fill-check annulus
+and whose white rings fuse with the board, leaving one verified candidate; and
+`missized_test/z1.jpg`, which has no button row in frame. None of this costs
+the merge anything — only that shot's vision outline.
 
 **`Assets/Heads/` filenames are short tribe/skin codes** (`o.png`, `i.png`,
 `b.png`, a `2` suffix for an alternate skin of the same letter -- `b2.png`,
@@ -3860,12 +3889,15 @@ contain a genuine duplicate, confirm it with the project owner before
 building anything to merge it — visual similarity alone was already wrong
 once here.
 
-**Both gate bounds are loosely calibrated, and that is stated rather than
-hidden.** `PLAYER_HEAD_MIN_CORR` (0.25) and `PLAYER_HEAD_MIN_MARGIN` (0.02)
-were set by hand against real corpus matches rather than swept the way
-`RUIN_MATCH_MIN_CORR` was: a genuinely correct match runs anywhere from 0.29
-to 0.61 with a margin from 0.006 to 0.29 over its runner-up, so there is no
-clean gap to sit in the middle of the way ruin detection has. Two catalog
+**The gate is `PLAYER_HEAD_MIN_CORR` (0.55) and `PLAYER_HEAD_MIN_MARGIN`
+(0.10).** Correct matches now run 0.83–0.99 at margins of 0.20–0.59 (see
+`match_head_icon`), since the sprite keeps its aspect, is compared only under
+its own alpha, and its scale is searched (`_head_scores`). The 0.25/0.02 gate
+this paragraph used to record belonged to the earlier fixed-circle matcher,
+whose correct matches ran only 0.29–0.61 at margins down to 0.006.
+**Which shots belong to one player is decided before naming, by comparing the
+shots' own icons with each other** (`group_shots_by_icon`); the catalog only
+names each group, which decides its color. Two catalog
 entries turn up as runners-up far more often than the rest across the whole
 corpus (one of them the closest thing to a false-positive attractor this
 feature has), which is at least partly a fact about the corpus rather than
@@ -3876,6 +3908,21 @@ across shots or across sets (the identical `yad.png` reused in
 are heavily overrepresented relative to the catalog's own size. Cross-checked
 against every place the corpus lets two screenshots be confirmed as one real
 player, a match this gate accepts has so far always agreed with itself.
+
+Matching details, measured, that the code now states only in outline:
+- **Head scale is per icon, not per capture.** Over confidently identified
+  shots (NCC >= 0.55, margin >= 0.15), one icon across screenshots and devices
+  varies 0.00-0.06 in ring radii (19 entries with 2+ observations), against
+  1.22-1.74 between icons. `HEAD_SCALE_BY_ENTRY` narrows each calibrated
+  entry's sweep to +-0.08 at half the cost; the 10 entries with no confident
+  corpus shot keep the full sweep.
+- **`HEAD_ICON_CANON` = 96** was swept at 72/96/128/200 over 18 shots: all
+  four identify every shot, and margins stop improving at 96 (0.248, against
+  0.225 at 72 and 0.244 at 128) at 539 ms against 942 ms.
+- **Colour does not fully survive capture.** Two captures of the identical
+  icon can differ by a 3x3 matrix in linear light whose rows sum to 1.0 (99.8%
+  of the difference, i.e. a gamut conversion). Mean-centring does not undo it;
+  it cost a match only under the old 0.02 margins.
 
 **The catalog covers all 16 tribes as base renders, and (as of 2026-09-14)
 13 of their 16 possible skins** (confirmed with the project owner against
@@ -3915,8 +3962,12 @@ color/shape math this file otherwise argues against generalizing from — see
 the standing decision below on cataloging terrain; the sprite-match approach
 itself does not change, only its completeness and its use of color).
 
-**A second, distinct source of confusion was found the same day and it is
-not a visual-similarity limit — it is a mask-sizing bug, now fixed.**
+**Historical: `head_icon_patch`, its fixed interior circle and
+`HEAD_ICON_BLACK_FLOOR` no longer exist** — `head_icon_region` applies no
+circle and `_head_scores` compares only the pixels under each sprite's own
+alpha, which removes the black-gap problem below at its source. Kept for the
+measurements. **A second, distinct source of confusion was found the same day
+and it is not a visual-similarity limit — it was a mask-sizing bug.**
 `head_icon_patch`'s interior circle is a fixed 0.78 of the measured
 button-ring radius, and that fraction does not hold on every capture: on
 some the rendered icon glyph is smaller relative to its ring than that
@@ -3942,8 +3993,8 @@ them, gated as it is behind `"vision" in overlays`), and a fresh
 
 **A related, rarer failure surfaced at the same time: single-anchor
 localization is not reliable enough to trust at all.**
-`locate_game_stats_icon` places Game Stats from a *single* found anchor by
-extrapolating with `BUTTON_ROW_UNIT`, a corpus-average spacing rather than
+`locate_game_stats_icon` used to place Game Stats from a *single* found anchor by
+extrapolating with a corpus-average spacing (`BUTTON_ROW_UNIT`, now removed) rather than
 anything measured on that shot — and a real per-shot spacing that differs
 from the average silently shifts the crop. The corpus has exactly two shots
 this happens on (`n_anchors == 1`, out of 74 total), and both produced a
@@ -3953,10 +4004,10 @@ loses to `c.png` (Cymanti) even after the black-floor fix above;
 `basin_treaties/q.png` crops almost entirely dark background with no real
 icon color at all, yet still cleared both gates in `match_head_icon` purely
 because `c2.png` happened to correlate with the noise once it was added to
-the catalog. `identify_player` now requires **two** anchors, not one, the
-same way it already refused the zero-anchor case — costing exactly those
-two shots their outline, and turning two confident wrong matches into two
-honest non-matches.
+the catalog. `locate_game_stats_icon` now requires **two** anchors, not one,
+and returns None otherwise, which turned two confident wrong matches into two
+honest non-matches. (Both shots are located again now, from two or more real
+buttons, by the row fit and the Hough nominator described above.)
 
 **Each identified player's outline draws in that tribe's own default color**
 (`TRIBE_COLORS_BGR`), not an arbitrary per-merge palette slot — pulled
@@ -5066,19 +5117,6 @@ here runs unless asked for.
 
 ## Deferred (known, deliberately not handled yet)
 
-### Player detection via tribe heads in the bottom UI
-
-The bottom-of-screen UI shows a row of tribe head icons, one per player in the
-game. Detecting and identifying them per screenshot would let the merge
-attribute a shot to a specific player without relying on the reaction-based
-workflow's bookkeeping, and — the more interesting use — let the composite draw
-each player's own visible-territory boundary rather than just the union.
-Unexplored territory: whether the icon set is a fixed, cataloguable sprite per
-tribe (closer to the ruin-flame sprite match, which this codebase trusts) or
-varies enough per skin/level to need something looser. Also open: whether the
-row is cropped by `--top-crop`/`--bottom-crop` today, and if so whether reading
-it needs a separate uncropped pass the same way `--ui-mask` does.
-
 ### `/merge`: merge screenshots directly, optionally updating a prior map
 
 **Built** — `--base` in polymerge, `/merge` in polybot.
@@ -5097,7 +5135,7 @@ anchoring at all, and its content is already fully resolved, so it needs no
 classification either.
 
 **The base is the paste canvas's *starting state*, not a source.**
-`main()`'s canvas init (`out = template.copy()`, right before the paste loop)
+`paste_composite`'s canvas init (`out = template.copy()`, right before the paste loop)
 becomes `out[by0:by1, bx0:bx1] = base_bgr` first when `--base` is given, at
 the exact rectangle `output_crop` computes for the resolved board size — no
 warp, no sampling. Everything else — `anchor_all`, `rank`, the conflict-check,
@@ -5424,9 +5462,10 @@ adopt a candidate only by proving it against that shot's own fog. A shot
 dropped this way is dropped for failing to match the board, not for losing a
 headcount.
 
-The obstacle is structural rather than algorithmic: `main` loads the template
-once and `anchor_all` closes over it, so step 2 needs the span from template
-load through the fog-lock computation extracted into a function of `map_size`.
+The obstacle is structural rather than algorithmic: `load_board` loads the
+template once and every later phase reads it off the shared `Run`, so step 2
+needs the phases from `load_board` through `fog_lock_guards` re-run per
+candidate `map_size`.
 That refactor is the bulk of the work and it touches the registration path, so
 it wants the full 16-set before/after even though the new branch should be
 unreachable on every one of them.
