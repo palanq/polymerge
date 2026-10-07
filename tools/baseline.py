@@ -97,12 +97,12 @@ SET_FLAGS = {}
 #     little shared terrain. See the cross-check caveat in CLAUDE.md.
 #     u_forest was on this list and is not any more: its 18.5 turned out to be
 #     chrome matching chrome, not fog matching fog, and it reads 0.016 once SIFT
-#     is confined to the board (see sift_mask_for in polymerge).
+#     is confined to the board (see Shot.sift_mask in polymerge).
 #   not-the-merge's-anchor: fogless, replay_ss2 -- --cross-check returns before the merge
 #     path, so it reports the *refined* anchors, and on a board with no fog the
 #     merge discards those in favor of each shot's own unrefined edge anchor
-#     (see the zero-lock block in polymerge's main). Its 16.6 is the quality of
-#     an anchor nothing uses; the anchors the merge does use agree to 0.023
+#     (see the zero-lock block in polymerge's main). Its number is the quality
+#     of an anchor nothing uses; the anchors the merge does use agree to 0.023
 #     tiles. Same shape as star_change's documented case.
 CROSS_CHECK_UNRELIABLE = {"test_ss_fruit", "test_ss_elyruins", "u_forest2",
                           "fogless", "replay_ss2"}
