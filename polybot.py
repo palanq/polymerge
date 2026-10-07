@@ -80,7 +80,7 @@ unrelated image in the thread getting swept in, since only images someone
 explicitly marked ever qualify.
 """
 
-import asyncio, collections, os, pathlib, re, shutil, statistics, sys, tempfile, time
+import asyncio, collections, contextlib, os, pathlib, re, shutil, statistics, sys, tempfile, time
 import typing
 
 import discord
@@ -1042,8 +1042,31 @@ class Caller:
         return cls(interaction.channel, interaction.guild, interaction.user,
                    list(attachments), interaction=interaction)
 
-    def typing(self):
-        return self.channel.typing()
+    @contextlib.asynccontextmanager
+    async def typing(self):
+        """The "is typing..." indicator, which is cosmetic and must never
+        sink a merge.
+
+        It is a channel call that needs Send Messages, so in exactly the
+        channel the followup fallback exists for it raises Forbidden on entry
+        -- outside Caller.send's handler, aborting the merge after the ack had
+        already gone out. Skipped outright once the channel has refused us, and
+        otherwise entered best-effort."""
+        cm = None
+        if not self._channel_blocked:
+            try:
+                cm = self.channel.typing()
+                await cm.__aenter__()
+            except discord.HTTPException:
+                cm = None
+        try:
+            yield
+        finally:
+            if cm is not None:
+                try:
+                    await cm.__aexit__(None, None, None)
+                except discord.HTTPException:
+                    pass
 
     async def send(self, content=None, *, reply=True, **kw):
         """Post to the channel, surviving having no permission to.
