@@ -951,16 +951,25 @@ should.**
   `_channel_blocked` after the first refusal so later messages skip it:
   1. **The channel** — first because it never expires.
   2. **A public interaction followup** (`Caller._followup`, `/merge` only).
-     **Measured in production**: a followup posts *text* in a channel where the
-     bot holds no permission at all, `view_channel` included. Do not read that
-     as "followups bypass permissions", which this file used to claim: Discord's
-     changelog (1 November 2023) says followups *follow the bot user's
-     permissions*, so one carrying the composite may still be refused without
-     `attach_files`. That is unverified either way, and is why route 3 exists.
+     **Measured, twice**: a followup posts text in a channel where the bot
+     holds no permission at all, `view_channel` included (yodagem's server),
+     and it delivers the **composite** there too, with `attach_files` denied
+     (the owner's test server: a full 2-shot merge, no `followup failed`).
+     Discord's changelog (1 November 2023) says followups "follow a bot user's
+     permissions", which reads as though attachments should be refused. They
+     are not, so trust the measurement over that sentence. In practice this
+     route is the one that carries `/merge` in a server that withholds
+     permissions.
   3. **A DM to the invoker** (`Caller._dm`), only for a message carrying files,
      i.e. the composite. It depends on nothing the channel grants, and fails
      only if the player refuses DMs from server members — which the private
-     reply then tells them to change. Reaches `!merge` too, which has no route 2.
+     reply then tells them to change. It was built for the changelog worry
+     above, which did not materialize, so it is now **insurance for three
+     narrower cases**: the token expiring before the composite is ready
+     (`INTERACTION_TOKEN_S`); `!merge` in a channel the bot can see but not
+     post in, since a prefix command has no route 2; and a followup failing
+     for any other reason. It costs nothing on the normal path, since it only
+     runs after both other routes have failed.
 
   Files are passed to `send` as `paths`, never as `discord.File`s, and that is
   load-bearing: **discord.py closes every `File` after any send attempt, failed
