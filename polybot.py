@@ -81,6 +81,7 @@ explicitly marked ever qualify.
 """
 
 import asyncio, collections, contextlib, os, pathlib, re, shutil, statistics, sys, tempfile, time
+import traceback
 import typing
 
 import discord
@@ -1144,8 +1145,12 @@ class Caller:
                 ephemeral=False, wait=True, **kw)
             await self.clear_placeholder()
             return msg
-        except discord.HTTPException as e:
-            print(f"followup failed: {e}", file=sys.stderr)
+        except Exception:
+            # Not just HTTPException: whatever this raises is otherwise lost
+            # inside the command handler, leaving the player with the stub and
+            # the operator with no line to search for.
+            print("followup failed:", file=sys.stderr)
+            traceback.print_exc()
             return None
 
     async def tell_privately(self, content):
