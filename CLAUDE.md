@@ -931,8 +931,9 @@ more shots, or shots posted over time, is already better served by `!merge`.
 
 **Three things slash commands do *not* change, all of which look like they
 should.**
-- **Guild operators still grant the same five `REQUIRED_PERMS`, in the same
-  channels.** The composite is an ordinary channel message either way. What
+- **Guild operators should still grant the same five `REQUIRED_PERMS`, in the
+  same channels.** The composite is an ordinary channel message unless the
+  channel refuses it (see the followup fallback below). What
   changes is only the *diagnosis*: an interaction is delivered to the
   application directly, so `/merge` arrives whatever the channel overwrites say
   and the bot can answer ephemerally naming the permission it lacks. That is the
@@ -943,10 +944,15 @@ should.**
   `!merge` reaction-scan player exactly as undiagnosable as before either slash
   command existed. Accepted as the cost of the split above — the alternative
   was keeping a slash command that could not deliver its own advantage.
-  *Considered and rejected:* posting the composite through an interaction
-  followup would bypass `send_messages`/`attach_files`, since interaction
-  responses are exempt from channel permission checks. It saves two of five
-  permissions and buys them with the token expiry below.
+  *Followup fallback (built):* interaction responses are exempt from channel
+  permission checks, so when `channel.send` raises `Forbidden`, `Caller.send`
+  now posts through a public `interaction.followup.send` instead
+  (`Caller._followup`), and `/merge` works with no `send_messages`/
+  `attach_files` at all. It is a **fallback, not the route**: the channel
+  message stays first because it never expires. Once the channel refuses, the
+  caller latches `_channel_blocked` so later messages skip straight to the
+  followup. See the token section below for what it costs. **Not yet verified
+  against a live guild** — only against a mocked interaction.
 - **`message_content` is still required — for `!merge`.** `collect_marked_shots`
   reads `message.attachments` off arbitrary history messages, and that
   privileged intent gates attachments exactly as it gates content. Shedding it
@@ -982,13 +988,28 @@ respond at all, and **15 minutes** for the token thereafter, after which
   spinner after up to five minutes of CPU. That is `shrink_for_upload`'s
   failure arriving by another route.
 
-So the token is used **once**, to defer, and never again; every visible message
-is `channel.send`/`message.edit`. That makes expiry structurally impossible
-rather than merely handled, collapses `Caller.send` to one implementation for
-both front ends, and is what lets the queue notice below be edited for as long
-as the queue takes. The ephemeral placeholder the deferral leaves is cleared
-with `clear_placeholder` once the public ack is up — a step `!merge` has no
-analog for, since it posts its ack directly.
+So in the normal case the token is used **once**, to defer, and never again;
+every visible message is `channel.send`/`message.edit`. That makes expiry
+structurally impossible rather than merely handled, and is what lets the queue
+notice below be edited for as long as the queue takes. The ephemeral
+placeholder the deferral leaves is cleared with `clear_placeholder` once the
+public ack is up — a step `!merge` has no analog for, since it posts its ack
+directly.
+
+**The exception is a channel the bot cannot post in**, where the token is used
+again and expiry becomes possible. `_followup` refuses once the interaction is
+older than `INTERACTION_TOKEN_S` (14 minutes, a minute inside the real 15) and
+`send` then falls back to the private permission report, so a merge that
+outlives the token posts nowhere — the dead-spinner case above, now reachable
+only in a channel that was already broken. Two details of the followup route:
+- **The first followup after a deferral *becomes* the deferred message and
+  inherits its ephemeral flag**, whatever `ephemeral=` says. `_followup`
+  therefore edits the placeholder into a real message first (`"Posting your map
+  below..."`); every followup after that picks its own visibility and is
+  public. `clear_placeholder` then deletes that stub with the rest.
+- The queue notice returned by `send` is then a `WebhookMessage`, whose
+  `.edit` works through the same token and so dies with it. Nothing else about
+  the queue code changes.
 
 **The queue notice updates live, and this changed `_waiting`'s contract.** It
 used to hold bare shot counts, justified by "only the sum is ever read, so
