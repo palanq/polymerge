@@ -944,15 +944,36 @@ should.**
   `!merge` reaction-scan player exactly as undiagnosable as before either slash
   command existed. Accepted as the cost of the split above — the alternative
   was keeping a slash command that could not deliver its own advantage.
-  *Followup fallback (built):* interaction responses are exempt from channel
-  permission checks, so when `channel.send` raises `Forbidden`, `Caller.send`
-  now posts through a public `interaction.followup.send` instead
-  (`Caller._followup`), and `/merge` works with no `send_messages`/
-  `attach_files` at all. It is a **fallback, not the route**: the channel
-  message stays first because it never expires. Once the channel refuses, the
-  caller latches `_channel_blocked` so later messages skip straight to the
-  followup. See the token section below for what it costs. **Not yet verified
-  against a live guild** — only against a mocked interaction.
+  **Some servers keep the bot out of their game channels on purpose**, and
+  `/merge` has to work there anyway (confirmed with the project owner: a team
+  server's owner declined to grant the bot permissions, and that is their call).
+  So `Caller.send` has three routes, tried in order, and latches
+  `_channel_blocked` after the first refusal so later messages skip it:
+  1. **The channel** — first because it never expires.
+  2. **A public interaction followup** (`Caller._followup`, `/merge` only).
+     **Measured in production**: a followup posts *text* in a channel where the
+     bot holds no permission at all, `view_channel` included. Do not read that
+     as "followups bypass permissions", which this file used to claim: Discord's
+     changelog (1 November 2023) says followups *follow the bot user's
+     permissions*, so one carrying the composite may still be refused without
+     `attach_files`. That is unverified either way, and is why route 3 exists.
+  3. **A DM to the invoker** (`Caller._dm`), only for a message carrying files,
+     i.e. the composite. It depends on nothing the channel grants, and fails
+     only if the player refuses DMs from server members — which the private
+     reply then tells them to change. Reaches `!merge` too, which has no route 2.
+
+  Files are passed to `send` as `paths`, never as `discord.File`s, and that is
+  load-bearing: **discord.py closes every `File` after any send attempt, failed
+  ones included** (`MultipartParameters.__exit__`), so a fallback re-sending the
+  same objects would hand route 2 or 3 closed files. Each route builds its own.
+
+  **Anything else that touches the channel directly is a trap in such a
+  server**, because it sits outside `send`'s routing. The first production
+  failure was exactly that: `channel.typing()` raised **50001 Missing Access**
+  (the bot had no `view_channel`) after the ack had already gone out by
+  followup, killing the merge silently. `Caller.typing` is now best-effort for
+  that reason. Before adding a channel call to the `/merge` path, route it
+  through `Caller` or make it best-effort.
 - **`message_content` is still required — for `!merge`.** `collect_marked_shots`
   reads `message.attachments` off arbitrary history messages, and that
   privileged intent gates attachments exactly as it gates content. Shedding it
@@ -999,9 +1020,9 @@ directly.
 **The exception is a channel the bot cannot post in**, where the token is used
 again and expiry becomes possible. `_followup` refuses once the interaction is
 older than `INTERACTION_TOKEN_S` (14 minutes, a minute inside the real 15) and
-`send` then falls back to the private permission report, so a merge that
-outlives the token posts nowhere — the dead-spinner case above, now reachable
-only in a channel that was already broken. Two details of the followup route:
+`send` goes on to the DM route, so a composite that outlives the token still
+reaches the player as long as they accept DMs; only the private notice saying
+so is lost with the token. Two details of the followup route:
 - **The first followup after a deferral *becomes* the deferred message and
   inherits its ephemeral flag**, whatever `ephemeral=` says. `_followup`
   therefore edits the placeholder into a real message first (`"Posting your map
