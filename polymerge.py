@@ -70,9 +70,10 @@ def build_frame_mask(img, ui_rects, top_crop=0.0, bottom_crop=0.0):
     a winning source's dark content (shadow, a tree trunk) is not a hole. See
     the mask taxonomy in CLAUDE.md.
 
-    `top_crop`/`bottom_crop` are fractions of image height, the same for every
-    input: the HUD is docked top and bottom in a band of consistent relative
-    height across devices. `ui_rects` covers anything else (a mid-screen
+    `top_crop`/`bottom_crop` are fractions of image height: the HUD is docked
+    top and bottom in a band of near-consistent relative height across
+    devices, and the top one is pushed per shot past a banner it misses
+    (banner_top_crop). `ui_rects` covers anything else (a mid-screen
     dialog)."""
     h, w = img.shape[:2]
     m = np.full((h, w), 255, np.uint8)
@@ -83,6 +84,44 @@ def build_frame_mask(img, ui_rects, top_crop=0.0, bottom_crop=0.0):
     for x0, y0, x1, y1 in ui_rects:
         m[max(0, y0):min(h, y1), max(0, x0):min(w, x1)] = 0
     return m
+
+
+# The "X is playing" / "Waiting for X" banner is a dark translucent strip whose
+# bottom lands 15-17% down depending on the device, so the fixed --top-crop can
+# leave its lower edge on the board (a fog tile under it then reads explored).
+# Its bottom is a row where nearly every lit column steps dark-to-bright, which
+# the isometric board never produces. Measured over the corpus: such banners
+# 0.88-1.00 of lit columns, the board below never above 0.69.
+BANNER_EDGE_FRAC = 0.85
+BANNER_SEARCH = 0.08     # how far below --top-crop to look, as image height
+BANNER_STEP_PX = 3       # rows each side of the edge compared
+BANNER_STEP_GRAY = 12    # gray levels a column must brighten by
+
+
+def banner_top_crop(img, top_crop, dark_thresh=25):
+    """--top-crop, pushed down past a banner edge just below it if one is there.
+
+    The lowest qualifying row in the search band wins, plus the step width so
+    the edge's own blur goes with it. A row needs 30% of its columns lit (not
+    sky behind the banner) before it is judged at all."""
+    h = img.shape[0]
+    y0 = int(round(h * top_crop))
+    y1 = min(y0 + int(round(h * BANNER_SEARCH)), h - BANNER_STEP_PX - 1)
+    st = BANNER_STEP_PX
+    if top_crop <= 0 or y1 <= y0:
+        return top_crop
+    g = cv2.cvtColor(img[max(y0 - st, 0):y1 + st + 1], cv2.COLOR_BGR2GRAY)
+    g = cv2.blur(g, (5, 1)).astype(np.float32)
+    above, below = g[:-2 * st], g[2 * st:]
+    lit = np.maximum(above, below) > dark_thresh
+    nlit = lit.sum(1)
+    frac = ((below - above >= BANNER_STEP_GRAY) & lit).sum(1) / np.maximum(nlit, 1)
+    frac[nlit < 0.3 * img.shape[1]] = 0.0
+    hits = np.flatnonzero(frac >= BANNER_EDGE_FRAC)
+    if not len(hits):
+        return top_crop
+    y = max(y0 - st, 0) + st + int(hits[-1])     # row of the edge itself
+    return max(top_crop, (y + st + 1) / h)
 
 
 # Local std below which a neighborhood counts as featureless. 2.0, 4.0 and 8.0
@@ -2982,12 +3021,14 @@ class Shot:
                  "to_template", "zoom_source", "implied_n", "prior",
                  "scale", "warped", "wmask", "wmask_raw", "pmask", "pmask_raw",
                  "gain", "fogpix", "bars", "ruins",
-                 "_sift_mask", "_terrain_mask", "sift_features")
+                 "_sift_mask", "_terrain_mask", "sift_features", "top_crop")
 
     def __init__(self, img, args, rects):
         self.img = img
+        # Per shot: --top-crop, extended past a banner (banner_top_crop).
+        self.top_crop = banner_top_crop(img, args.top_crop, args.dark_thresh)
         # The paste-time counterpart of valid (see build_frame_mask).
-        self.frame_raw = build_frame_mask(img, rects, args.top_crop,
+        self.frame_raw = build_frame_mask(img, rects, self.top_crop,
                                           args.bottom_crop)
         self.badge_mask = None
         self.badge_halo = None
@@ -3016,12 +3057,12 @@ class Shot:
         Called from __init__, and again by sky_rebuild_for with the
         sunrise-sky test."""
         self.valid_raw = build_valid_mask(self.img, rects, args.dark_thresh,
-                                          args.erode_px, args.top_crop,
+                                          args.erode_px, self.top_crop,
                                           args.bottom_crop, drop_sky=drop_sky)
         # Geometry uses the un-eroded mask: erosion eats a zoom-dependent
         # amount of board and would bias the scale.
         self.edge_mask = build_valid_mask(self.img, rects, args.dark_thresh,
-                                          0, args.top_crop, args.bottom_crop,
+                                          0, self.top_crop, args.bottom_crop,
                                           drop_sky=drop_sky)
         # sift_mask() is derived from the masks just replaced.
         self._sift_mask = None
@@ -3135,7 +3176,8 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     measurement this raises rather than guess: a wrong size is the most
     destructive failure there is. See CLAUDE.md, "Detecting the map size
     outright". `cache` shares the measurements with anchoring (ShotCache);
-    `top_crop`/`bottom_crop` must match the masks'."""
+    `top_crop`/`bottom_crop` must match the masks' (`top_crop` may be a dict
+    by name, as Shot.top_crop is per shot)."""
     cache = cache if cache is not None else ShotCache()
     basis = _probe_basis(dark_thresh, erode_px)
     if basis is None:
@@ -3152,7 +3194,8 @@ def detect_map_size(names, imgs, edge_mask, valid, hsv, dark_thresh,
     why = {}
     with PHASES("detect map size"):
         for n in names:
-            pts = cache.boundary(n, edge_mask[n], (dir_a, dir_b), top_crop, bottom_crop)
+            tc = top_crop[n] if isinstance(top_crop, dict) else top_crop
+            pts = cache.boundary(n, edge_mask[n], (dir_a, dir_b), tc, bottom_crop)
             if len(pts) < 100:
                 print(f"  {n}: no board outline -- no size measurement")
                 why[n] = "no-outline"
@@ -3359,7 +3402,7 @@ def anchor_all(run):
                 args.min_edge_support, n, refine=not args.no_refine,
                 min_scale_support=args.min_scale_support,
                 sky_rebuild=sky_rebuild_for(run, n), cache=shot_cache,
-                top_crop=args.top_crop, bottom_crop=args.bottom_crop)
+                top_crop=s.top_crop, bottom_crop=args.bottom_crop)
             _record(n, M, implied)
         except SystemExit as e:
             print(f"  no self-anchor: {e}")
@@ -3425,7 +3468,7 @@ def anchor_all(run):
                     zoom_hint=lend_scale[m] * k,
                     sky_rebuild=sky_rebuild_for(run, n),
                     pan_hint=borrowed, cache=shot_cache,
-                    top_crop=args.top_crop, bottom_crop=args.bottom_crop)
+                    top_crop=s.top_crop, bottom_crop=args.bottom_crop)
                 _record(n, M, implied)
                 failed.remove(n)
             except SystemExit as e:
@@ -3766,6 +3809,9 @@ def load_inputs(run):
                 # basename only: this reaches a Discord channel
                 raise SystemExit(f"cannot read {name} -- it appears invalid")
             shots[name] = Shot(im, args, ui.get(name, []))
+            if shots[name].top_crop > args.top_crop:
+                print(f"{name}: top crop extended to "
+                      f"{shots[name].top_crop:.3f} past a banner edge")
             if not args.no_badge_filter:
                 found = shots[name].detect_badge()
                 if found:
@@ -3794,7 +3840,7 @@ def select_map_shots(run):
     with PHASES("menu-screenshot prefilter"):
         for name in list(names):
             frac = board_angle_fraction(shots[name].img, (BOARD_DIR_A, BOARD_DIR_B),
-                                        args.top_crop, args.bottom_crop)
+                                        shots[name].top_crop, args.bottom_crop)
             if frac < MENU_BOARD_ANGLE_FRAC:
                 # Console only; the channel gets the DROPPED summary below.
                 print(f"{name}: not a view of the board -- only {frac:.0%} "
@@ -3849,7 +3895,8 @@ def resolve_map_size(run):
             args.min_scale_support,
             erode_px=args.erode_px,
             cache=shot_cache,
-            top_crop=args.top_crop, bottom_crop=args.bottom_crop)
+            top_crop={n: s.top_crop for n, s in shots.items()},
+            bottom_crop=args.bottom_crop)
     run.size_was_detected = size_was_detected
     run.shot_cache = shot_cache
 
