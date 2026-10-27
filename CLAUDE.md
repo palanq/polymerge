@@ -64,6 +64,7 @@ Measured, rather than assumed:
 | SIFT anchor borrow | **no** — not since the fog-colour tile prefilter |
 | `corroborate_anchor` | **no** — needs a fog-period zoom *and* a zero lock |
 | badge fallback (`badge_fallback`) | **no** — badges are found, but no tile ever lacks a clean witness |
+| `--base` as a SIFT lender (`BASE_LENDER`) | **no** — no corpus set uses `--base`; checked by hand only (see the `/merge` section) |
 
 The bottom three were dead ground, and it showed: `corroborate_anchor` was found
 calling a function that does not exist, and polybot's undelivered-composite
@@ -583,7 +584,7 @@ per-file rects, key them on something unambiguous.
 - Current `--cross-check` baselines, worst disagreement: **test_screenshots
   0.031, ss2 0.027, ss3 0.032, goon2 0.037, ss5 0.021, archers_test2 0.034,
   beautiful_test3 0.024, goon_test 0.019, badland_test 0.011,
-  badland_test3 0.022,
+  badland_test3 0.021,
   pol_archi_test 0.012, star_change 0.050, badland_test2 0.019,
   perilous_test 0.011, missized_test 0.026, xizauh 0.020, u_forest 0.018,
   vengir_cultist 0.029, scorched_earth 0.013 tiles**. These moved on the
@@ -597,12 +598,12 @@ per-file rects, key them on something unambiguous.
   path. Cross-check
   is *deterministic* (verified: repeated runs give identical numbers), so a
   change in these is real and not RANSAC noise.
-  **`badland_test3`'s 0.022 is only partly independent**: `cym.png` takes one
+  **`badland_test3`'s 0.021 is only partly independent**: `cym.png` takes one
   of its two pan offsets from a SIFT hint (see `pan_hint` above), and
   cross-check measures against that same SIFT geometry. Its other offset, its
   zoom and both other shots are measured normally, so the number is not
   vacuous — but read it as a consistency check rather than an independent one,
-  and judge that set on its union (330) and fog lock (10/68/104) as well.
+  and judge that set on its union (329) and fog lock (12/68/104) as well.
   **`pol_archi_test`'s 0.044 went *up* from 0.035 and is the stronger number of
   the two.** That set's old figure was the partly-vacuous kind described just
   above: `kick.png` took its zoom from SIFT against `pol.png`, and cross-check
@@ -678,10 +679,10 @@ per-file rects, key them on something unambiguous.
 - Companion baselines worth checking alongside, since cross-check is a proxy
   and these are the actual output. In table order — explored union **371/400,
   371/400, 261/400, 238/324, 202/400, 190/400, 278/400, 361/400, 237/324,
-  90/400, 295/400, 330/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
+  90/400, 295/400, 329/400, 279/324, 290/324, 350/400, 214/324, 50/324, 69/324,
   247/400, 50/324, 78/324, 256/256, 256/256, 224/324, 233/324, 240/324,
   240/400**; conflicts
-  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 27, 2, 27, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1, 10, 2, 1**; city population bars found (`--city-bars`) **16, 18, 18, 8, 9, 7, 17, 16, 9, 3, 7, 16, 8, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10, 8, 10** (242 in total); ruins found
+  **16, 19, 3, 4, 0, 0, 12, 23, 2, 0, 0, 25, 2, 27, 10, 1, 4, 0, 15, 0, 0, 0, 0, 1, 10, 2, 1**; city population bars found (`--city-bars`) **16, 18, 18, 8, 9, 7, 17, 16, 9, 3, 7, 16, 8, 17, 9, 6, 3, 2, 11, 2, 2, 1, 1, 8, 10, 8, 10** (242 in total); ruins found
   (`--ruin-vision`, after adjacency clustering) **3, 3, 0, 0, 0, 0, 0, 3, 0, 11,
   0, 0, 0, 0, 0, 0, 0, 5, 0, 9, 3, 0, 0, 0, 0, 0, 0** — 37 in total, on the seven
   sets with an Elyrion player and zero everywhere else.
@@ -2805,10 +2806,15 @@ screen:
 | population | board-angle share |
 |---|---|
 | the three score screens | **0.198, 0.216, 0.236** |
-| worst real shot | **0.460** (`badland_test3/cym.png`, whose "Waiting for yodagem" banner survives the crop) |
-| every other real shot | **> 0.550** |
+| worst real shot | **0.518** (`badland_test3/cym.png`) |
+| every other real shot | **> 0.600** |
 
-`MENU_BOARD_ANGLE_FRAC` = 0.35 is mid-gap, 1.48x clear on both sides. Swept over
+`MENU_BOARD_ANGLE_FRAC` = 0.35 is mid-gap, 1.48x clear on both sides. That
+symmetry is recent: the worst real shot read **0.460** — 1.31x clear, not the
+1.48x this line used to claim — while its "Waiting for yodagem" banner leaked
+past the 15% crop. `banner_top_crop` takes the banner off and it now reads
+0.518; no other real shot moved by more than 0.04, and the score screens not at
+all (none trips the banner test). Swept over
 probe width (192–512 px), edge percentile (85–96) and tolerance (4–7°) the two
 populations never overlap, at margins of 1.17x to 2.08x. It reuses
 `BOARD_ANGLE_TOL` rather than introducing a number, since it is the same
@@ -2868,7 +2874,7 @@ rather than the menu: a score screen anchors happily because there is a real
 board silhouette under the scrim, and nothing but this test stands in its way. A
 mapless menu was never the threat. **Calibrate this test on menus that show the
 map**, and do not tune the bar to catch tech trees — raising it buys nothing and
-spends margin against the worst real shot (0.460).
+spends margin against the worst real shot (0.518).
 
 **The evidence base is three score screens of one menu.** Read the margin as
 comfortable rather than established. It fails safe in the direction that
@@ -5171,9 +5177,9 @@ here runs unless asked for.
 ### `/merge`: merge screenshots directly, optionally updating a prior map
 
 **Built** — `--base` in polymerge, `/merge` in polybot.
-`tests/goon_test2` is the regression case exercised while building it. What
-remains deferred is a `new` shot with only *one* board edge, at the bottom of
-this section.
+`tests/goon_test2` is the regression case exercised while building it. A `new`
+shot with only *one* board edge, once deferred here, is now built too — the
+base lends it the missing offset; see the bottom of this section.
 
 The design this replaced treated the prior composite as a competing
 **source** — wrapping it in a `Shot`, anchoring it, running it through
@@ -5258,24 +5264,59 @@ merge of whatever was attached, `size` behaving exactly as it always did.
 Verified against the same set: identical output either way `size` is given
 or auto-detected.
 
-**What remains deferred: a `new` shot with only one board edge, and nothing
-else in the same update to hop through.** The base supplies the board's
-*size*, not registration help — it never enters `anchor_all`, so it cannot
-lend a `pan_hint`/`zoom_hint` the way an already-anchored screenshot can (see
-that mechanism two sections below). A lone screenshot like
-`badland_test3/cym.png` still refuses with the ordinary two-adjoining-edges
-message even against a `--base` that has its whole geometry. The base would
-be an unusually good lender for this — a full-board view of known geometry,
-unlike a typical screenshot — but wiring it into `anchor_all`'s rescue pass
-needs care: naively seeding it into the `M_of` dict that function *returns*
-would defeat `if not M_of: raise SystemExit(...)`, the only "nothing anchored
-at all" guard, letting a run where every new screenshot fails proceed with an
-empty `names` and crash later on `max(fog_lock.values())` — an empty-sequence
-`ValueError` — instead of refusing cleanly. The fix, if this is ever built, is
-a lender-only local view (a `lenders` dict copied from `M_of` plus the base)
-used solely inside the rescue block, never returned, so `M_of`, `dropped_names`
-and every downstream per-screenshot loop stay exactly as narrow as they are
-today.
+**A `new` shot with only one board edge borrows the missing offset from the
+base** (`BASE_LENDER` in `anchor_all`). This was the deferred half of this
+feature, reported from a real update: a zoomed-in shot showing only its SE edge
+(`a-max`), whose two cities were already on the base, was refused with the
+ordinary two-adjoining-edges message. The base had never entered `anchor_all`,
+so the rescue pass that lends a `pan_hint`/`zoom_hint` (see "A shot with only
+*one* board edge in frame", next) had no one to borrow from in a one-shot
+update.
+
+The base is in fact the best lender available: a full-board view sitting in the
+template frame at a *known* offset (`base_rect`), so its "anchor" is a pure
+translation at scale 1 and nothing about it is estimated. SIFT features come
+from its board region only (`board_region` over its brightness mask, the same
+chrome rule `Shot.sift_mask` applies), and its terrain mask is the ordinary
+`PIXEL_FOG_SAT` test, so `SIFT_TERRAIN_MIN_INLIERS` gates it exactly as it gates
+a screenshot lender. Its baked-in decorations (spawn rhombuses, ruin outlines)
+are saturated and so count as terrain, but they exist in no screenshot and
+cannot form correspondences.
+
+**The lender set is a local view, never returned** — the design this paragraph
+used to specify, for the reason it gave: `M_of` is what the "nothing could be
+placed" refusal tests, so seeding the base into it would let a run where every
+new screenshot fails proceed with an empty `names` and crash on
+`max(fog_lock.values())` instead of refusing cleanly. `lend_M`/`lend_scale` are
+copies of `M_of`/`scale_of` plus the base, used only inside the rescue block.
+
+Measured on the reporting pair (a 20x20 base + the one-edge shot): **434
+on-terrain inliers** of 633 against the base, the shot's own SE edge **0.0px**
+from where the hint puts it (the free cross-check `pan_hint` always prints), 86
+fog tiles locked, 0 conflicts, and a seamless paste over the two cities the base
+already carried. `tools/baseline.py --compare`: identical on every set — no
+corpus set uses `--base`, so this path rests on that one hand check (see the
+rescue-path table at the top). The pair is not in `tests/`; it would be the
+first `--base` regression set, with the base stored at its true composite size
+(see below).
+
+**Two limits remain.** A shot with **no** board edge still refuses, even though
+the base could in principle place it outright: `anchor_to_template` requires
+one real edge before it will borrow, which is what keeps a borrow a hint rather
+than a group registration, and relaxing that for the base alone is untested.
+And **a resized base is still refused** (`base_output_size` is exact-match by
+design). The reported base arrived at 2000x1203 — 0.725x of a 20x20
+composite's 2759x1660 — and could only be tested by scaling it back up.
+Measuring the board's size off the base itself (it has all four edges and
+usually fog, so `detect_map_size`'s span/period count is easy) and then
+resizing to that size's exact dimensions would accept it without reopening the
+18-vs-20 near-size trap that exact matching exists to avoid.
+
+**A base's ruin outlines are only as safe as the new shot's fog test.** They are
+pixels, not knowledge: nothing in an update run knows they are there, so any
+tile a new shot calls explored paints over one. That is right when the shot
+really explored the tile, and it is how the banner leak in the top-crop section
+was found — a fog tile misread as explored took a ruin outline with it.
 
 ### A shot with only *one* board edge in frame
 
@@ -5420,11 +5461,50 @@ own component where no component filter can reach it, and which is why the band
 cannot simply be dropped. Do not relax it again without a mechanism for that
 second case.
 
-A residual artifact of the same crop is visible on `badland_test3`: the bottom
-~40px of cym's "Waiting for yodagem…" banner survives the 15% band and is
-pasted onto the board near the N corner. That is the documented job of
-`--ui-mask` (a mid-screen dialog the band crops cannot cover), which the bot
-does not expose.
+**The top band is now extended per shot past the game's banner**
+(`banner_top_crop`, `Shot.top_crop`). The "X is playing…" / "Waiting for X…"
+strip is a dark translucent bar whose bottom lands anywhere from **15% to 17%**
+down depending on the device's aspect, so the fixed 15% band could leave its
+lower ~40px on the board. That was a known cosmetic artifact on `badland_test3`
+(banner text pasted near the N corner) and turned out to be a correctness one:
+a fog tile under the strip correlates at ~0.3 against the template's fog, reads
+as **explored**, wins its tile and pastes fog plus text. On a `--base` update
+that painted over one of the base's ruin outlines (see the `/merge` section).
+
+The banner's bottom is a row where nearly every lit column steps dark to bright,
+which the isometric board never produces — the same "nothing on the board is
+horizontal" fact the menu prefilter and `_board_component` rest on. Measured
+over every corpus shot, as the share of lit columns (`max(above, below) > 25`)
+brightening by >= 12 gray levels across a 6px step:
+
+| population | share |
+|---|---|
+| banners over the board (`badland_test3/cym.png`, the reported shot) | **0.93–1.00** |
+| any row of the board itself, 10–85% of height | **≤ 0.69** |
+
+`BANNER_EDGE_FRAC` = 0.85, searched over `BANNER_SEARCH` = 8% of height below
+the crop, lowest qualifying row wins. A row with under 30% of its columns lit is
+not judged (a banner over black sky does no harm and has no edge to find). Seven
+corpus shots extend, all but one by under 1% of height; the score screens do
+not, and `archers_test2/yad.png`'s jump to 0.193 is a "Turn complete" overlay,
+also chrome.
+
+Corpus effect: only `badland_test` and `badland_test3` move, both for the
+better. `badland_test3` conflicts 27 → 25, `cym.png` fog lock 10 → 12, and
+union 330 → **329**. The lost tile is (10,0), the banner tile itself: real
+terrain shows faintly through the strip, but `cym.png` was its only witness and
+only *through* the banner, so it now falls back to fog rather than to pasted
+text. The two tiles at the strip's edge, (7,3) and (8,2), pass from `cym.png`
+to `yad.png`. On the reported `--base` pair it keeps all 10 ruin outlines (9
+before) and the shot's fog lock rises 81 → 86.
+
+This is **not** the global crop relaxation the bullets above rule out: it only
+ever moves the band *down*, on positive evidence of chrome, so it cannot admit
+HUD the 15% band was excluding. It does cost `cym.png` its NE edge support (45,
+from 148 at 0.15), which is harmless — that shot borrows the offset by SIFT
+anyway, and those last rows were the banner.
+
+`--ui-mask` remains for a mid-screen dialog neither band can see.
 
 ### A genuine size conflict still refuses; the fog lock should adjudicate it
 
