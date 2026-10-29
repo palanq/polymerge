@@ -5,22 +5,27 @@ adjacent *fogged* tile is land or water. It rests entirely on the game
 guarantees below, and it is the one thing in this project that tells a player
 something no screenshot showed them.
 
-**That is why it lives here and not in `polymerge.py`.** Merging only pools what
-players already photographed; this extracts something nobody read off their own
-screen. That is additional assistance, and the project owner requires it to be
-available league-wide before running the bot on real games is authorized
-(2026-08-17). It used to be `polymerge --shorelines`, which meant the guarantee
-rested on a flag nobody passed. Now it rests on the code not being there — a
-property you can check by looking. Do not "fix" that by matching the
+**It lives here and not in `polymerge.py` because it is not yet reliable
+enough to put in front of players.** Merging only pools what players already
+photographed, so its worst failure is a seam or a lost tile, which is visible.
+This instead *infers* terrain nobody saw, so a wrong call is invented map
+content: confident-looking, and something the player has no screenshot to check
+against. Its validation is six fog/fogless pairs (see *Measured performance*),
+and those already moved its threshold once when the fifth and sixth were added.
+That is "not yet falsified", not "reliable". It used to be
+`polymerge --shorelines`, off by default; it was pulled out so that nothing in
+the merge or the bot can reach it by accident. Do not "fix" that by matching the
 `--ruin-vision` / `--city-bars` precedent, which *are* always-on in the bot.
+Those two report what a screenshot shows, where this reports what one implies.
 
 ## Staging
 
 1. **Done.** Excised into `shoreline/`, with a single-image CLI: one screenshot
    in, per-tile verdicts out, plus an optional washed render.
 2. **Next.** A separate bot on that CLI, deployed to the project owner's
-   server, to gather real screenshots.
-3. **Later.** Re-integration, with `polymerge.py` driving this as a subprocess.
+   server, to gather real screenshots and validate the reader on them.
+3. **Later, if it holds up.** Re-integration, with `polymerge.py` driving this
+   as a subprocess.
 
 Everything below *How it reads* was measured while this was a phase inside the
 merge, and the measurements carry over unchanged, because the reader itself was

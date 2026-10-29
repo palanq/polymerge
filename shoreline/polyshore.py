@@ -7,15 +7,17 @@ whether the fog hides land or water. This reads those rims and reports what
 each fogged tile beyond them must be.
 
 This lived inside polymerge.py as --shorelines until it was excised. It is a
-separate program on purpose, and the reason is not tidiness: merging only pools
-what players already photographed, whereas this extracts something nobody read
-off their own screen. That is additional assistance, and it needs to be
-available league-wide before it runs on real games. Keeping it out of
-polymerge.py and polybot.py is what makes that guarantee checkable by looking.
+separate program because it is not yet reliable enough for players: merging
+only pools what players already photographed, whereas this infers terrain
+nobody saw, so a wrong call is invented map content the player cannot check.
+Six fog/fogless pairs are not enough validation for that. Keeping it out of
+polymerge.py and polybot.py means nothing in the merge or the bot can reach it
+by accident.
 
 Stage 1 of three: one image in, verdicts out. Stage 2 is a separate bot on this
-CLI, to gather real screenshots. Stage 3 is re-integration, with polymerge
-driving this as a subprocess. See SHORELINES.md.
+CLI, to gather real screenshots and validate the reader on them. Stage 3, if it
+holds up, is re-integration, with polymerge driving this as a subprocess. See
+SHORELINES.md.
 
 It imports polymerge for the anchoring and tile-sampling primitives -- the same
 arrangement tools/fogpair.py has always used. polymerge does not import this,

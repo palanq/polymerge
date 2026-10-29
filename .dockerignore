@@ -22,10 +22,8 @@ __pycache__/
 .git/
 .github/
 # Development-only, and none of it is COPYd: the baseline harness and probes,
-# the design notes, the superseded merge script, a local baseline snapshot, and
-# the public mirror's README.
+# the design notes, the superseded merge script and a local baseline snapshot.
 tools/
-publish/
 CLAUDE.md
 polymerge_old.py
 before.json

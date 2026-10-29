@@ -7,8 +7,7 @@
 # regression corpus: tools/baseline.py runs all 27 sets, and the ground-truth
 # tables in CLAUDE.md key to those exact files. Note they carry player handles in
 # the HUD -- badland_test3/cym.png reads "Waiting for yodagem..." across its top
-# band -- which is why this repo is private. Redacting them is not the
-# alternative: those pixels are documented program behavior (see the --top-crop
+# band. Redacting them is not an option: those pixels are documented program behavior (see the --top-crop
 # residual note in CLAUDE.md's deferred section) and editing them would silently
 # invalidate the baselines.
 debug/
